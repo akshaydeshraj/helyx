@@ -1,0 +1,40 @@
+# Helyx
+
+```
+ ! Highly experimental, use at your own risk !
+```
+
+**A BEAM-native substrate for malleable software.**
+
+Helyx is an Elixir framework for building agent-native, stateful products. A product adds Helyx as a dependency, selects plugins, and adds its own domain code. Users can talk to a product and change how it works.
+
+## Shape
+
+Helyx has four kinds of components.
+
+| Component | Elixir form | Role |
+|---|---|---|
+| Core | `Helyx.Core` | Registers, resolves, and supervises plugins. |
+| Interface | `Helyx.<Name>` | Defines a public API and the callbacks a plugin must implement. |
+| Plugin | `Helyx.<Name>.<Plugin>` | Implements an interface or adds behaviour through an extension point. |
+| Product | `<ProductName>` | Uses Helyx, selects plugins, and owns domain code. |
+
+Core stays small. It contains only plugin registration, OTP supervision, and interface dispatch.
+Everything else, including memory, tools, model context, compaction, transports, and user interfaces, is a plugin.
+
+## Architecture
+
+The server owns agent and session state. Thin clients connect over pluggable transports. 
+
+```text
+Clients (TUI, web, native)
+  ↕ Transport plugin (OTP messages locally, sockets remotely)
+Server
+  ├── Agent processes (OTP supervised)
+  ├── Plugins (provider, tools, model context, compaction, ...)
+  └── Event stream (every client renders from events)
+```
+
+## License
+
+MIT
