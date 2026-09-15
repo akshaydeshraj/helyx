@@ -15,8 +15,8 @@ Helyx has four kinds of components.
 | Component | Elixir form | Role |
 |---|---|---|
 | Core | `Helyx.Core` | Registers, resolves, and supervises plugins. |
-| Interface | `Helyx.<Name>` | Defines a public API and the callbacks a plugin must implement. |
-| Plugin | `Helyx.<Name>.<Plugin>` | Implements an interface or adds behaviour through an extension point. |
+| Interface | `Helyx.<Interface>` | Defines a public API and the callbacks a plugin must implement. |
+| Plugin | `<Root>.<Interface>.<Name>` | Implements an interface or adds behaviour through an extension point. Bundled plugins use the `Helyx` root, for example `Helyx.Provider.Anthropic`. External plugins use their own root, for example `Acme.Provider.Bedrock`. |
 | Product | `<ProductName>` | Uses Helyx, selects plugins, and owns domain code. |
 
 Core stays small. It contains only plugin registration, OTP supervision, and interface dispatch.
@@ -24,7 +24,7 @@ Everything else, including memory, tools, model context, compaction, transports,
 
 ## Architecture
 
-The server owns agent and session state. Thin clients connect over pluggable transports. 
+The server owns agent and session state. Thin clients connect over pluggable transports.
 
 ```text
 Clients (TUI, web, native)
