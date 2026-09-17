@@ -5,9 +5,17 @@ defmodule Helyx.Provider.FakeTest do
 
   alias Helyx.{Event, Session}
 
+  defmodule Upcase do
+    @behaviour Helyx.Tool
+    def name, do: "upcase"
+    def description, do: "Upcases text."
+    def parameters, do: %{"type" => "object"}
+    def run(%{"text" => text}, _cwd), do: {:ok, String.upcase(text)}
+  end
+
   setup do
     core = :"core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: [Helyx.Provider.Fake]})
+    start_supervised!({Helyx.Core, name: core, plugins: [Helyx.Provider.Fake, Upcase]})
     %{core: core}
   end
 
@@ -92,5 +100,39 @@ defmodule Helyx.Provider.FakeTest do
 
   test "an unknown provider prefix is rejected at start", %{core: core} do
     assert {:error, {:unknown_provider, "nope"}} = Session.start(core, model: "nope/x")
+  end
+
+  test "a scripted tool call runs and the next response sees the result", %{core: core} do
+    call = %Helyx.Message.ToolCall{id: "c1", name: "upcase", arguments: %{"text" => "hi"}}
+    :ok = Helyx.Provider.Fake.script(core, "caller", [["Calling.", call], ["Done."]])
+    {:ok, session} = Session.start(core, model: "fake/caller")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "go")
+    events = collect_until(:agent_end)
+    assert Helyx.Message.text(final_message(events)) == "Done."
+
+    [tool_end] = for %{type: :tool_execution_end, data: data} <- events, do: data.message
+    assert Helyx.Message.text(tool_end) == "HI"
+
+    [first | _] =
+      for %{type: :message_end, data: %{message: %{role: :assistant} = m}} <- events, do: m
+
+    assert first.stop_reason == :tool_use
+  end
+
+  @tag :capture_log
+  test "a bad script item fails only its own turn", %{core: core} do
+    :ok = Helyx.Provider.Fake.script(core, "bad", [[42]])
+    :ok = Helyx.Provider.Fake.script(core, "good", [["fine"]])
+    {:ok, bad} = Session.start(core, model: "fake/bad")
+    :ok = Session.subscribe(bad)
+    :ok = Session.prompt(bad, "go")
+    assert List.last(collect_until(:agent_end)).data.stop_reason == :error
+
+    {:ok, good} = Session.start(core, model: "fake/good")
+    :ok = Session.subscribe(good)
+    :ok = Session.prompt(good, "go")
+    assert Helyx.Message.text(final_message(collect_until(:agent_end))) == "fine"
   end
 end

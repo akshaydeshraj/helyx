@@ -4,10 +4,12 @@ defmodule Helyx.Provider.Fake do
 
   The `echo` model streams the last user message back, one word per delta.
   Any other model name replays responses registered with `script/3`, one
-  response per call, in order. A response is a list of text deltas.
+  response per call, in order. A response is a list of text deltas and tool
+  calls. A response with a tool call stops with `:tool_use`.
 
-      :ok = Helyx.Provider.Fake.script(core, "greeter", [["Hello", " there"]])
-      {:ok, session} = Helyx.Session.start(core, model: "fake/greeter")
+      call = %Helyx.Message.ToolCall{id: "c1", name: "bash", arguments: %{"command" => "ls"}}
+      :ok = Helyx.Provider.Fake.script(core, "lister", [["Listing.", call], ["Done."]])
+      {:ok, session} = Helyx.Session.start(core, model: "fake/lister")
 
   Scripts live in an Agent that Core starts with the plugin, so each Core
   instance has its own scripts.
@@ -26,9 +28,29 @@ defmodule Helyx.Provider.Fake do
   end
 
   @doc "Registers the responses a scripted model replays, one per call."
-  @spec script(Helyx.Core.name(), String.t(), [[String.t()]]) :: :ok
+  @spec script(Helyx.Core.name(), String.t(), [[String.t() | Helyx.Message.ToolCall.t()]]) :: :ok
   def script(core, model, responses) when is_list(responses) do
     Agent.update(scripts(core), &Map.put(&1, model, responses))
+  end
+
+  @doc """
+  Runs one tool call through a session and returns the tool result message.
+  For tool plugin tests. `cwd` is the session's working directory.
+  """
+  @spec run_tool(Helyx.Core.name(), Helyx.Message.ToolCall.t(), String.t()) :: Helyx.Message.t()
+  def run_tool(core, %Helyx.Message.ToolCall{} = call, cwd) do
+    model = "run_tool_#{System.unique_integer([:positive])}"
+    :ok = script(core, model, [[call], ["Done."]])
+    {:ok, session} = Helyx.Session.start(core, model: "fake/#{model}", cwd: cwd)
+    :ok = Helyx.Session.subscribe(session)
+    :ok = Helyx.Session.prompt(session, "go")
+
+    receive do
+      {:helyx_event, %Helyx.Event{type: :tool_execution_end, data: %{message: message}}} ->
+        message
+    after
+      5_000 -> raise "no tool result for #{inspect(call)}"
+    end
   end
 
   @impl true
@@ -45,20 +67,27 @@ defmodule Helyx.Provider.Fake do
   def stream(model, _context, opts) do
     core = Keyword.fetch!(opts, :core)
 
-    Agent.get_and_update(scripts(core), fn state ->
+    scripts(core)
+    |> Agent.get_and_update(fn state ->
       case Map.get(state, model) do
-        [response | rest] -> {{:ok, deltas_to_stream(response)}, Map.put(state, model, rest)}
+        [response | rest] -> {{:ok, response}, Map.put(state, model, rest)}
         _ -> {{:error, {:no_script, model}}, state}
       end
     end)
+    |> case do
+      {:ok, response} -> {:ok, deltas_to_stream(response)}
+      error -> error
+    end
   end
 
   defp deltas_to_stream(deltas) do
-    Stream.concat(
-      Enum.map(deltas, &{:text_delta, &1}),
-      [{:done, %{stop_reason: :end_turn, usage: %{}}}]
-    )
+    events = Enum.map(deltas, &to_event/1)
+    stop = if Enum.any?(events, &match?({:tool_call, _}, &1)), do: :tool_use, else: :end_turn
+    Stream.concat(events, [{:done, %{stop_reason: stop, usage: %{}}}])
   end
+
+  defp to_event(%Helyx.Message.ToolCall{} = call), do: {:tool_call, call}
+  defp to_event(text) when is_binary(text), do: {:text_delta, text}
 
   # Splits "hello there" into ["hello", " there"], keeping the spaces.
   defp words(text) do

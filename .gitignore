@@ -16,3 +16,6 @@ erl_crash.dump
 
 # OS / editor
 .DS_Store
+
+# ExUnit tmp_dir
+tmp/

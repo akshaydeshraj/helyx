@@ -16,6 +16,9 @@ defmodule Helyx.Event do
     * `:message_end` – `%{message: Helyx.Message.t()}`; on a failed turn the
       partial assistant message has `stop_reason: :error` and `data.error`
       holds the reason
+    * `:tool_execution_start` – `%{tool_call: Helyx.Message.ToolCall.t()}`
+    * `:tool_execution_end` – `%{message: Helyx.Message.t()}`, the tool
+      result message; calls run one at a time, in call order
     * `:turn_end` – `%{message: Helyx.Message.t()}`
     * `:agent_end` – `%{stop_reason: atom}`, plus `error: term` on failure
   """
@@ -31,6 +34,8 @@ defmodule Helyx.Event do
           | :message_start
           | :message_update
           | :message_end
+          | :tool_execution_start
+          | :tool_execution_end
 
   @type t :: %__MODULE__{
           type: type(),
