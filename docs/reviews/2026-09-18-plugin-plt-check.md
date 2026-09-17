@@ -1,6 +1,6 @@
 # Review: plugin Dialyzer PLT check
 
-Scope: `fix/plugin-plt-check`, build configuration only, ten `mix.exs` files and lock files.
+Scope: `fix/plugin-plt-check`, build configuration only, nine `mix.exs` files and lock files.
 
 ## Why
 
