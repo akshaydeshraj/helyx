@@ -24,3 +24,10 @@ Invariants the failure-path review axis checks on every diff. Add one when a rev
 
 - A value from a plugin is checked by shape before it reaches a process that holds state. Match the whole tuple or struct, never elements by index.
 - Providers are compiled into the node. Shape is checked; individual field values are not.
+
+## Tools and hands
+
+- A tool Task that dies without a result still produces a tool result, with `is_error` true.
+- Every tool call in one assistant message has a distinct id before any call runs.
+- Two tools with one name are rejected at session start.
+- Truncation holds when one line is larger than the byte limit.

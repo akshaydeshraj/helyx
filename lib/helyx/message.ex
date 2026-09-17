@@ -66,6 +66,21 @@ defmodule Helyx.Message do
   @spec user(String.t()) :: t()
   def user(text) when is_binary(text), do: %__MODULE__{role: :user, content: [%Text{text: text}]}
 
+  @doc "Builds the tool result message for a call from `{:ok, text}` or `{:error, text}`."
+  @spec tool_result(ToolCall.t(), {:ok, String.t()} | {:error, String.t()}) :: t()
+  def tool_result(%ToolCall{} = call, {:ok, text}), do: tool_result(call, text, false)
+  def tool_result(%ToolCall{} = call, {:error, text}), do: tool_result(call, text, true)
+
+  defp tool_result(%ToolCall{id: id, name: name}, text, is_error) when is_binary(text) do
+    %__MODULE__{
+      role: :tool_result,
+      tool_call_id: id,
+      tool_name: name,
+      is_error: is_error,
+      content: [%Text{text: text}]
+    }
+  end
+
   @doc "Concatenates the text blocks of a message. Other blocks are skipped."
   @spec text(t()) :: String.t()
   def text(%__MODULE__{content: content}) do

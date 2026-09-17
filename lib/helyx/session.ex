@@ -13,8 +13,14 @@ defmodule Helyx.Session do
   Each turn runs the provider stream in a Task under Core's task supervisor.
   The Task sends each stream event to the session and returns the terminal
   stream event, `done` or `error`. The session builds the assistant message
-  from the stream events and closes the turn on the Task's reply. A stream that ends
-  without a terminal event, or a Task that crashes, fails the turn.
+  from the stream events and closes the provider call on the Task's reply. A
+  stream that ends without a terminal event, or a Task that crashes, fails
+  the turn.
+
+  An assistant message with tool calls sends each call to the session's hands
+  (`Helyx.Hands`). When every result is back, the results join the transcript
+  in call order and the provider is called again. The turn ends on an
+  assistant message with no tool calls.
   """
 
   use GenServer, restart: :temporary
@@ -29,25 +35,40 @@ defmodule Helyx.Session do
   defmodule Turn do
     @moduledoc false
     # The turn in progress. `partial` is the assistant content so far as a
-    # reversed block list, or nil before the first stream event.
+    # reversed block list, or nil before the first stream event. `calls` are
+    # the tool calls in flight and `results` the tool result messages so far,
+    # by call id.
     @enforce_keys [:id]
-    defstruct [:id, :task, :partial]
+    defstruct [:id, :task, :partial, calls: [], results: %{}]
   end
 
   defmodule State do
     @moduledoc false
-    @enforce_keys [:id, :core, :model, :provider]
-    defstruct [:id, :core, :model, :provider, transcript: [], seq: 0, turn: nil]
+    @enforce_keys [:id, :core, :model, :provider, :cwd]
+    defstruct [
+      :id,
+      :core,
+      :model,
+      :provider,
+      :cwd,
+      :hands,
+      tools: [],
+      transcript: [],
+      seq: 0,
+      turn: nil
+    ]
   end
 
   # Public API
 
-  @doc "Starts a session under Core. `:model` is required."
+  @doc "Starts a session under Core. `:model` is required. `:cwd` defaults to the current directory."
   @spec start(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, term()}
   def start(core \\ Helyx.Core, opts) do
     with {:ok, ref} <- ModelRef.parse(Keyword.fetch!(opts, :model)),
          {:ok, provider} <- Helyx.Provider.find(core, ref.provider),
-         state = %State{id: new_id(), core: core, model: ref, provider: provider},
+         {:ok, _tools} <- Helyx.Tool.by_name(core),
+         cwd = Keyword.get_lazy(opts, :cwd, &File.cwd!/0),
+         state = %State{id: new_id(), core: core, model: ref, provider: provider, cwd: cwd},
          {:ok, _pid} <-
            DynamicSupervisor.start_child(Helyx.Core.session_supervisor(core), {__MODULE__, state}) do
       {:ok, %__MODULE__{id: state.id, core: core}}
@@ -75,7 +96,10 @@ defmodule Helyx.Session do
   # Callbacks
 
   @impl true
-  def init(%State{} = state), do: {:ok, state}
+  def init(%State{} = state) do
+    {:ok, hands} = Helyx.Hands.start_link(core: state.core, cwd: state.cwd, session: self())
+    {:ok, %{state | hands: hands, tools: Helyx.Hands.tools(hands)}}
+  end
 
   @impl true
   def handle_call({:prompt, _text}, _from, %State{turn: %Turn{}} = state) do
@@ -119,13 +143,34 @@ defmodule Helyx.Session do
     {:noreply, fail_turn({:task_exit, reason}, state)}
   end
 
+  def handle_info(
+        {:tool_result, turn_id, call_id, result},
+        %State{turn: %Turn{id: turn_id}} = state
+      ) do
+    %State{turn: turn} = state
+    call = Enum.find(turn.calls, &(&1.id == call_id))
+    message = Message.tool_result(call, result)
+    results = Map.put(turn.results, call_id, message)
+
+    state =
+      emit(%{state | turn: %{turn | results: results}}, :tool_execution_end, %{message: message})
+
+    if map_size(results) == length(turn.calls),
+      do: {:noreply, continue_turn(state)},
+      else: {:noreply, state}
+  end
+
+  # A message for a turn that is no longer current.
+  def handle_info({:tool_result, _turn_id, _call_id, _result}, state), do: {:noreply, state}
+  def handle_info({:stream_event, _turn_id, _event}, state), do: {:noreply, state}
+
   # Turn machinery
 
   defp start_provider_call(%State{turn: %Turn{id: turn_id} = turn} = state) do
     session = self()
     provider = state.provider
     model = state.model.model
-    context = %Context{messages: state.transcript}
+    context = %Context{messages: state.transcript, tools: state.tools}
     opts = [core: state.core, session_id: state.id, turn_id: turn_id]
 
     task =
@@ -144,8 +189,12 @@ defmodule Helyx.Session do
   defp consume(stream, session, turn_id) do
     Enum.reduce_while(stream, :stream_ended, fn
       {kind, payload} = event, acc
-      when (kind in [:text_delta, :thinking_delta] and is_binary(payload)) or
-             (kind == :tool_call and is_struct(payload, Message.ToolCall)) ->
+      when kind in [:text_delta, :thinking_delta] and is_binary(payload) ->
+        send(session, {:stream_event, turn_id, event})
+        {:cont, acc}
+
+      {:tool_call, %Message.ToolCall{id: id, name: name, arguments: args}} = event, acc
+      when is_binary(id) and is_binary(name) and is_map(args) ->
         send(session, {:stream_event, turn_id, event})
         {:cont, acc}
 
@@ -176,16 +225,49 @@ defmodule Helyx.Session do
   defp end_turn({:done, %{stop_reason: stop_reason, usage: usage}}, state) do
     state = start_assistant_message(state)
     assistant = assistant_message(state, stop_reason: stop_reason, usage: usage)
+    calls = for %Message.ToolCall{} = call <- assistant.content, do: call
 
-    %{state | transcript: state.transcript ++ [assistant]}
-    |> emit(:message_end, %{message: assistant})
-    |> emit(:turn_end, %{message: assistant})
-    |> emit(:agent_end, %{stop_reason: stop_reason})
-    |> close_turn()
+    case Enum.map(calls, & &1.id) -- Enum.uniq(Enum.map(calls, & &1.id)) do
+      [dup | _] ->
+        fail_turn({:duplicate_tool_call_id, dup}, state)
+
+      [] ->
+        state =
+          emit(%{state | transcript: state.transcript ++ [assistant]}, :message_end, %{
+            message: assistant
+          })
+
+        case calls do
+          [] ->
+            state
+            |> emit(:turn_end, %{message: assistant})
+            |> emit(:agent_end, %{stop_reason: stop_reason})
+            |> close_turn()
+
+          calls ->
+            run_tools(calls, state)
+        end
+    end
   end
 
   defp end_turn({:error, reason}, state), do: fail_turn(reason, state)
   defp end_turn(:stream_ended, state), do: fail_turn(:stream_ended, state)
+
+  defp run_tools(calls, %State{turn: turn} = state) do
+    state = %{state | turn: %{turn | task: nil, partial: nil, calls: calls, results: %{}}}
+
+    Enum.reduce(calls, state, fn call, state ->
+      :ok = Helyx.Hands.run(state.hands, turn.id, call)
+      emit(state, :tool_execution_start, %{tool_call: call})
+    end)
+  end
+
+  # Every tool result is in: append them in call order and call the provider again.
+  defp continue_turn(%State{turn: turn} = state) do
+    results = Enum.map(turn.calls, &Map.fetch!(turn.results, &1.id))
+
+    start_provider_call(%{state | transcript: state.transcript ++ results})
+  end
 
   # A partial assistant message is closed with an error stop reason so clients
   # do not keep it open. It is not added to the transcript.

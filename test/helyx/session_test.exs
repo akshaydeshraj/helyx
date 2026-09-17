@@ -7,8 +7,13 @@ defmodule Helyx.SessionTest do
 
   setup do
     core = :"core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: [Helyx.Test.Provider]})
+    plugins = [Helyx.Test.Provider, Helyx.Test.Tool.Upcase, Helyx.Test.Tool.Kill]
+    start_supervised!({Helyx.Core, name: core, plugins: plugins})
     %{core: core}
+  end
+
+  defp final_text(events) do
+    Helyx.Message.text(Enum.find(events, &(&1.type == :turn_end)).data.message)
   end
 
   defp collect_until(type, acc \\ []) do
@@ -56,7 +61,7 @@ defmodule Helyx.SessionTest do
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
     assert stop_reason(events) == :end_turn
-    assert Helyx.Message.text(Enum.find(events, &(&1.type == :turn_end)).data.message) == "kept"
+    assert final_text(events) == "kept"
     refute_receive {:helyx_event, _}, 100
   end
 
@@ -97,7 +102,12 @@ defmodule Helyx.SessionTest do
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
-    message = Enum.find(events, &(&1.type == :turn_end)).data.message
+
+    message =
+      Enum.find_value(events, fn
+        %{type: :message_end, data: %{message: %{role: :assistant} = m}} -> m
+        _ -> nil
+      end)
 
     assert message.content == [
              %Helyx.Message.Thinking{thinking: "hmm"},
@@ -108,7 +118,7 @@ defmodule Helyx.SessionTest do
     assert Helyx.Message.text(message) == "Listing."
     updates = for %{type: :message_update, data: data} <- events, do: data
 
-    assert updates == [
+    assert Enum.take(updates, 5) == [
              %{thinking_delta: "hm"},
              %{thinking_delta: "m"},
              %{text_delta: "Listing"},
@@ -138,5 +148,86 @@ defmodule Helyx.SessionTest do
     :ok = Session.prompt(session, "hello")
     assert {:error, :turn_running} = Session.prompt(session, "again")
     assert stop_reason(collect_until(:agent_end)) == :end_turn
+  end
+
+  test "the hands report the registered tools and the provider sees them", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/tools")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    assert final_text(collect_until(:agent_end)) == "kill,upcase"
+  end
+
+  test "tool calls run on the hands and the loop continues until the provider stops", %{
+    core: core
+  } do
+    {:ok, session} = Session.start(core, model: "test/loop")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:agent_end)
+    assert final_text(events) == "HI|unknown tool: nope"
+
+    types = Enum.map(events, & &1.type)
+    assert Enum.count(types, &(&1 == :turn_start)) == 1
+    assert Enum.count(types, &(&1 == :turn_end)) == 1
+    assert Enum.count(types, &(&1 == :tool_execution_start)) == 2
+    assert Enum.count(types, &(&1 == :tool_execution_end)) == 2
+    assert Enum.map(events, & &1.seq) == Enum.to_list(1..length(events))
+
+    ends = for %{type: :tool_execution_end, data: data} <- events, do: data.message
+    by_id = Map.new(ends, &{&1.tool_call_id, &1})
+    assert %Helyx.Message{role: :tool_result, tool_name: "upcase", is_error: false} = by_id["c1"]
+    assert %Helyx.Message{role: :tool_result, tool_name: "nope", is_error: true} = by_id["c2"]
+    assert Helyx.Message.text(by_id["c1"]) == "HI"
+  end
+
+  test "two tool calls with one id fail the turn", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/dup_ids")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:agent_end)
+    assert List.last(events).data.error == {:duplicate_tool_call_id, "same"}
+    refute Enum.any?(events, &(&1.type == :tool_execution_start))
+  end
+
+  test "a tool call with a bad field shape is a malformed stream event", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/bad_call")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:agent_end)
+
+    assert {:bad_stream_event, {:tool_call, %Helyx.Message.ToolCall{name: %{}}}} =
+             List.last(events).data.error
+  end
+
+  test "a tool Task that dies gives an error result and the loop continues", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/kill")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:agent_end)
+    assert stop_reason(events) == :end_turn
+    assert final_text(events) == "tool crashed: :killed"
+  end
+
+  test "two tools with one name are rejected at session start" do
+    core = :"core_#{System.unique_integer([:positive])}"
+    plugins = [Helyx.Test.Provider, Helyx.Test.Tool.Upcase, Helyx.Test.Tool.UpcaseTwin]
+    start_supervised!({Helyx.Core, name: core, plugins: plugins})
+
+    assert {:error, {:duplicate_tool_name, "upcase"}} = Session.start(core, model: "test/ok")
+  end
+
+  @tag :tmp_dir
+  test "a working directory that is gone gives an error result", %{core: core, tmp_dir: dir} do
+    {:ok, session} = Session.start(core, model: "test/loop", cwd: Path.join(dir, "gone"))
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:agent_end)
+    assert final_text(events) =~ "working directory does not exist"
   end
 end
