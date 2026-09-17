@@ -63,5 +63,5 @@ These are observations, not decisions. The ticket and the feature doc hold the d
 - pi and codex verify an edit against the original text and refuse on ambiguity. opencode adds eight fuzzy replacers. pi's single fuzzy pass (NFKC, trailing whitespace, smart quotes, Unicode dashes and spaces) is the smallest set that handles what models actually get wrong.
 - None of the three requires a read before an edit. opencode tried it and removed it.
 - Exit code reporting differs. pi makes non-zero an error result; codex puts the code in the text; opencode hides it in metadata. A model that only sees `is_error` cannot tell exit 1 from a crash unless the code is in the text.
-- Process groups: all three use `setsid` or `detached`. Grace before SIGKILL is 0 in pi, 50 ms in codex, 3 s in opencode. ADR 0003 already chose SIGTERM then SIGKILL after a short grace.
+- Process groups: all three use `setsid` or `detached`. Grace before SIGKILL is 0 in pi, 50 ms in codex, 3 s in opencode. The feature doc already chose SIGTERM then SIGKILL after a short grace.
 - No line numbers in pi's read; `N: line` in opencode. Line numbers cost tokens on every read and help only when the model edits by line, which none of these tools do.
