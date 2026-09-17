@@ -88,6 +88,24 @@ defmodule Helyx.Provider.OpenAITest do
            ]
   end
 
+  test "reasoning is thinking too, and a non-string field emits nothing" do
+    stub([
+      delta(%{reasoning: "why"}),
+      delta(%{content: 42}),
+      delta(%{reasoning_content: %{"a" => 1}}),
+      delta(%{content: "ok"}, "stop"),
+      "[DONE]"
+    ])
+
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, session_id: "s", turn_id: "t")
+
+    assert Enum.to_list(stream) == [
+             {:thinking_delta, "why"},
+             {:text_delta, "ok"},
+             {:done, %{stop_reason: :end_turn, usage: %{}}}
+           ]
+  end
+
   test "a streamed tool call is assembled from deltas into one block" do
     stub([
       delta(%{content: "Listing."}),

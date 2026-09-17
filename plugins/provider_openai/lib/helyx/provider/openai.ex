@@ -230,15 +230,18 @@ defmodule Helyx.Provider.OpenAI do
         usage: chunk["usage"] || acc.usage
     }
 
-    events =
-      for {kind, text} <- [
-            thinking_delta: delta["reasoning_content"] || delta["reasoning"],
-            text_delta: delta["content"]
-          ],
-          is_binary(text) and text != "",
-          do: {kind, text}
+    {delta_events(delta), acc}
+  end
 
-    {events, acc}
+  # Thinking arrives as `reasoning_content` (DeepSeek style) or `reasoning`
+  # (OpenRouter style); text as `content`. Empty and missing ones emit nothing.
+  defp delta_events(delta) do
+    for {kind, text} <- [
+          thinking_delta: delta["reasoning_content"] || delta["reasoning"],
+          text_delta: delta["content"]
+        ],
+        is_binary(text) and text != "",
+        do: {kind, text}
   end
 
   # The first delta of a call usually carries the id and name; later ones
