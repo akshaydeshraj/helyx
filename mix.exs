@@ -44,6 +44,7 @@ defmodule Helyx.MixProject do
         # cannot: plugins depend on the root, not the reverse, so each plugin's
         # precommit runs its own dialyzer.
         "cmd --cd plugins/provider_fake mix precommit",
+        "cmd --cd plugins/provider_openai mix precommit",
         "cmd --cd plugins/tool_read mix precommit",
         "cmd --cd plugins/tool_bash mix precommit",
         "cmd --cd plugins/tool_edit mix precommit",
