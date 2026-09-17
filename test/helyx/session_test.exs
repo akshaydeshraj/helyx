@@ -91,6 +91,41 @@ defmodule Helyx.SessionTest do
     assert {:error, {:ambiguous_provider, "test"}} = Session.start(core, model: "test/ok")
   end
 
+  test "thinking, text, and tool call events build one assistant message in order", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/blocks")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:agent_end)
+    message = Enum.find(events, &(&1.type == :turn_end)).data.message
+
+    assert message.content == [
+             %Helyx.Message.Thinking{thinking: "hmm"},
+             %Helyx.Message.Text{text: "Listing."},
+             %Helyx.Message.ToolCall{id: "call_1", name: "bash", arguments: %{"command" => "ls"}}
+           ]
+
+    assert Helyx.Message.text(message) == "Listing."
+    updates = for %{type: :message_update, data: data} <- events, do: data
+
+    assert updates == [
+             %{thinking_delta: "hm"},
+             %{thinking_delta: "m"},
+             %{text_delta: "Listing"},
+             %{text_delta: "."},
+             %{tool_call: List.last(message.content)}
+           ]
+  end
+
+  test "a malformed stream event fails the turn", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/garbage")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:agent_end)
+    assert List.last(events).data.error == {:bad_stream_event, {:text_delta, 42}}
+  end
+
   test "a prompt during a turn is rejected", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/ok")
     :ok = Session.subscribe(session)

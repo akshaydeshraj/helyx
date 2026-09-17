@@ -6,12 +6,19 @@ defmodule Helyx.Provider do
   ref such as `fake/echo`. `stream/3` returns an enumerable of stream events
   for one provider call:
 
-    * `{:text_delta, binary}`: a chunk of assistant text
+    * `{:text_delta, binary}`: a delta of assistant text
+    * `{:thinking_delta, binary}`: a delta of thinking text
+    * `{:tool_call, Helyx.Message.ToolCall.t()}`: one complete tool call
     * `{:done, %{stop_reason: atom, usage: map}}`: the call finished
     * `{:error, term}`: the call failed
 
+  Consecutive deltas of one kind form one block. A tool call arrives whole;
+  a provider that streams tool call arguments assembles them first. There is
+  no image event: providers do not produce image blocks. A malformed event
+  fails the turn with `{:bad_stream_event, event}`.
+
   The session consumes the enumerable in a Task and builds the assistant
-  message from the deltas. Consumption stops at the first `done` or `error`.
+  message from the events. Consumption stops at the first `done` or `error`.
   A stream that ends without one fails the turn with `:stream_ended`. The
   turn's outcome is the Task's outcome: a stream that raises, including in
   its cleanup after `done`, fails the turn with `{:task_exit, reason}`.
@@ -21,6 +28,8 @@ defmodule Helyx.Provider do
 
   @type stream_event ::
           {:text_delta, String.t()}
+          | {:thinking_delta, String.t()}
+          | {:tool_call, Helyx.Message.ToolCall.t()}
           | {:done, %{stop_reason: atom(), usage: map()}}
           | {:error, term()}
 

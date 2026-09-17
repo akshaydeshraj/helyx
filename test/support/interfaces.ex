@@ -62,6 +62,8 @@ defmodule Helyx.Test.Provider do
   #   "empty"      an empty stream, no terminal event
   #   "crash"      one delta, then the stream raises
   #   "overrun"    done, then another delta that must be ignored
+  #   "blocks"     thinking, text, and a tool call, then done
+  #   "garbage"    one event that is not a stream event
   @behaviour Helyx.Provider
 
   @impl true
@@ -77,6 +79,22 @@ defmodule Helyx.Test.Provider do
   def stream("crash", _context, _opts) do
     {:ok, Stream.concat([{:text_delta, "so far"}], Stream.map([1], fn _ -> raise "boom" end))}
   end
+
+  def stream("blocks", _context, _opts) do
+    call = %Helyx.Message.ToolCall{id: "call_1", name: "bash", arguments: %{"command" => "ls"}}
+
+    {:ok,
+     [
+       {:thinking_delta, "hm"},
+       {:thinking_delta, "m"},
+       {:text_delta, "Listing"},
+       {:text_delta, "."},
+       {:tool_call, call},
+       done()
+     ]}
+  end
+
+  def stream("garbage", _context, _opts), do: {:ok, [{:text_delta, 42}]}
 
   def stream("overrun", _context, _opts) do
     {:ok, [{:text_delta, "kept"}, done(), {:text_delta, " dropped"}]}
