@@ -42,7 +42,8 @@ defmodule Helyx.MixProject do
         "test",
         # Credo covers plugin sources from the root via .credo.exs. Dialyzer
         # cannot: plugins depend on the root, not the reverse, so each plugin's
-        # precommit runs its own dialyzer.
+        # precommit runs its own dialyzer, with a forced PLT check because a
+        # path dependency never changes the lock file that triggers one.
         "cmd --cd plugins/provider_fake mix precommit",
         "cmd --cd plugins/provider_openai mix precommit",
         "cmd --cd plugins/tool_read mix precommit",

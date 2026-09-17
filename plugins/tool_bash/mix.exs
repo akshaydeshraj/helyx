@@ -29,6 +29,6 @@ defmodule Helyx.Tool.Bash.MixProject do
   end
 
   defp aliases do
-    [precommit: ["format", "compile --warnings-as-errors", "dialyzer", "test"]]
+    [precommit: ["format", "compile --warnings-as-errors", "dialyzer --force-check", "test"]]
   end
 end
