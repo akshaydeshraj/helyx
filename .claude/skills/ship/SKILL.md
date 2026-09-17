@@ -13,9 +13,16 @@ Invoke `/simplify` on the working tree changes. Apply its fixes. Simplify is bug
 
 ## 2. Review on three axes
 
-Invoke `/mattpocock-skills:code-review` for the standards and spec axes. In the same message, spawn a third agent for the **failure-path axis** with this brief:
+Invoke `/mattpocock-skills:code-review` for the standards and spec axes.
 
-> Read the diff and `docs/agents/review-checklist.md`. List every new or changed state transition, error branch, and input shape. For each one, try to break it: empty input, wrong shape, extra tuple element, duplicate configuration, a crash mid-stream, a module that does not exist, a failure after partial output. Write throwaway tests as `.scratch/review/<name>_test.exs` at the repository root, run them with `mise exec -- mix test .scratch/review/<name>_test.exs`, and delete them when done. `.scratch/` is ignored by git; never put a throwaway test under `test/`. Report only findings you reproduced, each with the reproduction. Under 300 words.
+- **Standards** covers only what Credo and Dialyzer cannot: naming, the AGENTS.md rules, and the smell baseline. Do not have it re-check style that `mix precommit` enforces.
+- **Spec** checks the diff against the ticket and the feature doc, including the bounds table and the research citations (see `docs/agents/review-checklist.md`, "Specs and bounds").
+
+In the same message, spawn a third agent for the **failure-path axis**. It gets the diff and the checklist and nothing else: no review record, no summary of earlier fixes, no author notes, so it is not anchored on the author's view of the change. The brief:
+
+> Read the diff and `docs/agents/review-checklist.md`. The checklist names categories; you enumerate the concrete cases. For every new or changed operation, state transition, and error branch, work through each category: input shape, the boundary at every named limit (at it, one under, one over, multibyte), resource bounds for every read, buffer, and wait, concurrency between sibling operations, and adversarial arguments from the model. Write throwaway tests as `.scratch/review/<name>_test.exs` at the repository root, run them with `mise exec -- mix test .scratch/review/<name>_test.exs`, and delete them when done. `.scratch/` is ignored by git; never put a throwaway test under `test/`. Report only findings you reproduced, each with the reproduction. Under 300 words.
+
+A review agent that dies or stalls is rerun later. Never substitute the pass by hand.
 
 Fix every confirmed finding. Record the findings and their resolution in `docs/reviews/YYYY-MM-DD-<scope>.md`.
 

@@ -1,7 +1,84 @@
 defmodule Helyx.ToolTest do
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias Helyx.Tool
+
+  # The limits of truncate/2, stated independently of the code under test.
+  @max_lines 2000
+  @max_bytes 51_200
+
+  property "truncate/2 stays valid UTF-8, within the limits, and on whole lines" do
+    check all(text <- text(), keep <- member_of([:head, :tail])) do
+      out = Tool.truncate(text, keep)
+      assert String.valid?(out)
+
+      input_lines = text |> String.replace_suffix("\n", "") |> String.split("\n")
+      total = length(input_lines)
+
+      case notice(out, keep) do
+        :none ->
+          assert out == text
+          assert total <= @max_lines
+          assert byte_size(text) <= @max_bytes + 1
+
+        {first, last, ^total, content} ->
+          kept = last - first + 1
+          assert kept in 1..@max_lines
+          assert byte_size(content) <= @max_bytes
+          if keep == :head, do: assert(first == 1), else: assert(last == total)
+
+          slice = Enum.slice(input_lines, first - 1, kept)
+
+          if kept == 1 and byte_size(hd(slice)) > @max_bytes do
+            edge = if keep == :head, do: &String.starts_with?/2, else: &String.ends_with?/2
+            assert edge.(hd(slice), content)
+          else
+            assert String.split(content, "\n") == slice
+          end
+      end
+    end
+  end
+
+  # Every limit is crossed from both sides: small samples carry a line over
+  # the byte limit, big samples cross the line limit and, through the medium
+  # lines, the byte total. The giant line stays out of the big samples so a
+  # sample never reaches megabytes.
+  defp text do
+    short = string(:printable, max_length: 40)
+    medium = string(:printable, min_length: 300, max_length: 600)
+    giant = map(short, &(String.duplicate("x", @max_bytes - 50) <> &1))
+
+    small = list_of(frequency([{10, short}, {3, medium}, {1, giant}]), max_length: 50)
+
+    big =
+      list_of(frequency([{10, short}, {1, medium}]), length: (@max_lines - 10)..(@max_lines + 10))
+
+    gen all(
+          lines <- frequency([{2, small}, {1, big}]),
+          suffix <- member_of(["", "\n", "\n\n\n"])
+        ) do
+      Enum.join(lines, "\n") <> suffix
+    end
+  end
+
+  defp notice(out, :head) do
+    case Regex.run(~r/\A(.*)\n\[truncated: showing lines (\d+)-(\d+) of (\d+)\]\z/s, out) do
+      [_, content, first, last, total] -> to_tuple(first, last, total, content)
+      nil -> :none
+    end
+  end
+
+  defp notice(out, :tail) do
+    case Regex.run(~r/\A\[truncated: showing lines (\d+)-(\d+) of (\d+)\]\n(.*)\z/s, out) do
+      [_, first, last, total, content] -> to_tuple(first, last, total, content)
+      nil -> :none
+    end
+  end
+
+  defp to_tuple(first, last, total, content) do
+    {String.to_integer(first), String.to_integer(last), String.to_integer(total), content}
+  end
 
   test "short text is returned as is" do
     assert Tool.truncate("a\nb", :head) == "a\nb"

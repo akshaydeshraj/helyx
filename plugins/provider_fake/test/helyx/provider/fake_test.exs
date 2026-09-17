@@ -4,6 +4,7 @@ defmodule Helyx.Provider.FakeTest do
   use ExUnit.Case, async: true
 
   alias Helyx.{Event, Session}
+  alias Helyx.Provider.Fake
 
   defmodule Upcase do
     @behaviour Helyx.Tool
@@ -66,7 +67,7 @@ defmodule Helyx.Provider.FakeTest do
   end
 
   test "a scripted model replays its responses in order", %{core: core} do
-    :ok = Helyx.Provider.Fake.script(core, "scripted", [["one"], ["two", " and", " three"]])
+    :ok = Fake.script(core, "scripted", [["one"], ["two", " and", " three"]])
     {:ok, session} = Session.start(core, model: "fake/scripted")
     :ok = Session.subscribe(session)
 
@@ -104,7 +105,7 @@ defmodule Helyx.Provider.FakeTest do
 
   test "a scripted tool call runs and the next response sees the result", %{core: core} do
     call = %Helyx.Message.ToolCall{id: "c1", name: "upcase", arguments: %{"text" => "hi"}}
-    :ok = Helyx.Provider.Fake.script(core, "caller", [["Calling.", call], ["Done."]])
+    :ok = Fake.script(core, "caller", [["Calling.", call], ["Done."]])
     {:ok, session} = Session.start(core, model: "fake/caller")
     :ok = Session.subscribe(session)
 
@@ -123,8 +124,8 @@ defmodule Helyx.Provider.FakeTest do
 
   @tag :capture_log
   test "a bad script item fails only its own turn", %{core: core} do
-    :ok = Helyx.Provider.Fake.script(core, "bad", [[42]])
-    :ok = Helyx.Provider.Fake.script(core, "good", [["fine"]])
+    :ok = Fake.script(core, "bad", [[42]])
+    :ok = Fake.script(core, "good", [["fine"]])
     {:ok, bad} = Session.start(core, model: "fake/bad")
     :ok = Session.subscribe(bad)
     :ok = Session.prompt(bad, "go")

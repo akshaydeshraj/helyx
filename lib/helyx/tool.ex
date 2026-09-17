@@ -61,26 +61,24 @@ defmodule Helyx.Tool do
   end
 
   defp read_bounded(full) do
-    with {:ok, io} <- File.open(full, [:read, :binary]),
-         data = IO.binread(io, @max_file_bytes + 1),
-         :ok = File.close(io) do
-      case data do
-        :eof ->
-          {:ok, ""}
+    case File.open(full, [:read, :binary]) do
+      {:ok, io} ->
+        data = IO.binread(io, @max_file_bytes + 1)
+        :ok = File.close(io)
+        bounded(data)
 
-        {:error, reason} ->
-          {:error, to_string(:file.format_error(reason))}
-
-        bin when byte_size(bin) > @max_file_bytes ->
-          {:error, "over #{@max_file_bytes} bytes; read it in parts"}
-
-        bin ->
-          {:ok, bin}
-      end
-    else
-      {:error, reason} -> {:error, to_string(:file.format_error(reason))}
+      {:error, _} = error ->
+        bounded(error)
     end
   end
+
+  defp bounded(:eof), do: {:ok, ""}
+  defp bounded({:error, reason}), do: {:error, to_string(:file.format_error(reason))}
+
+  defp bounded(bin) when byte_size(bin) > @max_file_bytes,
+    do: {:error, "over #{@max_file_bytes} bytes; read it in parts"}
+
+  defp bounded(bin), do: {:ok, bin}
 
   @doc """
   Caps text at #{@max_lines} lines or #{@max_bytes} bytes of line content,

@@ -214,6 +214,8 @@ defmodule Helyx.Test.Tool.Kill do
   def description, do: "Kills its own Task."
   @impl true
   def parameters, do: %{"type" => "object"}
+  # run/2 never returns; the brutal kill is the point.
+  @dialyzer {:nowarn_function, run: 2}
   @impl true
   def run(_args, _cwd), do: Process.exit(self(), :kill)
 end

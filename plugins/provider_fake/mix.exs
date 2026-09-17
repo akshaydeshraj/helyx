@@ -21,10 +21,13 @@ defmodule Helyx.Provider.Fake.MixProject do
   end
 
   defp deps do
-    [{:helyx, path: "../.."}]
+    [
+      {:helyx, path: "../.."},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
+    ]
   end
 
   defp aliases do
-    [precommit: ["format", "compile --warnings-as-errors", "test"]]
+    [precommit: ["format", "compile --warnings-as-errors", "dialyzer", "test"]]
   end
 end

@@ -25,7 +25,11 @@ defmodule Helyx.MixProject do
   defp elixirc_paths(_), do: ["lib"]
 
   defp deps do
-    []
+    [
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:stream_data, "~> 1.2", only: [:dev, :test]}
+    ]
   end
 
   defp aliases do
@@ -33,7 +37,12 @@ defmodule Helyx.MixProject do
       precommit: [
         "format",
         "compile --warnings-as-errors",
+        "credo --strict",
+        "dialyzer",
         "test",
+        # Credo covers plugin sources from the root via .credo.exs. Dialyzer
+        # cannot: plugins depend on the root, not the reverse, so each plugin's
+        # precommit runs its own dialyzer.
         "cmd --cd plugins/provider_fake mix precommit",
         "cmd --cd plugins/tool_read mix precommit",
         "cmd --cd plugins/tool_bash mix precommit",
