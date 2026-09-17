@@ -11,7 +11,8 @@ defmodule Helyx.Event do
     * `:agent_start` – `%{}`
     * `:turn_start` – `%{}`
     * `:message_start` – `%{message: Helyx.Message.t()}` (may be partial)
-    * `:message_update` – `%{delta: binary}`
+    * `:message_update` – `%{text_delta: binary}`, `%{thinking_delta: binary}`,
+      or `%{tool_call: Helyx.Message.ToolCall.t()}`
     * `:message_end` – `%{message: Helyx.Message.t()}`; on a failed turn the
       partial assistant message has `stop_reason: :error` and `data.error`
       holds the reason

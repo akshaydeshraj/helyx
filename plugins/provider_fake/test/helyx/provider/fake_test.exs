@@ -51,8 +51,8 @@ defmodule Helyx.Provider.FakeTest do
 
     [_, _, user_start, _, _, delta1, delta2, assistant_end | _] = events
     assert %Helyx.Message{role: :user} = user_start.data.message
-    assert delta1.data.delta == "hello"
-    assert delta2.data.delta == " there"
+    assert delta1.data.text_delta == "hello"
+    assert delta2.data.text_delta == " there"
     assert %Helyx.Message{role: :assistant, model: "fake/echo"} = assistant_end.data.message
     assert Helyx.Message.text(assistant_end.data.message) == "hello there"
   end

@@ -11,9 +11,9 @@ defmodule Helyx.Session do
       # receive {:helyx_event, %Helyx.Event{}} ...
 
   Each turn runs the provider stream in a Task under Core's task supervisor.
-  The Task sends each text delta to the session and returns the terminal
+  The Task sends each stream event to the session and returns the terminal
   stream event, `done` or `error`. The session builds the assistant message
-  from the deltas and closes the turn on the Task's reply. A stream that ends
+  from the stream events and closes the turn on the Task's reply. A stream that ends
   without a terminal event, or a Task that crashes, fails the turn.
   """
 
@@ -28,8 +28,8 @@ defmodule Helyx.Session do
 
   defmodule Turn do
     @moduledoc false
-    # The turn in progress. `partial` is the assistant text so far, or nil
-    # before the first delta.
+    # The turn in progress. `partial` is the assistant content so far as a
+    # reversed block list, or nil before the first stream event.
     @enforce_keys [:id]
     defstruct [:id, :task, :partial]
   end
@@ -97,12 +97,12 @@ defmodule Helyx.Session do
   end
 
   @impl true
-  def handle_info({:text_delta, turn_id, delta}, %State{turn: %Turn{id: turn_id}} = state) do
+  def handle_info({:stream_event, turn_id, event}, %State{turn: %Turn{id: turn_id}} = state) do
     %State{turn: turn} = state = start_assistant_message(state)
 
     {:noreply,
-     %{state | turn: %{turn | partial: turn.partial <> delta}}
-     |> emit(:message_update, %{delta: delta})}
+     %{state | turn: %{turn | partial: add_block(event, turn.partial)}}
+     |> emit(:message_update, Map.new([event]))}
   end
 
   # The Task's reply is the terminal stream event. Its :DOWN follows and is
@@ -139,28 +139,43 @@ defmodule Helyx.Session do
     %{state | turn: %{turn | task: task}}
   end
 
-  # Forwards deltas to the session and returns the first terminal event.
+  # Forwards well-formed stream events to the session and returns the first
+  # terminal event. A malformed event is a terminal error.
   defp consume(stream, session, turn_id) do
     Enum.reduce_while(stream, :stream_ended, fn
-      {:text_delta, delta}, acc ->
-        send(session, {:text_delta, turn_id, delta})
+      {kind, payload} = event, acc
+      when (kind in [:text_delta, :thinking_delta] and is_binary(payload)) or
+             (kind == :tool_call and is_struct(payload, Message.ToolCall)) ->
+        send(session, {:stream_event, turn_id, event})
         {:cont, acc}
 
-      terminal, _acc ->
+      {:done, %{stop_reason: _, usage: _}} = terminal, _acc ->
         {:halt, terminal}
+
+      {:error, _} = terminal, _acc ->
+        {:halt, terminal}
+
+      other, _acc ->
+        {:halt, {:error, {:bad_stream_event, other}}}
     end)
   end
 
-  defp end_turn({:done, %{stop_reason: stop_reason, usage: usage}}, state) do
-    %State{turn: turn} = state = start_assistant_message(state)
+  # Consecutive deltas of one kind extend the head block; anything else
+  # starts a new block. The list is reversed.
+  defp add_block({:text_delta, d}, [%Message.Text{text: t} = b | rest]),
+    do: [%{b | text: t <> d} | rest]
 
-    assistant = %Message{
-      role: :assistant,
-      content: [%Message.Text{text: turn.partial}],
-      model: ModelRef.to_string(state.model),
-      stop_reason: stop_reason,
-      usage: usage
-    }
+  defp add_block({:text_delta, d}, blocks), do: [%Message.Text{text: d} | blocks]
+
+  defp add_block({:thinking_delta, d}, [%Message.Thinking{thinking: t} = b | rest]),
+    do: [%{b | thinking: t <> d} | rest]
+
+  defp add_block({:thinking_delta, d}, blocks), do: [%Message.Thinking{thinking: d} | blocks]
+  defp add_block({:tool_call, call}, blocks), do: [call | blocks]
+
+  defp end_turn({:done, %{stop_reason: stop_reason, usage: usage}}, state) do
+    state = start_assistant_message(state)
+    assistant = assistant_message(state, stop_reason: stop_reason, usage: usage)
 
     %{state | transcript: state.transcript ++ [assistant]}
     |> emit(:message_end, %{message: assistant})
@@ -174,34 +189,40 @@ defmodule Helyx.Session do
 
   # A partial assistant message is closed with an error stop reason so clients
   # do not keep it open. It is not added to the transcript.
-  defp fail_turn(reason, %State{turn: %Turn{partial: partial}} = state) do
+  defp fail_turn(reason, state) do
     state
-    |> close_partial_message(partial, reason)
+    |> close_partial_message(reason)
     |> emit(:agent_end, %{stop_reason: :error, error: reason})
     |> close_turn()
   end
 
-  defp close_partial_message(state, nil, _reason), do: state
+  defp close_partial_message(%State{turn: %Turn{partial: nil}} = state, _reason), do: state
 
-  defp close_partial_message(state, partial, reason) do
-    message = %Message{
-      role: :assistant,
-      content: [%Message.Text{text: partial}],
-      model: ModelRef.to_string(state.model),
-      stop_reason: :error
-    }
+  defp close_partial_message(state, reason) do
+    emit(state, :message_end, %{
+      message: assistant_message(state, stop_reason: :error),
+      error: reason
+    })
+  end
 
-    emit(state, :message_end, %{message: message, error: reason})
+  # The assistant message for the current turn, from the blocks so far.
+  defp assistant_message(%State{turn: %Turn{partial: partial}} = state, fields) do
+    struct!(
+      %Message{
+        role: :assistant,
+        content: Enum.reverse(partial),
+        model: ModelRef.to_string(state.model)
+      },
+      fields
+    )
   end
 
   defp close_turn(%State{} = state), do: %{state | turn: nil}
 
-  # Emits message_start for the assistant message on the first delta.
+  # Emits message_start for the assistant message on the first stream event.
   defp start_assistant_message(%State{turn: %Turn{partial: nil} = turn} = state) do
-    message = %Message{role: :assistant, content: [], model: ModelRef.to_string(state.model)}
-
-    %{state | turn: %{turn | partial: ""}}
-    |> emit(:message_start, %{message: message})
+    state = %{state | turn: %{turn | partial: []}}
+    emit(state, :message_start, %{message: assistant_message(state, [])})
   end
 
   defp start_assistant_message(state), do: state
