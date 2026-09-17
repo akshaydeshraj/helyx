@@ -32,3 +32,13 @@
 
 - Ticket #3: hands and the four tools.
 - Tickets #7 and #8 can start in parallel once #2 is closed.
+
+## Later the same day: prefactor (ticket #14)
+
+PR #13 merged. Before #3, #7, and #8 run in parallel, the shapes they all touch land once:
+
+- `Helyx.Message` gains `Thinking`, `ToolCall`, and `Image` blocks and the tool result fields `tool_call_id`, `tool_name`, and `is_error`, as ADR 0001 and the session file section of the feature doc name them. The ticket said "tool result block"; the ADR makes it a message role, and the ADR wins.
+- `Helyx.Provider` stream events gain `thinking_delta` and `tool_call`. A tool call arrives whole; a provider that streams arguments assembles them first.
+- The session keeps the partial assistant content as a block list. Consecutive deltas of one kind extend the head block. One function builds every assistant message. `message_update` data is `text_delta`, `thinking_delta`, or `tool_call`.
+
+No behaviour changed for text-only providers. Every existing test passed unchanged.
