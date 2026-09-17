@@ -107,7 +107,14 @@ defmodule Helyx.Provider.OpenAITest do
     context = %Helyx.Context{
       messages: [
         Helyx.Message.user("list the files"),
-        %Helyx.Message{role: :assistant, content: [%Helyx.Message.Text{text: "First."}, call]},
+        %Helyx.Message{
+          role: :assistant,
+          content: [
+            %Helyx.Message.Thinking{thinking: "I should list."},
+            %Helyx.Message.Text{text: "First."},
+            call
+          ]
+        },
         Helyx.Message.tool_result(call, {:ok, "/repo"})
       ],
       tools: [%{name: "bash", description: "Runs a command.", parameters: %{"type" => "object"}}]
@@ -141,6 +148,7 @@ defmodule Helyx.Provider.OpenAITest do
              %{
                "role" => "assistant",
                "content" => "First.",
+               "reasoning_content" => "I should list.",
                "tool_calls" => [
                  %{
                    "id" => "call_0",

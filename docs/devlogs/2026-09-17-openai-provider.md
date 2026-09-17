@@ -16,7 +16,7 @@
 
 ## Decisions taken without a ticket line
 
-- Thinking blocks are not sent back to the endpoint: the wire format has no input field for them.
+- Thinking blocks go back on assistant messages as `reasoning_content`. Kimi's thinking models need the reasoning of the tool-call loop replayed to keep their chain; the first cut dropped it and PR review caught the broken continuation.
 - `finish_reason` maps `tool_calls` to `:tool_use`, `length` to `:max_tokens`, anything else to `:end_turn`.
 - No session-seam test in this plugin: the session loop is covered by the Fake provider tests, which the provider seam composes with.
 - `Helyx.Provider`'s moduledoc now names the opts keys the session passes (`:core`, `:session_id`, `:turn_id`), so providers stop guessing.

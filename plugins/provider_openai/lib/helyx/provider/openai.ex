@@ -100,8 +100,6 @@ defmodule Helyx.Provider.OpenAI do
     system_message ++ Enum.map(messages, &message/1)
   end
 
-  # Thinking blocks are not sent back: the wire format has no field for them
-  # on input, and the endpoints do not want prior reasoning replayed.
   defp message(%Helyx.Message{role: :user} = message),
     do: %{role: "user", content: Helyx.Message.text(message)}
 
@@ -109,12 +107,28 @@ defmodule Helyx.Provider.OpenAI do
     %{role: "tool", tool_call_id: message.tool_call_id, content: Helyx.Message.text(message)}
   end
 
+  # Thinking goes back as `reasoning_content`: Kimi's thinking models need
+  # the reasoning of the tool-call loop replayed to keep their chain, and
+  # models that do not think produce no thinking blocks to send.
   defp message(%Helyx.Message{role: :assistant} = message) do
-    base = %{role: "assistant", content: Helyx.Message.text(message)}
+    %{role: "assistant", content: Helyx.Message.text(message)}
+    |> put_reasoning(message)
+    |> put_tool_calls(message)
+  end
 
+  defp put_reasoning(wire, message) do
+    case for %Helyx.Message.Thinking{thinking: thinking} <- message.content,
+             into: "",
+             do: thinking do
+      "" -> wire
+      reasoning -> Map.put(wire, :reasoning_content, reasoning)
+    end
+  end
+
+  defp put_tool_calls(wire, message) do
     case for %Helyx.Message.ToolCall{} = call <- message.content, do: wire_call(call) do
-      [] -> base
-      calls -> Map.put(base, :tool_calls, calls)
+      [] -> wire
+      calls -> Map.put(wire, :tool_calls, calls)
     end
   end
 
