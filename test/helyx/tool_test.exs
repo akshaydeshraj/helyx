@@ -13,29 +13,34 @@ defmodule Helyx.ToolTest do
       out = Tool.truncate(text, keep)
       assert String.valid?(out)
 
-      input_lines = text |> String.replace_suffix("\n", "") |> String.split("\n")
+      stripped = String.replace_suffix(text, "\n", "")
+      input_lines = String.split(stripped, "\n")
       total = length(input_lines)
 
-      case notice(out, keep) do
-        :none ->
-          assert out == text
-          assert total <= @max_lines
-          assert byte_size(text) <= @max_bytes + 1
+      # The exact fit condition: line content plus separators, without the
+      # one trailing newline that acts as a terminator.
+      fits = total <= @max_lines and byte_size(stripped) <= @max_bytes
 
-        {first, last, ^total, content} ->
-          kept = last - first + 1
-          assert kept in 1..@max_lines
-          assert byte_size(content) <= @max_bytes
-          if keep == :head, do: assert(first == 1), else: assert(last == total)
+      # Unchanged output within the limits is the untruncated case. Any other
+      # output must carry a well-formed notice that matches a kept slice of
+      # the input. Equality alone cannot decide the branch: when the edge
+      # line is exactly the notice truncate emits, a truncated output equals
+      # its over-limit input.
+      if out != text or not fits do
+        assert {first, last, ^total, content} = notice(out, keep)
+        kept = last - first + 1
+        assert kept in 1..@max_lines
+        assert byte_size(content) <= @max_bytes
+        if keep == :head, do: assert(first == 1), else: assert(last == total)
 
-          slice = Enum.slice(input_lines, first - 1, kept)
+        slice = Enum.slice(input_lines, first - 1, kept)
 
-          if kept == 1 and byte_size(hd(slice)) > @max_bytes do
-            edge = if keep == :head, do: &String.starts_with?/2, else: &String.ends_with?/2
-            assert edge.(hd(slice), content)
-          else
-            assert String.split(content, "\n") == slice
-          end
+        if kept == 1 and byte_size(hd(slice)) > @max_bytes do
+          edge = if keep == :head, do: &String.starts_with?/2, else: &String.ends_with?/2
+          assert edge.(hd(slice), content)
+        else
+          assert String.split(content, "\n") == slice
+        end
       end
     end
   end
@@ -63,17 +68,17 @@ defmodule Helyx.ToolTest do
   end
 
   defp notice(out, :head) do
-    case Regex.run(~r/\A(.*)\n\[truncated: showing lines (\d+)-(\d+) of (\d+)\]\z/s, out) do
-      [_, content, first, last, total] -> to_tuple(first, last, total, content)
-      nil -> :none
-    end
+    assert [_, content, first, last, total] =
+             Regex.run(~r/\A(.*)\n\[truncated: showing lines (\d+)-(\d+) of (\d+)\]\z/s, out)
+
+    to_tuple(first, last, total, content)
   end
 
   defp notice(out, :tail) do
-    case Regex.run(~r/\A\[truncated: showing lines (\d+)-(\d+) of (\d+)\]\n(.*)\z/s, out) do
-      [_, first, last, total, content] -> to_tuple(first, last, total, content)
-      nil -> :none
-    end
+    assert [_, first, last, total, content] =
+             Regex.run(~r/\A\[truncated: showing lines (\d+)-(\d+) of (\d+)\]\n(.*)\z/s, out)
+
+    to_tuple(first, last, total, content)
   end
 
   defp to_tuple(first, last, total, content) do
@@ -139,6 +144,11 @@ defmodule Helyx.ToolTest do
       assert String.valid?(out)
       assert out =~ "showing lines 1-1 of 1"
     end
+  end
+
+  test "an input whose last line is exactly the notice is a truncation fixed point" do
+    text = String.duplicate("a\n", 2000) <> "[truncated: showing lines 1-2000 of 2001]"
+    assert Tool.truncate(text, :head) == text
   end
 
   test "a line exactly at the byte limit is kept" do
