@@ -27,21 +27,21 @@ docs/
   devlogs/         Dated work logs: YYYY-MM-DD-<topic>.md
   features/        One design doc per feature, written before implementation
   reviews/         Code review outputs and follow-ups
-lib/               Helyx core and interfaces (planned)
-test/              Tests, mirrors lib/ (planned)
-plugins/           Plugins as separate Mix projects (planned)
+lib/helyx/         Helyx core, interfaces, session, and message shapes
+test/              Tests, mirrors lib/. test/support/ holds test-only plugins
+plugins/<name>/    Bundled plugins, one Mix project each, path dependency on the root
+apps/<name>/       Products, one Mix project each (planned)
 ```
-
-Update this section when the Mix project lands.
 
 ## Commands
 
-The Mix project does not exist yet. When it does, these are the standard commands:
+Run from the repository root. Plugins are separate Mix projects; the root `precommit` alias runs theirs too.
 
 - `mix test`: run all tests
 - `mix test path/to/file_test.exs:123`: run one test by line number
 - `mix format`: format code
-- `mix precommit`: alias for format, compile with warnings as errors, and test. Run it before you finish any change.
+- `mix precommit`: alias for format, compile with warnings as errors, and test, in the root and in every plugin. Run it before you finish any change.
+- `cd plugins/<name> && mix test`: run one plugin's tests
 
 ## Elixir guidelines
 

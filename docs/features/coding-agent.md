@@ -14,7 +14,7 @@ From the TUI, prompt the agent about a repository. It reads, edits, and runs she
 ## Runtime
 
 - One session process per conversation, started under a DynamicSupervisor and found by id through Registry.
-- Each turn has a turn id and runs in a Task under the session.
+- Each turn has a turn id and runs in a Task under Core's task supervisor. The session monitors the Task and ignores messages from a Task that is no longer current.
 - One hands process per session runs tool calls as Tasks and spawns harness programs. See ADR 0003.
 - Core starts as a child spec that takes the plugin list. No application config.
 - Interface modes: Provider, Tool, and Event are `multi`. ModelContext, Compaction, and Transport are `single`.
