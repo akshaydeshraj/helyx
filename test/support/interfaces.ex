@@ -36,6 +36,40 @@ defmodule Helyx.Test.MultiB do
   def name, do: "multi-b"
 end
 
+defmodule Helyx.Test.ModelContext do
+  @moduledoc false
+  # Marks the context so a provider can show it was built.
+  @behaviour Helyx.ModelContext
+
+  @impl true
+  def build(context, opts), do: %{context | system: "built for #{opts[:cwd]}"}
+end
+
+defmodule Helyx.Test.ModelContextTwin do
+  @moduledoc false
+  @behaviour Helyx.ModelContext
+
+  @impl true
+  def build(context, _opts), do: context
+end
+
+defmodule Helyx.Test.Compaction do
+  @moduledoc false
+  # Appends to the system prompt so tests see it ran after model context.
+  @behaviour Helyx.Compaction
+
+  @impl true
+  def compact(context, _opts), do: %{context | system: "#{context.system}, compacted"}
+end
+
+defmodule Helyx.Test.CompactionTwin do
+  @moduledoc false
+  @behaviour Helyx.Compaction
+
+  @impl true
+  def compact(context, _opts), do: context
+end
+
 defmodule Helyx.Test.NoInterface do
   @moduledoc false
   def name, do: "none"
@@ -66,6 +100,7 @@ defmodule Helyx.Test.Provider do
   #   "garbage"    one event that is not a stream event
   #   "wide"       a delta tuple with an extra element
   #   "tools"      the names of the tools in the context, as text
+  #   "system"     the system prompt in the context, as text
   #   "loop"       calls upcase and then a missing tool; after the results,
   #                echoes them as text
   #   "serial"     three calls to the slow tool, then echoes the results
@@ -101,6 +136,10 @@ defmodule Helyx.Test.Provider do
 
   def stream("tools", %Helyx.Context{tools: tools}, _opts) do
     {:ok, [{:text_delta, Enum.map_join(tools, ",", & &1.name)}, done()]}
+  end
+
+  def stream("system", %Helyx.Context{system: system}, _opts) do
+    {:ok, [{:text_delta, system || "no system"}, done()]}
   end
 
   def stream("crash", _context, _opts) do

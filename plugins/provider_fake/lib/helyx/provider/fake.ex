@@ -3,7 +3,8 @@ defmodule Helyx.Provider.Fake do
   A provider that replays scripted responses. For tests and demos.
 
   The `echo` model streams the last user message back, one word per delta.
-  Any other model name replays responses registered with `script/3`, one
+  The `system` model streams the system prompt of the context back. Any
+  other model name replays responses registered with `script/3`, one
   response per call, in order. A response is a list of text deltas and tool
   calls. A response with a tool call stops with `:tool_use`.
 
@@ -62,6 +63,10 @@ defmodule Helyx.Provider.Fake do
       |> Helyx.Message.text()
 
     {:ok, deltas_to_stream(words(text))}
+  end
+
+  def stream("system", %Helyx.Context{system: system}, _opts) do
+    {:ok, deltas_to_stream([system || "no system"])}
   end
 
   def stream(model, _context, opts) do

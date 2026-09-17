@@ -47,7 +47,9 @@ defmodule Helyx.MixProject do
         "cmd --cd plugins/tool_read mix precommit",
         "cmd --cd plugins/tool_bash mix precommit",
         "cmd --cd plugins/tool_edit mix precommit",
-        "cmd --cd plugins/tool_write mix precommit"
+        "cmd --cd plugins/tool_write mix precommit",
+        "cmd --cd plugins/model_context_default mix precommit",
+        "cmd --cd plugins/compaction_none mix precommit"
       ]
     ]
   end
