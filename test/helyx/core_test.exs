@@ -31,6 +31,10 @@ defmodule Helyx.CoreTest do
     assert {:error, {:missing_plugin, Helyx.Provider}} = boot([Test.SingleA])
   end
 
+  test "rejects a module that does not exist" do
+    assert {:error, {:not_a_plugin, Test.Missing}} = boot([Test.Provider, Test.Missing])
+  end
+
   test "rejects a module that implements no interface" do
     assert {:error, {:not_a_plugin, Test.NoInterface}} = boot([Test.Provider, Test.NoInterface])
   end

@@ -24,13 +24,15 @@ defmodule Helyx.Provider do
           | {:done, %{stop_reason: atom(), usage: map()}}
           | {:error, term()}
 
-  @doc "Finds the provider plugin whose id matches a model ref prefix."
+  @doc "Finds the provider plugin whose id matches a model ref prefix. Two matches is an error."
   @spec find(Helyx.Core.name(), String.t()) ::
-          {:ok, module()} | {:error, {:unknown_provider, String.t()}}
+          {:ok, module()}
+          | {:error, {:unknown_provider, String.t()} | {:ambiguous_provider, String.t()}}
   def find(core, id) do
-    case Enum.find(Helyx.Core.plugins(core, __MODULE__), &(&1.id() == id)) do
-      nil -> {:error, {:unknown_provider, id}}
-      plugin -> {:ok, plugin}
+    case Enum.filter(Helyx.Core.plugins(core, __MODULE__), &(&1.id() == id)) do
+      [plugin] -> {:ok, plugin}
+      [] -> {:error, {:unknown_provider, id}}
+      _ -> {:error, {:ambiguous_provider, id}}
     end
   end
 
