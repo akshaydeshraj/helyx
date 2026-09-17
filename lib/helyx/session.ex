@@ -172,10 +172,26 @@ defmodule Helyx.Session do
   defp end_turn({:error, reason}, state), do: fail_turn(reason, state)
   defp end_turn(:stream_ended, state), do: fail_turn(:stream_ended, state)
 
-  defp fail_turn(reason, state) do
+  # A partial assistant message is closed with an error stop reason so clients
+  # do not keep it open. It is not added to the transcript.
+  defp fail_turn(reason, %State{turn: %Turn{partial: partial}} = state) do
     state
+    |> close_partial_message(partial, reason)
     |> emit(:agent_end, %{stop_reason: :error, error: reason})
     |> close_turn()
+  end
+
+  defp close_partial_message(state, nil, _reason), do: state
+
+  defp close_partial_message(state, partial, reason) do
+    message = %Message{
+      role: :assistant,
+      content: [%Message.Text{text: partial}],
+      model: ModelRef.to_string(state.model),
+      stop_reason: :error
+    }
+
+    emit(state, :message_end, %{message: message, error: reason})
   end
 
   defp close_turn(%State{} = state), do: %{state | turn: nil}

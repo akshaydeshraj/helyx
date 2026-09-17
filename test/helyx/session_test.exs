@@ -60,6 +60,37 @@ defmodule Helyx.SessionTest do
     refute_receive {:helyx_event, _}, 100
   end
 
+  @tag :capture_log
+  test "a failure after deltas closes the partial message with an error", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/crash")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:agent_end)
+    types = Enum.map(events, & &1.type)
+
+    assert Enum.slice(types, -4..-1) == [
+             :message_start,
+             :message_update,
+             :message_end,
+             :agent_end
+           ]
+
+    message_end = Enum.at(events, -2)
+    assert %Helyx.Message{role: :assistant, stop_reason: :error} = message_end.data.message
+    assert Helyx.Message.text(message_end.data.message) == "so far"
+    assert {:task_exit, _} = message_end.data.error
+    refute Enum.any?(events, &(&1.type == :turn_end))
+  end
+
+  test "two providers with the same id are rejected at session start" do
+    core = :"core_#{System.unique_integer([:positive])}"
+    plugins = [Helyx.Test.Provider, Helyx.Test.ProviderTwin]
+    start_supervised!({Helyx.Core, name: core, plugins: plugins})
+
+    assert {:error, {:ambiguous_provider, "test"}} = Session.start(core, model: "test/ok")
+  end
+
   test "a prompt during a turn is rejected", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/ok")
     :ok = Session.subscribe(session)

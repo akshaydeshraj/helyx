@@ -41,6 +41,18 @@ defmodule Helyx.Test.NoInterface do
   def name, do: "none"
 end
 
+defmodule Helyx.Test.ProviderTwin do
+  @moduledoc false
+  # A second provider with the same id as Helyx.Test.Provider.
+  @behaviour Helyx.Provider
+
+  @impl true
+  def id, do: "test"
+
+  @impl true
+  def stream(_model, _context, _opts), do: {:ok, []}
+end
+
 defmodule Helyx.Test.Provider do
   @moduledoc false
   # A provider whose model name selects a stream shape, so session tests can

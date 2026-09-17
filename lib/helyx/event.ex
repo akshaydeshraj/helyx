@@ -12,9 +12,11 @@ defmodule Helyx.Event do
     * `:turn_start` – `%{}`
     * `:message_start` – `%{message: Helyx.Message.t()}` (may be partial)
     * `:message_update` – `%{delta: binary}`
-    * `:message_end` – `%{message: Helyx.Message.t()}`
+    * `:message_end` – `%{message: Helyx.Message.t()}`; on a failed turn the
+      partial assistant message has `stop_reason: :error` and `data.error`
+      holds the reason
     * `:turn_end` – `%{message: Helyx.Message.t()}`
-    * `:agent_end` – `%{stop_reason: atom}`
+    * `:agent_end` – `%{stop_reason: atom}`, plus `error: term` on failure
   """
 
   @enforce_keys [:type, :session_id, :turn_id, :seq, :data]
