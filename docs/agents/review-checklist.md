@@ -1,6 +1,13 @@
 # Review checklist
 
-Invariants the failure-path review axis checks on every diff. Add one when a review or a PR comment finds a defect that a checklist line would have caught.
+Invariants the review axes check on every diff. Add one when a review or a PR comment finds a defect that a checklist line would have caught. The failure-path brief in the ship skill names the probe categories; the lines here are the invariants the probes must not break.
+
+## Specs and bounds
+
+- The feature doc states the bound of every input, buffer, and wait, or says "unbounded, ticket #N". The spec axis checks that table against the diff.
+- Any numeric limit in code has a property test or, at minimum, tests at the limit, one under, one over, and a multibyte case.
+- Every `ponytail:` marker names a ticket. Judge whether the debt is safe to ship, not only whether it is recorded.
+- A design decision that the tools research (issue #17) covered cites it in the feature doc, so the spec axis can check the design against how codex, opencode, and pi behave.
 
 ## Events
 

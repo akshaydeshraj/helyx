@@ -2,6 +2,7 @@ defmodule Helyx.Tool.EditTest do
   use ExUnit.Case, async: true
 
   alias Helyx.Message.ToolCall
+  alias Helyx.Provider.Fake
 
   @moduletag :tmp_dir
 
@@ -12,7 +13,7 @@ defmodule Helyx.Tool.EditTest do
 
     %{
       run: fn args ->
-        Helyx.Provider.Fake.run_tool(core, %ToolCall{id: "c", name: "edit", arguments: args}, dir)
+        Fake.run_tool(core, %ToolCall{id: "c", name: "edit", arguments: args}, dir)
       end
     }
   end

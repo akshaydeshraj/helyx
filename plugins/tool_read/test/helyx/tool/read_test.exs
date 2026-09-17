@@ -2,6 +2,7 @@ defmodule Helyx.Tool.ReadTest do
   use ExUnit.Case, async: true
 
   alias Helyx.Message.ToolCall
+  alias Helyx.Provider.Fake
 
   @moduletag :tmp_dir
 
@@ -11,7 +12,7 @@ defmodule Helyx.Tool.ReadTest do
 
     %{
       run: fn args ->
-        Helyx.Provider.Fake.run_tool(core, %ToolCall{id: "c", name: "read", arguments: args}, dir)
+        Fake.run_tool(core, %ToolCall{id: "c", name: "read", arguments: args}, dir)
       end
     }
   end

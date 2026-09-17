@@ -68,7 +68,7 @@ Run from the repository root. Plugins are separate Mix projects; the root `preco
 ## Docs conventions
 
 - **Devlogs** (`docs/devlogs/`): one file per work session, named `YYYY-MM-DD-<topic>.md`. Record what was done, what broke, and what is next.
-- **Features** (`docs/features/`): one file per feature, named `<slug>.md`. Write the design before the implementation. State the goal, the interface changes, and what stays out of scope.
+- **Features** (`docs/features/`): one file per feature, named `<slug>.md`. Write the design before the implementation, starting from `docs/features/TEMPLATE.md`. State the goal, the interface changes, the bounds of every input, buffer, and wait, and what stays out of scope.
 - **Reviews** (`docs/reviews/`): outputs of code reviews, named `YYYY-MM-DD-<scope>.md`, with findings and their resolution.
 - **Decisions** (`docs/adr/`): architecture decision records, named `NNNN-<slug>.md`, with context, decision, and consequences.
 
