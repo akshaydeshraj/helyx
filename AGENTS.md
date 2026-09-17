@@ -74,6 +74,8 @@ Run from the repository root. Plugins are separate Mix projects; the root `preco
 
 ## Git conventions
 
+- Every commit goes through `/ship`: simplify, review on three axes, `mix precommit`, commit. See `.claude/skills/ship/SKILL.md`.
+- Tickets are built with `/implement <n>`, the project skill, which ends in `/ship`. Do not use `mattpocock-skills:implement` here; it reviews and commits on its own path.
 - Conventional commits: `type(scope): message` (see existing history).
 - Do not commit generated artifacts (`_build/`, `deps/`, `.elixir_ls/`).
 
@@ -86,6 +88,10 @@ Issues live in GitHub Issues for `akshaydeshraj/helyx` (via the `gh` CLI). See `
 ### Triage labels
 
 Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Review checklist
+
+Invariants the failure-path review axis checks. See `docs/agents/review-checklist.md`.
 
 ### Domain docs
 
