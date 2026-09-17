@@ -102,7 +102,7 @@ defmodule Helyx.Session do
 
     {:noreply,
      %{state | turn: %{turn | partial: add_block(event, turn.partial)}}
-     |> emit(:message_update, update_data(event))}
+     |> emit(:message_update, Map.new([event]))}
   end
 
   # The Task's reply is the terminal stream event. Its :DOWN follows and is
@@ -143,12 +143,9 @@ defmodule Helyx.Session do
   # terminal event. A malformed event is a terminal error.
   defp consume(stream, session, turn_id) do
     Enum.reduce_while(stream, :stream_ended, fn
-      {kind, delta} = event, acc
-      when kind in [:text_delta, :thinking_delta] and is_binary(delta) ->
-        send(session, {:stream_event, turn_id, event})
-        {:cont, acc}
-
-      {:tool_call, %Message.ToolCall{}} = event, acc ->
+      {kind, payload} = event, acc
+      when (kind in [:text_delta, :thinking_delta] and is_binary(payload)) or
+             (kind == :tool_call and is_struct(payload, Message.ToolCall)) ->
         send(session, {:stream_event, turn_id, event})
         {:cont, acc}
 
@@ -165,8 +162,8 @@ defmodule Helyx.Session do
 
   # Consecutive deltas of one kind extend the head block; anything else
   # starts a new block. The list is reversed.
-  defp add_block({:text_delta, d}, [%Message.Text{text: t} | rest]),
-    do: [%Message.Text{text: t <> d} | rest]
+  defp add_block({:text_delta, d}, [%Message.Text{text: t} = b | rest]),
+    do: [%{b | text: t <> d} | rest]
 
   defp add_block({:text_delta, d}, blocks), do: [%Message.Text{text: d} | blocks]
 
@@ -174,11 +171,7 @@ defmodule Helyx.Session do
     do: [%{b | thinking: t <> d} | rest]
 
   defp add_block({:thinking_delta, d}, blocks), do: [%Message.Thinking{thinking: d} | blocks]
-  defp add_block({:tool_call, %Message.ToolCall{} = call}, blocks), do: [call | blocks]
-
-  defp update_data({:text_delta, d}), do: %{text_delta: d}
-  defp update_data({:thinking_delta, d}), do: %{thinking_delta: d}
-  defp update_data({:tool_call, call}), do: %{tool_call: call}
+  defp add_block({:tool_call, call}, blocks), do: [call | blocks]
 
   defp end_turn({:done, %{stop_reason: stop_reason, usage: usage}}, state) do
     state = start_assistant_message(state)
@@ -217,7 +210,7 @@ defmodule Helyx.Session do
     struct!(
       %Message{
         role: :assistant,
-        content: Enum.reverse(partial || []),
+        content: Enum.reverse(partial),
         model: ModelRef.to_string(state.model)
       },
       fields
