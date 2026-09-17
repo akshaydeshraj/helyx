@@ -157,6 +157,26 @@ defmodule Helyx.SessionTest do
     assert stop_reason(collect_until(:agent_end)) == :end_turn
   end
 
+  test "the provider context goes through model context, then compaction" do
+    core = :"core_#{System.unique_integer([:positive])}"
+    plugins = [Helyx.Test.Provider, Helyx.Test.ModelContext, Helyx.Test.Compaction]
+    start_supervised!({Helyx.Core, name: core, plugins: plugins})
+
+    {:ok, session} = Session.start(core, model: "test/system")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    assert final_text(collect_until(:agent_end)) == "built for #{File.cwd!()}, compacted"
+  end
+
+  test "without model context and compaction plugins the context is unchanged", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/system")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    assert final_text(collect_until(:agent_end)) == "no system"
+  end
+
   test "the hands report the registered tools and the provider sees them", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/tools")
     :ok = Session.subscribe(session)

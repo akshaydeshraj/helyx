@@ -170,13 +170,19 @@ defmodule Helyx.Session do
 
   defp start_provider_call(%State{turn: %Turn{id: turn_id} = turn} = state) do
     session = self()
+    core = state.core
     provider = state.provider
     model = state.model.model
-    context = %Context{messages: state.transcript, tools: state.tools}
-    opts = [core: state.core, session_id: state.id, turn_id: turn_id]
+    base = %Context{messages: state.transcript, tools: state.tools}
+    opts = [core: core, session_id: state.id, turn_id: turn_id, cwd: state.cwd]
 
+    # Context building runs inside the Task so plugin code never blocks the
+    # session and a plugin that raises fails the turn, not the session.
     task =
-      Task.Supervisor.async_nolink(Helyx.Core.task_supervisor(state.core), fn ->
+      Task.Supervisor.async_nolink(Helyx.Core.task_supervisor(core), fn ->
+        context = Helyx.ModelContext.build(core, base, opts)
+        context = Helyx.Compaction.compact(core, context, opts)
+
         case provider.stream(model, context, opts) do
           {:ok, stream} -> consume(stream, session, turn_id)
           {:error, reason} -> {:error, reason}

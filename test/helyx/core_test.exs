@@ -27,6 +27,16 @@ defmodule Helyx.CoreTest do
              boot([Test.Provider, Test.SingleA, Test.SingleB])
   end
 
+  test "rejects two model context plugins" do
+    assert {:error, {:mode_violation, Helyx.ModelContext, _}} =
+             boot([Test.Provider, Test.ModelContext, Test.ModelContextTwin])
+  end
+
+  test "rejects two compaction plugins" do
+    assert {:error, {:mode_violation, Helyx.Compaction, _}} =
+             boot([Test.Provider, Test.Compaction, Test.CompactionTwin])
+  end
+
   test "rejects a missing provider" do
     assert {:error, {:missing_plugin, Helyx.Provider}} = boot([Test.SingleA])
   end
