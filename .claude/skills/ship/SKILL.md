@@ -15,7 +15,7 @@ Invoke `/simplify` on the working tree changes. Apply its fixes. Simplify is bug
 
 Invoke `/mattpocock-skills:code-review` for the standards and spec axes. In the same message, spawn a third agent for the **failure-path axis** with this brief:
 
-> Read the diff and `docs/agents/review-checklist.md`. List every new or changed state transition, error branch, and input shape. For each one, try to break it: empty input, wrong shape, extra tuple element, duplicate configuration, a crash mid-stream, a module that does not exist, a failure after partial output. Write throwaway tests in the scratchpad directory and run them with `mise exec -- mix test <path>`. Report only findings you reproduced, each with the reproduction. Under 300 words.
+> Read the diff and `docs/agents/review-checklist.md`. List every new or changed state transition, error branch, and input shape. For each one, try to break it: empty input, wrong shape, extra tuple element, duplicate configuration, a crash mid-stream, a module that does not exist, a failure after partial output. Write throwaway tests as `.scratch/review/<name>_test.exs` at the repository root, run them with `mise exec -- mix test .scratch/review/<name>_test.exs`, and delete them when done. `.scratch/` is ignored by git; never put a throwaway test under `test/`. Report only findings you reproduced, each with the reproduction. Under 300 words.
 
 Fix every confirmed finding. Record the findings and their resolution in `docs/reviews/YYYY-MM-DD-<scope>.md`.
 
