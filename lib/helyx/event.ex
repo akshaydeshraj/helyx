@@ -18,7 +18,7 @@ defmodule Helyx.Event do
       holds the reason
     * `:tool_execution_start` – `%{tool_call: Helyx.Message.ToolCall.t()}`
     * `:tool_execution_end` – `%{message: Helyx.Message.t()}`, the tool
-      result message; emitted as results arrive, in any order
+      result message; calls run one at a time, in call order
     * `:turn_end` – `%{message: Helyx.Message.t()}`
     * `:agent_end` – `%{stop_reason: atom}`, plus `error: term` on failure
   """

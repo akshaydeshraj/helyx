@@ -7,7 +7,14 @@ defmodule Helyx.SessionTest do
 
   setup do
     core = :"core_#{System.unique_integer([:positive])}"
-    plugins = [Helyx.Test.Provider, Helyx.Test.Tool.Upcase, Helyx.Test.Tool.Kill]
+
+    plugins = [
+      Helyx.Test.Provider,
+      Helyx.Test.Tool.Upcase,
+      Helyx.Test.Tool.Kill,
+      Helyx.Test.Tool.Slow
+    ]
+
     start_supervised!({Helyx.Core, name: core, plugins: plugins})
     %{core: core}
   end
@@ -155,7 +162,7 @@ defmodule Helyx.SessionTest do
     :ok = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    assert final_text(collect_until(:agent_end)) == "kill,upcase"
+    assert final_text(collect_until(:agent_end)) == "kill,slow,upcase"
   end
 
   test "tool calls run on the hands and the loop continues until the provider stops", %{
@@ -182,14 +189,30 @@ defmodule Helyx.SessionTest do
     assert Helyx.Message.text(by_id["c1"]) == "HI"
   end
 
-  test "two tool calls with one id fail the turn", %{core: core} do
-    {:ok, session} = Session.start(core, model: "test/dup_ids")
+  test "tool calls run one at a time, in call order", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/serial")
     :ok = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
-    assert List.last(events).data.error == {:duplicate_tool_call_id, "same"}
-    refute Enum.any?(events, &(&1.type == :tool_execution_start))
+    assert final_text(events) == "1|2|3"
+
+    order =
+      for %{type: t, data: d} <- events, t in [:tool_execution_start, :tool_execution_end] do
+        case d do
+          %{tool_call: call} -> {t, call.id}
+          %{message: message} -> {t, message.tool_call_id}
+        end
+      end
+
+    assert order == [
+             {:tool_execution_start, "1"},
+             {:tool_execution_end, "1"},
+             {:tool_execution_start, "2"},
+             {:tool_execution_end, "2"},
+             {:tool_execution_start, "3"},
+             {:tool_execution_end, "3"}
+           ]
   end
 
   test "a tool call with a bad field shape is a malformed stream event", %{core: core} do

@@ -44,6 +44,21 @@ defmodule Helyx.Tool.ReadTest do
     assert Helyx.Message.text(result) == "cannot read nope.txt: no such file or directory"
   end
 
+  test "a device file is an error result, not a hang", %{run: run} do
+    result = run.(%{"path" => "/dev/zero"})
+    assert result.is_error
+    assert Helyx.Message.text(result) == "cannot read /dev/zero: not a regular file (device)"
+  end
+
+  test "a file over the size limit is an error result", %{tmp_dir: dir, run: run} do
+    File.write!(Path.join(dir, "big.bin"), :binary.copy(<<0>>, 10_485_761))
+    result = run.(%{"path" => "big.bin"})
+    assert result.is_error
+
+    assert Helyx.Message.text(result) ==
+             "cannot read big.bin: over 10485760 bytes; read it in parts"
+  end
+
   test "missing arguments are an error result", %{run: run} do
     assert run.(%{}).is_error
   end

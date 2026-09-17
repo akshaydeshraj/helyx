@@ -35,10 +35,10 @@ defmodule Helyx.Tool.Read do
     offset = Map.get(args, "offset", 1)
     full = Path.expand(path, cwd)
 
-    with {:ok, content} <- File.read(full) do
+    with {:ok, content} <- Helyx.Tool.read_file(full) do
       {:ok, content |> from_line(offset) |> Helyx.Tool.truncate(:head)}
     else
-      {:error, reason} -> {:error, "cannot read #{path}: #{:file.format_error(reason)}"}
+      {:error, reason} -> {:error, "cannot read #{path}: #{reason}"}
     end
   end
 

@@ -17,9 +17,10 @@ defmodule Helyx.Session do
   stream that ends without a terminal event, or a Task that crashes, fails
   the turn.
 
-  An assistant message with tool calls sends each call to the session's hands
-  (`Helyx.Hands`). When every result is back, the results join the transcript
-  in call order and the provider is called again. The turn ends on an
+  An assistant message with tool calls runs them on the session's hands
+  (`Helyx.Hands`) one at a time, in call order, so two calls never touch the
+  working directory at once. Each result joins the transcript as it arrives,
+  and the provider is called again after the last one. The turn ends on an
   assistant message with no tool calls.
   """
 
@@ -36,10 +37,9 @@ defmodule Helyx.Session do
     @moduledoc false
     # The turn in progress. `partial` is the assistant content so far as a
     # reversed block list, or nil before the first stream event. `calls` are
-    # the tool calls in flight and `results` the tool result messages so far,
-    # by call id.
+    # the tool calls still to answer, the head running.
     @enforce_keys [:id]
-    defstruct [:id, :task, :partial, calls: [], results: %{}]
+    defstruct [:id, :task, :partial, calls: []]
   end
 
   defmodule State do
@@ -145,22 +145,24 @@ defmodule Helyx.Session do
 
   def handle_info(
         {:tool_result, turn_id, call_id, result},
-        %State{turn: %Turn{id: turn_id}} = state
+        %State{
+          turn: %Turn{id: turn_id, calls: [%Message.ToolCall{id: call_id} = call | rest]} = turn
+        } =
+          state
       ) do
-    %State{turn: turn} = state
-    call = Enum.find(turn.calls, &(&1.id == call_id))
     message = Message.tool_result(call, result)
-    results = Map.put(turn.results, call_id, message)
 
     state =
-      emit(%{state | turn: %{turn | results: results}}, :tool_execution_end, %{message: message})
+      %{state | transcript: state.transcript ++ [message], turn: %{turn | calls: rest}}
+      |> emit(:tool_execution_end, %{message: message})
 
-    if map_size(results) == length(turn.calls),
-      do: {:noreply, continue_turn(state)},
-      else: {:noreply, state}
+    case rest do
+      [] -> {:noreply, start_provider_call(state)}
+      [next | _] -> {:noreply, run_tool(next, state)}
+    end
   end
 
-  # A message for a turn that is no longer current.
+  # A message for a turn, or a call, that is no longer current.
   def handle_info({:tool_result, _turn_id, _call_id, _result}, state), do: {:noreply, state}
   def handle_info({:stream_event, _turn_id, _event}, state), do: {:noreply, state}
 
@@ -223,50 +225,34 @@ defmodule Helyx.Session do
   defp add_block({:tool_call, call}, blocks), do: [call | blocks]
 
   defp end_turn({:done, %{stop_reason: stop_reason, usage: usage}}, state) do
-    state = start_assistant_message(state)
+    %State{turn: turn} = state = start_assistant_message(state)
     assistant = assistant_message(state, stop_reason: stop_reason, usage: usage)
+
+    state =
+      emit(%{state | transcript: state.transcript ++ [assistant]}, :message_end, %{
+        message: assistant
+      })
+
     calls = for %Message.ToolCall{} = call <- assistant.content, do: call
 
-    case Enum.map(calls, & &1.id) -- Enum.uniq(Enum.map(calls, & &1.id)) do
-      [dup | _] ->
-        fail_turn({:duplicate_tool_call_id, dup}, state)
-
+    case calls do
       [] ->
-        state =
-          emit(%{state | transcript: state.transcript ++ [assistant]}, :message_end, %{
-            message: assistant
-          })
+        state
+        |> emit(:turn_end, %{message: assistant})
+        |> emit(:agent_end, %{stop_reason: stop_reason})
+        |> close_turn()
 
-        case calls do
-          [] ->
-            state
-            |> emit(:turn_end, %{message: assistant})
-            |> emit(:agent_end, %{stop_reason: stop_reason})
-            |> close_turn()
-
-          calls ->
-            run_tools(calls, state)
-        end
+      [first | _] = calls ->
+        run_tool(first, %{state | turn: %{turn | task: nil, partial: nil, calls: calls}})
     end
   end
 
   defp end_turn({:error, reason}, state), do: fail_turn(reason, state)
   defp end_turn(:stream_ended, state), do: fail_turn(:stream_ended, state)
 
-  defp run_tools(calls, %State{turn: turn} = state) do
-    state = %{state | turn: %{turn | task: nil, partial: nil, calls: calls, results: %{}}}
-
-    Enum.reduce(calls, state, fn call, state ->
-      :ok = Helyx.Hands.run(state.hands, turn.id, call)
-      emit(state, :tool_execution_start, %{tool_call: call})
-    end)
-  end
-
-  # Every tool result is in: append them in call order and call the provider again.
-  defp continue_turn(%State{turn: turn} = state) do
-    results = Enum.map(turn.calls, &Map.fetch!(turn.results, &1.id))
-
-    start_provider_call(%{state | transcript: state.transcript ++ results})
+  defp run_tool(call, %State{turn: turn} = state) do
+    :ok = Helyx.Hands.run(state.hands, turn.id, call)
+    emit(state, :tool_execution_start, %{tool_call: call})
   end
 
   # A partial assistant message is closed with an error stop reason so clients

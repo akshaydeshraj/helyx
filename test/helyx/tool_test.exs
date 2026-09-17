@@ -48,4 +48,30 @@ defmodule Helyx.ToolTest do
     assert String.starts_with?(tail, "[truncated: showing lines 2-2 of 2]\n")
     assert byte_size(tail) < 51_300
   end
+
+  test "trailing blank lines count toward the limits" do
+    out = Tool.truncate("a" <> String.duplicate("\n", 60_000), :head)
+    assert String.ends_with?(out, "[truncated: showing lines 1-2000 of 60000]")
+  end
+
+  test "a cut line stays valid UTF-8" do
+    line = String.duplicate("€", 20_000)
+
+    for keep <- [:head, :tail] do
+      out = Tool.truncate(line, keep)
+      assert String.valid?(out)
+      assert out =~ "showing lines 1-1 of 1"
+    end
+  end
+
+  test "a line exactly at the byte limit is kept" do
+    line = String.duplicate("x", 51_200)
+    assert Tool.truncate(line, :head) == line
+    assert Tool.truncate(line, :tail) == line
+
+    assert String.starts_with?(
+             Tool.truncate(line <> "\nb", :head),
+             line <> "\n[truncated: showing lines 1-1 of 2]"
+           )
+  end
 end

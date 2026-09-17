@@ -28,6 +28,8 @@ Invariants the failure-path review axis checks on every diff. Add one when a rev
 ## Tools and hands
 
 - A tool Task that dies without a result still produces a tool result, with `is_error` true.
-- Every tool call in one assistant message has a distinct id before any call runs.
+- The tool calls of one assistant message run one at a time, in call order, so no two touch the working directory at once.
+- Truncation holds for trailing blank lines, for a line exactly at the byte limit, and cuts on a character boundary.
 - Two tools with one name are rejected at session start.
 - Truncation holds when one line is larger than the byte limit.
+- A tool never loads unbounded input or buffers unbounded output. A model-chosen path can be a device or a huge file; a command can write forever. A result that dropped output says so.

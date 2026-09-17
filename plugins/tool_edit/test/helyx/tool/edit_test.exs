@@ -43,6 +43,12 @@ defmodule Helyx.Tool.EditTest do
              "old_text is empty"
   end
 
+  test "a directory is an error result", %{tmp_dir: dir, run: run} do
+    result = run.(%{"path" => dir, "old_text" => "a", "new_text" => "b"})
+    assert result.is_error
+    assert Helyx.Message.text(result) == "cannot read #{dir}: not a regular file (directory)"
+  end
+
   test "a missing file is an error result", %{run: run} do
     result = run.(%{"path" => "nope", "old_text" => "a", "new_text" => "b"})
     assert result.is_error

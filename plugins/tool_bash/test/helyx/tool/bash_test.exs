@@ -37,6 +37,19 @@ defmodule Helyx.Tool.BashTest do
     assert String.starts_with?(text, "[truncated: showing lines 1001-3000 of 3000]\n1001\n")
   end
 
+  test "output beyond the buffer is dropped while the command runs", %{run: run} do
+    text = Helyx.Message.text(run.(%{"command" => "seq 1 200000"}))
+
+    assert String.starts_with?(
+             text,
+             "[output cut: only the last 204800 bytes were kept]\n[truncated:"
+           )
+
+    [_, total] = Regex.run(~r/of (\d+)\]/, text)
+    assert String.to_integer(total) < 200_000
+    assert String.ends_with?(text, "\n200000")
+  end
+
   test "the command runs in its own process group", %{run: run} do
     assert Helyx.Message.text(run.(%{"command" => "ps -o pgid= -p $$ | tr -d ' '; echo $$"})) =~
              ~r/^(\d+)\n\1\n$/

@@ -68,7 +68,7 @@ defmodule Helyx.Test.Provider do
   #   "tools"      the names of the tools in the context, as text
   #   "loop"       calls upcase and then a missing tool; after the results,
   #                echoes them as text
-  #   "dup_ids"    two tool calls with one id
+  #   "serial"     three calls to the slow tool, then echoes the results
   #   "bad_call"   a tool call whose name is not a string
   #   "kill"       calls the kill tool, then echoes the result as text
   @behaviour Helyx.Provider
@@ -86,8 +86,7 @@ defmodule Helyx.Test.Provider do
   def stream("loop", %Helyx.Context{messages: messages}, _opts) do
     case List.last(messages) do
       %Helyx.Message{role: :tool_result} ->
-        results = for %{role: :tool_result} = m <- messages, do: Helyx.Message.text(m)
-        {:ok, [{:text_delta, Enum.join(results, "|")}, done()]}
+        {:ok, echo_results(messages)}
 
       _ ->
         {:ok,
@@ -115,9 +114,20 @@ defmodule Helyx.Test.Provider do
     end
   end
 
-  def stream("dup_ids", _context, _opts) do
-    call = %Helyx.Message.ToolCall{id: "same", name: "upcase", arguments: %{"text" => "a"}}
-    {:ok, [{:tool_call, call}, {:tool_call, call}, done()]}
+  def stream("serial", %Helyx.Context{messages: messages}, _opts) do
+    case List.last(messages) do
+      %Helyx.Message{role: :tool_result} ->
+        {:ok, echo_results(messages)}
+
+      _ ->
+        calls =
+          for {id, ms} <- [{"1", 60}, {"2", 30}, {"3", 0}] do
+            {:tool_call,
+             %Helyx.Message.ToolCall{id: id, name: "slow", arguments: %{"ms" => ms, "text" => id}}}
+          end
+
+        {:ok, calls ++ [done()]}
+    end
   end
 
   def stream("bad_call", _context, _opts) do
@@ -153,6 +163,12 @@ defmodule Helyx.Test.Provider do
       {:tool_call, call},
       done()
     ]
+  end
+
+  # The tool result texts so far, joined with "|", then done.
+  defp echo_results(messages) do
+    results = for %{role: :tool_result} = m <- messages, do: Helyx.Message.text(m)
+    [{:text_delta, Enum.join(results, "|")}, done()]
   end
 
   defp done, do: {:done, %{stop_reason: :end_turn, usage: %{}}}
@@ -200,4 +216,22 @@ defmodule Helyx.Test.Tool.Kill do
   def parameters, do: %{"type" => "object"}
   @impl true
   def run(_args, _cwd), do: Process.exit(self(), :kill)
+end
+
+defmodule Helyx.Test.Tool.Slow do
+  @moduledoc false
+  # Sleeps `ms` and returns `text`, so call order and finish order can differ.
+  @behaviour Helyx.Tool
+
+  @impl true
+  def name, do: "slow"
+  @impl true
+  def description, do: "Sleeps, then echoes."
+  @impl true
+  def parameters, do: %{"type" => "object"}
+  @impl true
+  def run(%{"ms" => ms, "text" => text}, _cwd) do
+    Process.sleep(ms)
+    {:ok, text}
+  end
 end
