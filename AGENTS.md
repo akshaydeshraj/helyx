@@ -75,6 +75,7 @@ Run from the repository root. Plugins are separate Mix projects; the root `preco
 ## Git conventions
 
 - Every commit goes through `/ship`: simplify, review on three axes, `mix precommit`, commit. See `.claude/skills/ship/SKILL.md`.
+- Tickets are built with `/implement <n>`, the project skill, which ends in `/ship`. Do not use `mattpocock-skills:implement` here; it reviews and commits on its own path.
 - Conventional commits: `type(scope): message` (see existing history).
 - Do not commit generated artifacts (`_build/`, `deps/`, `.elixir_ls/`).
 
