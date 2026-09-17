@@ -106,6 +106,9 @@ defmodule Helyx.Test.Provider do
   #   "serial"     three calls to the slow tool, then echoes the results
   #   "bad_call"   a tool call whose name is not a string
   #   "kill"       calls the kill tool, then echoes the result as text
+  #   "hang"       one delta, then the stream blocks forever
+  #   "abort"      three calls to the slow tool that sleep for a minute;
+  #                after the results, echoes them as text
   @behaviour Helyx.Provider
 
   @impl true
@@ -159,13 +162,7 @@ defmodule Helyx.Test.Provider do
         {:ok, echo_results(messages)}
 
       _ ->
-        calls =
-          for {id, ms} <- [{"1", 60}, {"2", 30}, {"3", 0}] do
-            {:tool_call,
-             %Helyx.Message.ToolCall{id: id, name: "slow", arguments: %{"ms" => ms, "text" => id}}}
-          end
-
-        {:ok, calls ++ [done()]}
+        {:ok, slow_calls([{"1", 60}, {"2", 30}, {"3", 0}]) ++ [done()]}
     end
   end
 
@@ -181,6 +178,22 @@ defmodule Helyx.Test.Provider do
       _ ->
         {:ok,
          [{:tool_call, %Helyx.Message.ToolCall{id: "k", name: "kill", arguments: %{}}}, done()]}
+    end
+  end
+
+  def stream("hang", _context, _opts) do
+    {:ok,
+     Stream.concat(
+       [{:text_delta, "so far"}],
+       Stream.repeatedly(fn -> Process.sleep(:infinity) end)
+     )}
+  end
+
+  def stream("abort", %Helyx.Context{messages: messages}, _opts) do
+    if Enum.any?(messages, &(&1.role == :tool_result)) do
+      {:ok, echo_results(messages)}
+    else
+      {:ok, slow_calls(for id <- ["1", "2", "3"], do: {id, 60_000}) ++ [done()]}
     end
   end
 
@@ -202,6 +215,13 @@ defmodule Helyx.Test.Provider do
       {:tool_call, call},
       done()
     ]
+  end
+
+  defp slow_calls(pairs) do
+    for {id, ms} <- pairs do
+      {:tool_call,
+       %Helyx.Message.ToolCall{id: id, name: "slow", arguments: %{"ms" => ms, "text" => id}}}
+    end
   end
 
   # The tool result texts so far, joined with "|", then done.

@@ -88,6 +88,18 @@ defmodule Helyx.Session do
     GenServer.call(via(core, id), {:prompt, text})
   end
 
+  @doc """
+  Aborts the running turn. Returns after the hands have killed every process
+  the turn started, so a prompt sent next starts on a clean working
+  directory. Each tool call without a result gets an `aborted` error result,
+  so the transcript keeps complete call and result pairs. With no turn
+  running this is a no-op.
+  """
+  @spec abort(t()) :: :ok
+  def abort(%__MODULE__{id: id, core: core}) do
+    GenServer.call(via(core, id), :abort, :infinity)
+  end
+
   @doc false
   def start_link(%State{id: id, core: core} = state) do
     GenServer.start_link(__MODULE__, state, name: via(core, id))
@@ -116,6 +128,22 @@ defmodule Helyx.Session do
       |> emit(:message_start, %{message: user})
       |> emit(:message_end, %{message: user})
       |> start_provider_call()
+
+    {:reply, :ok, state}
+  end
+
+  def handle_call(:abort, _from, %State{turn: nil} = state), do: {:reply, :ok, state}
+
+  def handle_call(:abort, _from, %State{turn: %Turn{} = turn} = state) do
+    if turn.task, do: Task.shutdown(turn.task, :brutal_kill)
+    :ok = Helyx.Hands.cancel(state.hands, turn.id)
+
+    state =
+      state
+      |> abort_open_calls()
+      |> close_partial_message(:aborted, :aborted)
+      |> emit(:agent_end, %{stop_reason: :aborted})
+      |> close_turn()
 
     {:reply, :ok, state}
   end
@@ -150,11 +178,7 @@ defmodule Helyx.Session do
         } =
           state
       ) do
-    message = Message.tool_result(call, result)
-
-    state =
-      %{state | transcript: state.transcript ++ [message], turn: %{turn | calls: rest}}
-      |> emit(:tool_execution_end, %{message: message})
+    state = record_result(call, result, %{state | turn: %{turn | calls: rest}})
 
     case rest do
       [] -> {:noreply, start_provider_call(state)}
@@ -261,20 +285,36 @@ defmodule Helyx.Session do
     emit(state, :tool_execution_start, %{tool_call: call})
   end
 
-  # A partial assistant message is closed with an error stop reason so clients
-  # do not keep it open. It is not added to the transcript.
+  # Appends the tool result message to the transcript and emits
+  # tool_execution_end.
+  defp record_result(call, result, state) do
+    message = Message.tool_result(call, result)
+
+    emit(%{state | transcript: state.transcript ++ [message]}, :tool_execution_end, %{
+      message: message
+    })
+  end
+
+  # Each tool call without a result gets an `aborted` error result in the
+  # transcript, so the next provider call sees a complete pair.
+  defp abort_open_calls(%State{turn: %Turn{calls: calls}} = state) do
+    Enum.reduce(calls, state, &record_result(&1, {:error, "aborted"}, &2))
+  end
+
+  # A partial assistant message is closed with a failure stop reason so
+  # clients do not keep it open. It is not added to the transcript.
   defp fail_turn(reason, state) do
     state
-    |> close_partial_message(reason)
+    |> close_partial_message(:error, reason)
     |> emit(:agent_end, %{stop_reason: :error, error: reason})
     |> close_turn()
   end
 
-  defp close_partial_message(%State{turn: %Turn{partial: nil}} = state, _reason), do: state
+  defp close_partial_message(%State{turn: %Turn{partial: nil}} = state, _stop, _reason), do: state
 
-  defp close_partial_message(state, reason) do
+  defp close_partial_message(state, stop_reason, reason) do
     emit(state, :message_end, %{
-      message: assistant_message(state, stop_reason: :error),
+      message: assistant_message(state, stop_reason: stop_reason),
       error: reason
     })
   end

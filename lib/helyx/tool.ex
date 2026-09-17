@@ -46,6 +46,21 @@ defmodule Helyx.Tool do
   def max_bytes, do: @max_bytes
 
   @doc """
+  Registers the OS process group a tool call started with the hands that run
+  it. The hands kill the group when the call delivers or the turn is aborted,
+  so the group cannot outlive the Task that started it. A no-op when the tool
+  runs outside the hands. Groups below 2 are rejected: `kill -- -1` would
+  signal every process the user may signal.
+  """
+  @spec register_group(pos_integer()) :: :ok
+  def register_group(group) when is_integer(group) and group > 1 do
+    case Process.get(:helyx_hands) do
+      nil -> :ok
+      hands -> GenServer.call(hands, {:register_group, group}, :infinity)
+    end
+  end
+
+  @doc """
   Reads a regular file of at most #{@max_file_bytes} bytes, whole. A device,
   a directory, or a larger file is an error, so a tool never loads unbounded
   input. The read itself is bounded, so a file that grows after the check is
