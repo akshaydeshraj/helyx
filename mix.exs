@@ -35,6 +35,7 @@ defmodule Helyx.MixProject do
         "compile --warnings-as-errors",
         "test",
         "cmd --cd plugins/provider_fake mix precommit",
+        "cmd --cd plugins/provider_openai mix precommit",
         "cmd --cd plugins/tool_read mix precommit",
         "cmd --cd plugins/tool_bash mix precommit",
         "cmd --cd plugins/tool_edit mix precommit",

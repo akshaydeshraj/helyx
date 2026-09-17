@@ -17,6 +17,9 @@ defmodule Helyx.Provider do
   no image event: providers do not produce image blocks. A malformed event
   fails the turn with `{:bad_stream_event, event}`.
 
+  The session calls `stream/3` with `opts` carrying `:core`, `:session_id`,
+  and `:turn_id`, so a provider can scope state and label its calls.
+
   The session consumes the enumerable in a Task and builds the assistant
   message from the events. Consumption stops at the first `done` or `error`.
   A stream that ends without one fails the turn with `:stream_ended`. The
