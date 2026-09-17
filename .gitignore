@@ -1,0 +1,18 @@
+# Elixir / Mix (root, plugins/*, apps/*)
+_build/
+deps/
+cover/
+doc/
+/.fetch
+erl_crash.dump
+*.ez
+*.beam
+/config/*.secret.exs
+.elixir_ls/
+.lexical/
+
+# Local scratch
+.scratch/
+
+# OS / editor
+.DS_Store
