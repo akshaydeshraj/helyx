@@ -13,14 +13,17 @@ defmodule Helyx.Event do
     * `:message_start` – `%{message: Helyx.Message.t()}` (may be partial)
     * `:message_update` – `%{text_delta: binary}`, `%{thinking_delta: binary}`,
       or `%{tool_call: Helyx.Message.ToolCall.t()}`
-    * `:message_end` – `%{message: Helyx.Message.t()}`; on a failed turn the
-      partial assistant message has `stop_reason: :error` and `data.error`
-      holds the reason
+    * `:message_end` – `%{message: Helyx.Message.t()}`; on a failed or
+      aborted turn the partial assistant message has `:error` or `:aborted`
+      as its stop reason and `data.error` holds the reason
     * `:tool_execution_start` – `%{tool_call: Helyx.Message.ToolCall.t()}`
     * `:tool_execution_end` – `%{message: Helyx.Message.t()}`, the tool
       result message; calls run one at a time, in call order
     * `:turn_end` – `%{message: Helyx.Message.t()}`
-    * `:agent_end` – `%{stop_reason: atom}`, plus `error: term` on failure
+    * `:agent_end` – `%{stop_reason: atom}`, plus `error: term` on failure;
+      an aborted turn ends with `stop_reason: :aborted` after a
+      `:tool_execution_end` with an `aborted` error result for each open
+      tool call
   """
 
   @enforce_keys [:type, :session_id, :turn_id, :seq, :data]

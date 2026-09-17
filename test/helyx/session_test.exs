@@ -264,6 +264,61 @@ defmodule Helyx.SessionTest do
     assert {:error, {:duplicate_tool_name, "upcase"}} = Session.start(core, model: "test/ok")
   end
 
+  test "abort during tool calls ends the turn and answers every open call", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/abort")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    assert_receive {:helyx_event, %Event{type: :tool_execution_start} = started}, 1_000
+
+    :ok = Session.abort(session)
+    events = collect_until(:agent_end)
+    assert stop_reason(events) == :aborted
+    refute Enum.any?(events, &(&1.type == :turn_end))
+
+    results = for %{type: :tool_execution_end, data: %{message: m}} <- events, do: m
+    assert length(results) == 3
+    assert Enum.all?(results, & &1.is_error)
+    assert Enum.all?(results, &(Helyx.Message.text(&1) == "aborted"))
+
+    # A late result for the aborted turn is dropped.
+    [{pid, _}] = Registry.lookup(Helyx.Core.sessions_registry(core), session.id)
+    send(pid, {:tool_result, started.turn_id, "1", {:ok, "late"}})
+
+    :ok = Session.prompt(session, "again")
+    events = collect_until(:agent_end)
+    assert final_text(events) == "aborted|aborted|aborted"
+    refute Enum.any?(events, &(inspect(&1.data) =~ "late"))
+  end
+
+  test "abort during the provider stream closes the partial message", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/hang")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    assert_receive {:helyx_event, %Event{type: :message_update}}, 1_000
+
+    :ok = Session.abort(session)
+    events = collect_until(:agent_end)
+    assert stop_reason(events) == :aborted
+
+    message_end =
+      Enum.find(events, fn event ->
+        event.type == :message_end and match?(%{role: :assistant}, event.data.message)
+      end)
+
+    assert Helyx.Message.text(message_end.data.message) == "so far"
+    assert message_end.data.error == :aborted
+  end
+
+  test "abort with no running turn is ok", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/ok")
+    :ok = Session.subscribe(session)
+
+    assert :ok = Session.abort(session)
+    refute_receive {:helyx_event, _}, 50
+  end
+
   @tag :tmp_dir
   test "a working directory that is gone gives an error result", %{core: core, tmp_dir: dir} do
     {:ok, session} = Session.start(core, model: "test/loop", cwd: Path.join(dir, "gone"))
