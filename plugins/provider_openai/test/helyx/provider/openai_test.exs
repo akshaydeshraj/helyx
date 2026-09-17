@@ -2,7 +2,8 @@ defmodule Helyx.Provider.OpenAITest do
   # Provider seam: call stream/3 on the plugin modules with Req's test adapter
   # and recorded response bodies. Nothing here touches the network. The
   # session loop above this seam is covered by the Fake provider tests.
-  use ExUnit.Case, async: true
+  # Not async: the tests mutate OPENCODE_API_KEY and the :req_options app env.
+  use ExUnit.Case, async: false
 
   alias Helyx.Provider.OpenAI
 
