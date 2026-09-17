@@ -61,6 +61,32 @@ defmodule Helyx.ModelContext.DefaultTest do
     assert length(String.split(system, "home rules")) == 2
   end
 
+  test "an AGENTS.md that is not valid UTF-8 is skipped without error", %{tmp_dir: dir} do
+    home = Path.join(dir, "home")
+    cwd = Path.join(home, "code")
+    File.mkdir_p!(cwd)
+    File.write!(Path.join(home, "AGENTS.md"), <<0xFF, 0xFE, "not utf8">>)
+    File.write!(Path.join(cwd, "AGENTS.md"), "code rules")
+
+    system = system(home, cwd)
+
+    assert system =~ "code rules"
+    refute system =~ Path.join(home, "AGENTS.md") <> "\n"
+  end
+
+  test "a long AGENTS.md is truncated on whole lines", %{tmp_dir: dir} do
+    home = Path.join(dir, "home")
+    File.mkdir_p!(home)
+    lines = Enum.map_join(1..3000, "\n", &"line #{&1}")
+    File.write!(Path.join(home, "AGENTS.md"), lines)
+
+    system = system(home, home)
+
+    assert system =~ "line 1\n"
+    assert system =~ ~r/\[truncated: showing lines 1-\d+ of 3000\]/
+    refute system =~ "line 3000"
+  end
+
   test "a working directory outside home contributes only its own AGENTS.md", %{tmp_dir: dir} do
     home = Path.join(dir, "home")
     cwd = Path.join(dir, "elsewhere")
