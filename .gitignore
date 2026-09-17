@@ -1,8 +1,8 @@
-# Elixir / Mix
-/_build/
-/deps/
-/cover/
-/doc/
+# Elixir / Mix (root, plugins/*, apps/*)
+_build/
+deps/
+cover/
+doc/
 /.fetch
 erl_crash.dump
 *.ez
