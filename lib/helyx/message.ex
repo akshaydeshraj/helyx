@@ -31,8 +31,6 @@ defmodule Helyx.Message do
   @doc "Concatenates the text blocks of a message."
   @spec text(t()) :: String.t()
   def text(%__MODULE__{content: content}) do
-    content
-    |> Enum.filter(&match?(%Text{}, &1))
-    |> Enum.map_join("", & &1.text)
+    for %Text{text: text} <- content, into: "", do: text
   end
 end

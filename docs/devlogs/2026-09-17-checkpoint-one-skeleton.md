@@ -14,8 +14,9 @@
 
 - The Fake provider depends on Helyx, so Helyx cannot depend on it. The session seam tests live in the Fake plugin's test suite. Root tests cover Core boot with tiny test-support interfaces and plugins.
 - The user message also gets `message_start` and `message_end` events, so a second client can render it. The ticket listed seven event types; the emitted sequence is those seven with the two user message events after `turn_start`.
-- Core checks an explicit interface list at boot, `Helyx.Core.interfaces/0` by default, plus every interface a plugin implements. A first version scanned loaded modules for interfaces. The review found that this made the required check depend on module load order, so it was replaced.
-- Session state and the turn in progress are structs. A stream must end with `done` or `error`. If the provider Task ends with the turn still open, the session ends the turn with a `:stream_ended` error. Messages from a Task that is no longer current are dropped.
+- Core checks a fixed list of bundled interfaces at boot, plus every interface a plugin implements. A first version scanned loaded modules for interfaces. The review found that this made the required check depend on module load order, so it was replaced.
+- Session state and the turn in progress are structs. The provider Task forwards text deltas and returns the first `done` or `error` as its reply. A stream with no terminal event fails the turn with `:stream_ended`; a Task crash fails it with `{:task_exit, reason}`.
+- The provider lookup by model ref prefix lives in `Helyx.Provider.find/2`, so Core knows nothing about any one interface.
 - Provider stream events are tuples for now. They become structs when tool calls arrive in ticket #3.
 
 ## Review

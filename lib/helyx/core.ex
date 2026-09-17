@@ -11,9 +11,6 @@ defmodule Helyx.Core do
   `required: true` interface receives none, or when a module implements no
   interface at all.
 
-  Core checks the interfaces in `interfaces()` by default. A product that
-  defines its own interfaces passes the full list with `interfaces:`.
-
   A plugin that exports `child_spec/1` gets its process tree started under
   Core, with `[core: name]` as the argument.
 
@@ -25,13 +22,11 @@ defmodule Helyx.Core do
 
   @type name :: atom()
 
+  # Every interface Core checks at boot, so a required one with no plugin is
+  # rejected even when nothing else mentions it.
   @interfaces [Helyx.Provider]
 
-  @doc "The interfaces Core checks at boot when `interfaces:` is not given."
-  @spec interfaces() :: [module()]
-  def interfaces, do: @interfaces
-
-  @doc "Child spec for a product's supervision tree. Takes `name:`, `plugins:`, and `interfaces:`."
+  @doc "Child spec for a product's supervision tree. Takes `name:` and `plugins:`."
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
     %{
@@ -46,9 +41,8 @@ defmodule Helyx.Core do
   def start_link(opts) do
     name = Keyword.get(opts, :name, __MODULE__)
     plugins = Keyword.get(opts, :plugins, [])
-    interfaces = Keyword.get(opts, :interfaces, @interfaces)
 
-    with {:ok, table} <- Helyx.Core.Plugins.resolve(plugins, interfaces) do
+    with {:ok, table} <- Helyx.Core.Plugins.resolve(plugins, @interfaces) do
       Supervisor.start_link(__MODULE__, {name, plugins, table}, name: name)
     end
   end
@@ -76,16 +70,6 @@ defmodule Helyx.Core do
   @spec plugins(name(), module()) :: [module()]
   def plugins(name \\ __MODULE__, interface) do
     Helyx.Core.Plugins.for_interface(plugins_name(name), interface)
-  end
-
-  @doc "Finds the provider plugin whose id matches a model ref prefix."
-  @spec provider(name(), String.t()) ::
-          {:ok, module()} | {:error, {:unknown_provider, String.t()}}
-  def provider(name \\ __MODULE__, id) do
-    case Enum.find(plugins(name, Helyx.Provider), &(&1.id() == id)) do
-      nil -> {:error, {:unknown_provider, id}}
-      plugin -> {:ok, plugin}
-    end
   end
 
   @doc false

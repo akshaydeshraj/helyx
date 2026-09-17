@@ -36,15 +36,27 @@ defmodule Helyx.SessionTest do
   end
 
   @tag :capture_log
-  test "a task that exits after done does not touch the session", %{core: core} do
-    {:ok, session} = Session.start(core, model: "test/late_exit")
+  test "a task crash fails the turn and the session accepts the next prompt", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/crash")
     :ok = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    assert stop_reason(collect_until(:agent_end)) == :end_turn
+    events = collect_until(:agent_end)
+    assert stop_reason(events) == :error
+    assert {:task_exit, {%RuntimeError{message: "boom"}, _}} = List.last(events).data.error
 
     :ok = Session.prompt(session, "again")
-    assert stop_reason(collect_until(:agent_end)) == :end_turn
+    assert stop_reason(collect_until(:agent_end)) == :error
+  end
+
+  test "consumption stops at the first terminal event", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/overrun")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:agent_end)
+    assert stop_reason(events) == :end_turn
+    assert Helyx.Message.text(Enum.find(events, &(&1.type == :turn_end)).data.message) == "kept"
     refute_receive {:helyx_event, _}, 100
   end
 

@@ -14,15 +14,19 @@ defmodule Helyx.Core.Plugins do
   @doc """
   Groups plugins by interface and checks each interface's mode.
 
-  `interfaces` lists the interfaces Core knows about. Each one is checked even
-  when no plugin implements it, so a required interface with no plugin is an
-  error. An interface that only appears through a plugin's `@behaviour` is
-  checked too.
+  Every interface in `interfaces` is checked even when no plugin implements
+  it, so a required interface with no plugin is an error. An interface that
+  only appears through a plugin's `@behaviour` is checked too.
   """
   @spec resolve([module()], [module()]) :: {:ok, table()} | {:error, term()}
   def resolve(plugins, interfaces) do
     with {:ok, table} <- group(plugins) do
-      check_modes(table, Enum.uniq(interfaces ++ Map.keys(table)))
+      interfaces = Enum.uniq(interfaces ++ Map.keys(table))
+
+      case Enum.find_value(interfaces, &check_mode(&1, Map.get(table, &1, []))) do
+        nil -> {:ok, table}
+        error -> {:error, error}
+      end
     end
   end
 
@@ -31,42 +35,28 @@ defmodule Helyx.Core.Plugins do
   end
 
   defp group(plugins) do
-    Enum.reduce_while(plugins, {:ok, %{}}, fn plugin, {:ok, acc} ->
-      case Helyx.Interface.implemented_by(plugin) do
-        [] ->
-          {:halt, {:error, {:not_a_plugin, plugin}}}
+    implemented = Enum.map(plugins, &{&1, Helyx.Interface.implemented_by(&1)})
 
-        interfaces ->
-          acc =
-            Enum.reduce(interfaces, acc, fn interface, acc ->
-              Map.update(acc, interface, [plugin], &(&1 ++ [plugin]))
-            end)
+    case Enum.find(implemented, &match?({_, []}, &1)) do
+      {plugin, []} ->
+        {:error, {:not_a_plugin, plugin}}
 
-          {:cont, {:ok, acc}}
-      end
-    end)
+      nil ->
+        pairs =
+          for {plugin, interfaces} <- implemented,
+              interface <- interfaces,
+              do: {interface, plugin}
+
+        {:ok, Enum.group_by(pairs, &elem(&1, 0), &elem(&1, 1))}
+    end
   end
 
-  defp check_modes(table, interfaces) do
-    Enum.reduce_while(interfaces, {:ok, table}, fn interface, {:ok, table} ->
-      case Helyx.Interface.declaration(interface) do
-        nil ->
-          {:halt, {:error, {:not_an_interface, interface}}}
-
-        %{mode: mode, required: required} ->
-          plugins = Map.get(table, interface, [])
-
-          cond do
-            required and plugins == [] ->
-              {:halt, {:error, {:missing_plugin, interface}}}
-
-            mode == :single and length(plugins) > 1 ->
-              {:halt, {:error, {:mode_violation, interface, plugins}}}
-
-            true ->
-              {:cont, {:ok, table}}
-          end
-      end
-    end)
+  # Returns the error for an interface and its plugins, or nil when they fit.
+  defp check_mode(interface, plugins) do
+    case {Helyx.Interface.declaration(interface), plugins} do
+      {%{required: true}, []} -> {:missing_plugin, interface}
+      {%{mode: :single}, [_, _ | _]} -> {:mode_violation, interface, plugins}
+      _ -> nil
+    end
   end
 end
