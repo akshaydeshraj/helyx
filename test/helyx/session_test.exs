@@ -117,13 +117,18 @@ defmodule Helyx.SessionTest do
            ]
   end
 
-  test "a malformed stream event fails the turn", %{core: core} do
-    {:ok, session} = Session.start(core, model: "test/garbage")
-    :ok = Session.subscribe(session)
+  for {model, event} <- [garbage: {:text_delta, 42}, wide: {:text_delta, "hello", :extra}] do
+    test "a malformed stream event (#{model}) fails the turn and the session lives", %{core: core} do
+      {:ok, session} = Session.start(core, model: "test/#{unquote(model)}")
+      :ok = Session.subscribe(session)
 
-    :ok = Session.prompt(session, "hello")
-    events = collect_until(:agent_end)
-    assert List.last(events).data.error == {:bad_stream_event, {:text_delta, 42}}
+      :ok = Session.prompt(session, "hello")
+      events = collect_until(:agent_end)
+      assert List.last(events).data.error == {:bad_stream_event, unquote(Macro.escape(event))}
+
+      :ok = Session.prompt(session, "again")
+      assert stop_reason(collect_until(:agent_end)) == :error
+    end
   end
 
   test "a prompt during a turn is rejected", %{core: core} do

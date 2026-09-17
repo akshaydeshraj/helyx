@@ -143,8 +143,8 @@ defmodule Helyx.Session do
   # terminal event. A malformed event is a terminal error.
   defp consume(stream, session, turn_id) do
     Enum.reduce_while(stream, :stream_ended, fn
-      event, acc
-      when is_binary(elem(event, 1)) and elem(event, 0) in [:text_delta, :thinking_delta] ->
+      {kind, delta} = event, acc
+      when kind in [:text_delta, :thinking_delta] and is_binary(delta) ->
         send(session, {:stream_event, turn_id, event})
         {:cont, acc}
 

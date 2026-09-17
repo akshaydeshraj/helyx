@@ -64,6 +64,7 @@ defmodule Helyx.Test.Provider do
   #   "overrun"    done, then another delta that must be ignored
   #   "blocks"     thinking, text, and a tool call, then done
   #   "garbage"    one event that is not a stream event
+  #   "wide"       a delta tuple with an extra element
   @behaviour Helyx.Provider
 
   @impl true
@@ -95,6 +96,7 @@ defmodule Helyx.Test.Provider do
   end
 
   def stream("garbage", _context, _opts), do: {:ok, [{:text_delta, 42}]}
+  def stream("wide", _context, _opts), do: {:ok, [{:text_delta, "hello", :extra}]}
 
   def stream("overrun", _context, _opts) do
     {:ok, [{:text_delta, "kept"}, done(), {:text_delta, " dropped"}]}
