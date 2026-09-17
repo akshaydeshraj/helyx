@@ -38,10 +38,10 @@ Update this section when the Mix project lands.
 
 The Mix project does not exist yet. When it does, these are the standard commands:
 
-- `mix test` — run all tests
-- `mix test path/to/file_test.exs:123` — run one test by line number
-- `mix format` — format code
-- `mix precommit` — alias for format + compile with warnings as errors + test; run before you finish any change
+- `mix test`: run all tests
+- `mix test path/to/file_test.exs:123`: run one test by line number
+- `mix format`: format code
+- `mix precommit`: alias for format, compile with warnings as errors, and test. Run it before you finish any change.
 
 ## Elixir guidelines
 
