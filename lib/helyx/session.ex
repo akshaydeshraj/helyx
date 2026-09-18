@@ -10,12 +10,14 @@ defmodule Helyx.Session do
       :ok = Helyx.Session.prompt(session, "hello")
       # receive {:helyx_event, %Helyx.Event{}} ...
 
-  Each turn runs the provider stream in a Task under Core's task supervisor.
-  The Task sends each stream event to the session and returns the terminal
-  stream event, `done` or `error`. The session builds the assistant message
-  from the stream events and closes the provider call on the Task's reply. A
-  stream that ends without a terminal event, or a Task that crashes, fails
-  the turn.
+  Each turn runs the provider stream in a Task under Core's task supervisor,
+  linked to the session: the session traps exits, so a Task crash stays a
+  message, and a death of the session takes the Task, the hands, and every
+  tool Task with it (ADR 0004). The Task sends each stream event to the
+  session and returns the terminal stream event, `done` or `error`. The
+  session builds the assistant message from the stream events and closes the
+  provider call on the Task's reply. A stream that ends without a terminal
+  event, or a Task that crashes, fails the turn.
 
   An assistant message with tool calls runs them on the session's hands
   (`Helyx.Hands`) one at a time, in call order, so two calls never touch the
@@ -224,16 +226,26 @@ defmodule Helyx.Session do
 
   @impl true
   def init(%State{} = state) do
-    {:ok, hands} = Helyx.Hands.start_link(core: state.core, cwd: state.cwd, session: self())
-    state = %{state | hands: hands, tools: Helyx.Hands.tools(hands)}
+    # The session traps exits: the hands and the provider Task are linked,
+    # so their crashes arrive as messages, and a death of the session takes
+    # both with it (ADR 0004).
+    Process.flag(:trap_exit, true)
 
-    # A resumed transcript can end mid-turn, after a crash. Each open tool
-    # call gets an `aborted` error result before anyone can subscribe, so
-    # the next provider call sees complete call and result pairs.
-    aborted =
-      Enum.map(open_calls(state.transcript), &Message.tool_result(&1, {:error, "aborted"}))
+    case Helyx.Hands.start_link(core: state.core, cwd: state.cwd, session: self()) do
+      {:ok, hands} ->
+        state = %{state | hands: hands, tools: Helyx.Hands.tools(hands)}
 
-    {:ok, Enum.reduce(aborted, state, &append_message(&2, &1))}
+        # A resumed transcript can end mid-turn, after a crash. Each open tool
+        # call gets an `aborted` error result before anyone can subscribe, so
+        # the next provider call sees complete call and result pairs.
+        aborted =
+          Enum.map(open_calls(state.transcript), &Message.tool_result(&1, {:error, "aborted"}))
+
+        {:ok, Enum.reduce(aborted, state, &append_message(&2, &1))}
+
+      {:error, reason} ->
+        {:stop, reason}
+    end
   end
 
   @impl true
@@ -266,7 +278,11 @@ defmodule Helyx.Session do
 
   def handle_call(:abort, _from, %State{turn: %Turn{} = turn} = state) do
     if turn.task, do: Task.shutdown(turn.task, :brutal_kill)
-    :ok = Helyx.Hands.cancel(state.hands, turn.id)
+
+    case Helyx.Hands.cancel(state.hands, turn.id) do
+      :ok -> :ok
+      {:error, reason} -> Logger.warning("abort cleanup failed: " <> reason)
+    end
 
     state =
       state
@@ -320,6 +336,24 @@ defmodule Helyx.Session do
   # A message for a turn, or a call, that is no longer current.
   def handle_info({:tool_result, _turn_id, _call_id, _result}, state), do: {:noreply, state}
   def handle_info({:stream_event, _turn_id, _event}, state), do: {:noreply, state}
+
+  # The hands are linked and vital: their death takes the session with it.
+  def handle_info({:EXIT, pid, reason}, %State{hands: pid} = state) do
+    {:stop, reason, state}
+  end
+
+  # A provider Task's exit signal; its reply or :DOWN carries the outcome.
+  def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
+
+  # The session stops only for a trapped reason; on an untrappable kill the
+  # link kills the provider Task, and the hands take the tool Tasks.
+  @impl true
+  def terminate(_reason, %State{turn: %Turn{task: %Task{} = task}}) do
+    Task.shutdown(task, :brutal_kill)
+    :ok
+  end
+
+  def terminate(_reason, _state), do: :ok
 
   # Turn machinery
 
@@ -378,9 +412,11 @@ defmodule Helyx.Session do
     opts = [core: core, session_id: state.id, turn_id: turn_id, cwd: state.cwd]
 
     # Context building runs inside the Task so plugin code never blocks the
-    # session and a plugin that raises fails the turn, not the session.
+    # session and a plugin that raises fails the turn, not the session. The
+    # Task is linked: the session traps exits, so a crash stays a message,
+    # and a death of the session kills the stream.
     task =
-      Task.Supervisor.async_nolink(Helyx.Core.task_supervisor(core), fn ->
+      Task.Supervisor.async(Helyx.Core.task_supervisor(core), fn ->
         context = Helyx.ModelContext.build(core, base, opts)
         context = Helyx.Compaction.compact(core, context, opts)
 

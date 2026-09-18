@@ -9,16 +9,67 @@ defmodule Helyx.Tool.Bash do
   kept while the command runs, so a command that never stops writing does
   not grow the buffer; the result then says so, and its line count is of
   the kept part. A non-zero exit code is reported in the text; the result
-  is an error only when the command could not start. The command runs in
-  its own process group, registered with the hands before the command is
-  allowed to execute; the hands kill the group when the call delivers or
-  the turn is aborted. No process survives its call: either the hands hold
-  the group, or the command never ran. stdin is `/dev/null`. The call
-  returns when stdout closes, so a background child that keeps stdout open
-  holds the call until it exits.
+  is an error only when the command could not start. stdin is `/dev/null`.
+  The call returns when stdout closes, so a background child that keeps
+  stdout open holds the call until it exits.
+
+  The command runs in its own process group under a perl watchdog. The
+  watchdog registers the group with the hands before the command is allowed
+  to execute, and ties the command's life to the port: when the port closes,
+  because anything above the command died, the watchdog kills the group.
+  perl is required; `check/0` reports a system without it when the hands
+  start.
   """
 
   @behaviour Helyx.Tool
+
+  # The watchdog forks the command into its own process group and stays in
+  # the launcher's own group, so the port's OS process is the watchdog. It
+  # writes the command's group id as the stdout marker and holds the command
+  # until the go-ahead line arrives on stdin, so either the hands hold the
+  # group id before the command runs, or the command never ran. Then it
+  # watches: when its stdin ends, because the port closed, it TERMs the
+  # group, waits the grace period, KILLs it, and reaps the command before it
+  # exits; when the command ends first, it exits with the command's status
+  # (128 plus the signal for a signal death). The watchdog ignores TERM in
+  # the parent only, after the fork, so the hands can TERM every registered
+  # group without cutting the cleanup short; ignored dispositions survive
+  # exec, so the child must not inherit one. The 50 ms select tick is the
+  # poll for both stdin and the child.
+  @watchdog ~S"""
+  use POSIX ":sys_wait_h";
+  pipe(my $r, my $w) or exit 91;
+  my $child = fork() // exit 91;
+  if ($child == 0) {
+    close($w);
+    setpgrp(0, 0);
+    sysread($r, my $go, 1) or exit 0;
+    open(STDIN, "<", "/dev/null");
+    exec @ARGV;
+    exit 127;
+  }
+  $SIG{TERM} = "IGNORE";
+  close($r);
+  syswrite(STDOUT, "$child\n");
+  if (defined(readline(STDIN))) { syswrite($w, "g"); close($w) }
+  else { close($w); kill("KILL", -$child); waitpid($child, 0); exit 0 }
+  while (1) {
+    my $rin = ""; vec($rin, fileno(STDIN), 1) = 1;
+    my $n = select(my $rout = $rin, undef, undef, 0.05);
+    if ($n and sysread(STDIN, my $buf, 4096) == 0) {
+      kill("TERM", -$child);
+      my $t = 0;
+      while (waitpid($child, WNOHANG) == 0 and $t < 0.5) { select(undef, undef, undef, 0.05); $t += 0.05 }
+      kill("KILL", -$child);
+      waitpid($child, 0);
+      exit 0;
+    }
+    if (waitpid($child, WNOHANG) > 0) {
+      my $s = $?;
+      exit(($s & 127) ? 128 + ($s & 127) : $s >> 8);
+    }
+  }
+  """
 
   @impl true
   def name, do: "bash"
@@ -38,9 +89,43 @@ defmodule Helyx.Tool.Bash do
     }
   end
 
+  # Recorded risk: a future macOS may ship without perl. The watchdog is
+  # small enough to rewrite in sh with job control if that happens.
+  @impl true
+  def check, do: check(&System.find_executable/1)
+
+  @doc false
+  def check(find) do
+    if find.("perl") do
+      :ok
+    else
+      {:error, "perl not found: the bash tool needs perl to watch its commands"}
+    end
+  end
+
+  # Port arguments and the cd option are NUL-terminated C strings: a string
+  # with a NUL would be cut there silently and the result would report
+  # success for something that did not run as given. JSON strings can carry
+  # an escaped NUL, so the model can send one. Every string that reaches the
+  # port is checked here.
   @impl true
   def run(%{"command" => command}, cwd) when is_binary(command) do
-    {exe, args, mode} = launcher(command)
+    cond do
+      String.contains?(command, <<0>>) ->
+        {:error, "the command contains a NUL byte"}
+
+      String.contains?(cwd, <<0>>) ->
+        {:error, "the working directory contains a NUL byte"}
+
+      true ->
+        run_command(command, cwd)
+    end
+  end
+
+  def run(_args, _cwd), do: {:error, "bash needs a command"}
+
+  defp run_command(command, cwd) do
+    {exe, args} = launcher(command)
 
     port =
       Port.open({:spawn_executable, exe}, [
@@ -51,34 +136,36 @@ defmodule Helyx.Tool.Bash do
         {:args, args}
       ])
 
-    # Best effort for the perl-less launcher; nil when the command exits
-    # before the lookup.
-    os_pid =
-      case Port.info(port, :os_pid) do
-        {:os_pid, os_pid} -> os_pid
-        nil -> nil
-      end
+    # The runtime detaches port programs into their own process group, so
+    # the port's OS pid is the watchdog's group. Registered so the hands
+    # wait for the watchdog too: it exits only after it reaped the command,
+    # so an abort cannot return while the command is a zombie.
+    case Port.info(port, :os_pid) do
+      {:os_pid, os_pid} -> Helyx.Tool.register_group(os_pid)
+      nil -> :ok
+    end
 
-    {output, dropped?, status} = consume(port, mode, os_pid)
+    {output, dropped?, status} = consume(port)
 
     {:ok, render(output, dropped?, status)}
   end
 
-  def run(_args, _cwd), do: {:error, "bash needs a command"}
+  @doc false
+  # Public for the watchdog's direct tests.
+  def launcher(command) do
+    bash = System.find_executable("bash") || "/bin/bash"
+    perl = System.find_executable("perl") || "/usr/bin/perl"
+    {perl, ["-e", @watchdog, "--", bash, "-c", command]}
+  end
 
   # Takes the group marker off the stream, registers the group, sends the
-  # go-ahead, then collects the output. The launcher holds the command until
-  # the go-ahead, so either the hands hold the group id before the command
-  # runs, or the command never ran: no abort timing can lose a process. The
-  # stream can end inside the marker read when the launcher dies at once.
-  defp consume(port, mode, os_pid) do
-    {group, next} =
-      case mode do
-        :marker -> read_marker(port, "")
-        :bare -> {nil, {:more, ""}}
-      end
+  # go-ahead, then collects the output. The stream can end inside the marker
+  # read when the watchdog dies at once.
+  defp consume(port) do
+    {group, next} = read_marker(port, "")
 
-    release(port, mode, group || os_pid, next)
+    if group, do: Helyx.Tool.register_group(group)
+    if match?({:more, _}, next), do: go_ahead(port)
 
     case next do
       {:more, acc} -> collect(port, acc, false)
@@ -86,16 +173,7 @@ defmodule Helyx.Tool.Bash do
     end
   end
 
-  # Registers the group with the hands, then sends the go-ahead that lets
-  # the launcher exec the command. No go-ahead when the launcher already
-  # died: its exit is in `next`.
-  defp release(port, mode, leader, next) do
-    if leader, do: Helyx.Tool.register_group(leader)
-    if mode == :marker and match?({:more, _}, next), do: go_ahead(port)
-    :ok
-  end
-
-  # A port whose launcher already died is closed and the write raises; the
+  # A port whose watchdog already died is closed and the write raises; the
   # exit status is still in the mailbox for the collect.
   defp go_ahead(port) do
     Port.command(port, "\n")
@@ -135,7 +213,7 @@ defmodule Helyx.Tool.Bash do
   defp keep_tail(acc) when byte_size(acc) <= 2 * @keep_bytes, do: {acc, false}
   defp keep_tail(acc), do: {binary_part(acc, byte_size(acc) - @keep_bytes, @keep_bytes), true}
 
-  # The launcher writes "<pgid>\n" as the first stdout bytes, before the
+  # The watchdog writes "<pgid>\n" as the first stdout bytes, before the
   # command runs, so the marker exists however fast the command exited and
   # command output can never precede it. Reads the marker off the stream and
   # returns the group and the leftover output, or the exit if the stream
@@ -165,31 +243,6 @@ defmodule Helyx.Tool.Bash do
     case Integer.parse(line) do
       {group, ""} when group > 1 -> group
       _ -> nil
-    end
-  end
-
-  # perl puts the command in its own process group, writes the group id as
-  # the stdout marker, and holds the command until the go-ahead line arrives
-  # on stdin, so the command cannot run before the group is registered with
-  # the hands. A Task killed before the go-ahead closes the port, perl reads
-  # end of file and exits without running the command. Then perl opens stdin
-  # on /dev/null and execs bash in place, so the port's OS pid is the group
-  # leader. The runtime detaches port programs, so the command leads its own
-  # group even without perl.
-  # ponytail: without perl there is no handshake and stdin stays the port
-  # pipe, so a command that reads it holds the call until the turn is
-  # aborted.
-  defp launcher(command) do
-    bash = System.find_executable("bash") || "/bin/bash"
-
-    setpgrp =
-      ~S|setpgrp(0, 0); syswrite(STDOUT, "$$\n"); | <>
-        ~S|defined(readline(STDIN)) or exit 0; | <>
-        ~S|open(STDIN, "<", "/dev/null"); exec @ARGV|
-
-    case System.find_executable("perl") do
-      nil -> {bash, ["-c", command], :bare}
-      perl -> {perl, ["-e", setpgrp, "--", bash, "-c", command], :marker}
     end
   end
 end

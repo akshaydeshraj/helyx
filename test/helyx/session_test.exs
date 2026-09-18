@@ -415,6 +415,46 @@ defmodule Helyx.SessionTest do
     refute_receive {:helyx_event, _}, 50
   end
 
+  # The ownership chain (ADR 0004): work inside the VM is linked to its
+  # owner, so a killed session takes the provider Task, the hands, and the
+  # tool Tasks with it, even through an untrappable kill.
+  @tag :capture_log
+  test "killing the session kills the provider Task", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/hang")
+    :ok = Session.subscribe(session)
+    :ok = Session.prompt(session, "hello")
+    assert_receive {:helyx_event, %Event{type: :message_update}}, 1_000
+
+    [task] = Task.Supervisor.children(Helyx.Core.task_supervisor(core))
+    ref = Process.monitor(task)
+    Process.exit(Session.pid(session), :kill)
+    assert_receive {:DOWN, ^ref, :process, _, _}, 1_000
+  end
+
+  @tag :capture_log
+  test "killing the session kills the hands and the tool Task", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/abort")
+    :ok = Session.subscribe(session)
+    :ok = Session.prompt(session, "go")
+    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
+
+    pid = Session.pid(session)
+    hands = :sys.get_state(pid).hands
+
+    [task] =
+      for task <- Task.Supervisor.children(Helyx.Core.task_supervisor(core)),
+          {:dictionary, dict} = Process.info(task, :dictionary),
+          Keyword.has_key?(dict, :helyx_hands) do
+        task
+      end
+
+    hands_ref = Process.monitor(hands)
+    task_ref = Process.monitor(task)
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^hands_ref, :process, _, _}, 1_000
+    assert_receive {:DOWN, ^task_ref, :process, _, _}, 1_000
+  end
+
   defp user_texts(events) do
     for %{type: :message_end, data: %{message: %Helyx.Message{role: :user} = m}} <- events,
         do: Helyx.Message.text(m)
@@ -599,6 +639,7 @@ defmodule Helyx.SessionTest do
   end
 
   @tag :tmp_dir
+  @tag :capture_log
   test "resume after a crash mid-turn answers every open tool call", %{core: core, tmp_dir: dir} do
     {:ok, session} = Session.start(core, model: "test/abort", sessions_dir: dir)
     :ok = Session.subscribe(session)

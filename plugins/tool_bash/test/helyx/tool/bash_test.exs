@@ -1,6 +1,8 @@
 defmodule Helyx.Tool.BashTest do
   use ExUnit.Case, async: true
 
+  import Helyx.Tool.Bash.OSHelpers
+
   alias Helyx.Message.ToolCall
   alias Helyx.Provider.Fake
 
@@ -28,39 +30,6 @@ defmodule Helyx.Tool.BashTest do
     :ok = Helyx.Session.prompt(session, "go")
     assert_receive {:helyx_event, %Helyx.Event{type: :tool_execution_start}}, 1_000
     session
-  end
-
-  # Polls until the command has written its pid to `path`.
-  defp wait_for_pid(path, tries \\ 200) do
-    with {:ok, content} <- File.read(path),
-         [pid] <- Regex.run(~r/^\d+$/m, content) do
-      pid
-    else
-      _ when tries > 0 ->
-        Process.sleep(10)
-        wait_for_pid(path, tries - 1)
-
-      _ ->
-        flunk("no pid in #{path}")
-    end
-  end
-
-  defp os_alive?(pid), do: match?({_, 0}, System.cmd("kill", ["-0", pid], stderr_to_stdout: true))
-
-  # Polls until the process is gone, for SIGKILL delivery that is not
-  # instantaneous.
-  defp gone_within?(pid, tries) do
-    cond do
-      not os_alive?(pid) ->
-        true
-
-      tries == 0 ->
-        false
-
-      true ->
-        Process.sleep(10)
-        gone_within?(pid, tries - 1)
-    end
   end
 
   test "runs in the working directory and merges stderr", %{tmp_dir: dir, run: run} do
@@ -114,6 +83,22 @@ defmodule Helyx.Tool.BashTest do
 
   test "missing arguments are an error result", %{run: run} do
     assert run.(%{}).is_error
+  end
+
+  test "a command with a NUL byte is an error result", %{tmp_dir: dir, run: run} do
+    result = run.(%{"command" => "echo hi" <> <<0>> <> "; touch #{Path.join(dir, "ran")}"})
+    assert result.is_error
+    assert Helyx.Message.text(result) =~ "NUL"
+    refute File.exists?(Path.join(dir, "ran"))
+  end
+
+  test "a working directory with a NUL byte is an error result", %{tmp_dir: dir} do
+    # The port's cd option would cut the path at the NUL and run elsewhere.
+    result =
+      Helyx.Tool.Bash.run(%{"command" => "pwd"}, dir <> <<0>> <> "junk")
+
+    assert {:error, text} = result
+    assert text =~ "NUL"
   end
 
   test "a detached background child does not survive the call", %{run: run} do
@@ -172,5 +157,46 @@ defmodule Helyx.Tool.BashTest do
 
     :ok = Helyx.Session.abort(session)
     refute os_alive?(pid)
+  end
+
+  # The link chain (ADR 0004): a killed hands takes the tool Task with it,
+  # the Task's death closes the port, and the watchdog kills the command.
+  @tag :capture_log
+  test "killing the hands kills the Task and the command", %{core: core, tmp_dir: dir} do
+    session = start_command(core, dir, "echo $$ > pid; exec sleep 30")
+    pid = wait_for_pid(Path.join(dir, "pid"))
+    hands = :sys.get_state(Helyx.Session.pid(session)).hands
+
+    [task] =
+      for task <- Task.Supervisor.children(Helyx.Core.task_supervisor(core)),
+          {:dictionary, dict} = Process.info(task, :dictionary),
+          Keyword.has_key?(dict, :helyx_hands) do
+        task
+      end
+
+    ref = Process.monitor(task)
+    Process.exit(hands, :kill)
+    assert_receive {:DOWN, ^ref, :process, _, _}, 1_000
+    assert gone_within?(pid, 300)
+  end
+
+  test "stopping Core normally ends a running command", %{tmp_dir: dir} do
+    # The events Registry links its subscribers; stopping Core mid-test
+    # sends this process the Registry's shutdown exit, so trap it.
+    Process.flag(:trap_exit, true)
+    core = :"core_stop_#{System.unique_integer([:positive])}"
+    {:ok, sup} = Helyx.Core.start_link(name: core, plugins: [Fake, Helyx.Tool.Bash])
+
+    _session = start_command(core, dir, "echo $$ > pid; exec sleep 30")
+    pid = wait_for_pid(Path.join(dir, "pid"))
+
+    :ok = Supervisor.stop(sup)
+    assert gone_within?(pid, 300)
+  end
+
+  test "check reports a system without perl" do
+    assert :ok = Helyx.Tool.Bash.check()
+    assert {:error, message} = Helyx.Tool.Bash.check(fn _ -> nil end)
+    assert message =~ "perl"
   end
 end
