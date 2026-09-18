@@ -187,6 +187,9 @@ defmodule Helyx.Provider.OpenAI do
     Stream.transform(chunks, @acc, &handle/2)
   end
 
+  # A bad chunk ended the stream; drop the rest and cancel the request.
+  defp handle(_chunk, :halted), do: {:halt, :halted}
+
   defp handle({:error, reason}, acc), do: {[{:error, reason}], acc}
 
   # ponytail: buffer <> chunk re-copies the carried partial line per chunk;
@@ -203,18 +206,65 @@ defmodule Helyx.Provider.OpenAI do
     {complete, partial}
   end
 
+  defp line(_line, :halted), do: {:halt, :halted}
   defp line("data:" <> payload, acc), do: data(String.trim_leading(payload, " "), acc)
   defp line(_line, acc), do: {[], acc}
 
   defp data("[DONE]", acc), do: flush(acc)
   defp data("", acc), do: {[], acc}
 
+  # A chunk that does not parse or has the wrong shape ends the stream with
+  # one error event; nothing after it is processed, so no `done` follows.
   defp data(payload, acc) do
-    case JSON.decode(payload) do
-      {:ok, chunk} -> chunk_events(chunk, acc)
-      {:error, _} -> {[{:error, {:bad_chunk, payload}}], acc}
+    with {:ok, chunk} <- JSON.decode(payload),
+         true <- valid_chunk?(chunk) do
+      chunk_events(chunk, acc)
+    else
+      _ -> {[{:error, {:bad_chunk, payload}}], :halted}
     end
   end
+
+  # The one shape gate where a decoded chunk enters the parser. It rejects
+  # every shape that could raise in the field walks below it or in the
+  # iodata at flush, and a few degenerate ones that would not. A missing or
+  # null field is fine, and so is a wrong-typed leaf the parser only copies
+  # or drops, such as `content: 42`.
+  defp valid_chunk?(%{} = chunk) do
+    case chunk["choices"] do
+      nil -> true
+      choices when is_list(choices) -> valid_choice?(List.first(choices))
+      _choices -> false
+    end
+  end
+
+  defp valid_chunk?(_chunk), do: false
+
+  defp valid_choice?(nil), do: true
+  defp valid_choice?(%{} = choice), do: valid_delta?(choice["delta"])
+  defp valid_choice?(_choice), do: false
+
+  defp valid_delta?(nil), do: true
+
+  defp valid_delta?(%{} = delta) do
+    case delta["tool_calls"] do
+      nil -> true
+      calls when is_list(calls) -> Enum.all?(calls, &valid_call?/1)
+      _calls -> false
+    end
+  end
+
+  defp valid_delta?(_delta), do: false
+
+  defp valid_call?(%{} = call) do
+    case call["function"] do
+      nil -> true
+      # Non-binary argument fragments can raise later, at flush.
+      %{} = function -> function["arguments"] == nil or is_binary(function["arguments"])
+      _function -> false
+    end
+  end
+
+  defp valid_call?(_call), do: false
 
   # A gateway reports a mid-stream failure as an error object in the data.
   defp chunk_events(%{"error" => error}, acc), do: {[{:error, {:api_error, error}}], acc}
