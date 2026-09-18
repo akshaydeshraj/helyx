@@ -1,0 +1,81 @@
+---
+name: orchestrate
+description: Take tickets from ready-for-agent to merged on master without the user. Worktree, /implement, Codex review until clean, rebase, merge, close. Parks anything that needs a human.
+---
+
+# Orchestrate
+
+You are the orchestrator. You do not write ticket code. You manage worktrees, workers, reviews, merges, and the queue. The user is away; never ask a question in chat. A question goes on the ticket (see Park).
+
+The user has given standing permission to merge to master when every gate in step 5 holds. That permission covers nothing else: no force push to master, no closing a ticket that did not merge, no label other than the triage vocabulary.
+
+## 1. Build the queue
+
+`gh issue list --label ready-for-agent --state open`. Read each ticket's "Blocked by". The frontier is every ticket whose blockers are closed. Skip a ticket that says it must run alone until no other branch is open, then run it alone.
+
+At most two workers at one time. Parallel precommit runs slow each other down more than they gain.
+
+## 2. Start a worker
+
+One worker per ticket, as an Agent with `isolation: "worktree"` on branch `ticket/<n>-<slug>` from `origin/master`. Its brief: run `/implement <n>`, which ends in `/ship`; commit on the branch; do not push, open a PR, or merge; report the invariant of the change, the review counts per round, and anything it could not decide. A worker that cannot decide something stops and reports. It does not guess.
+
+## 3. Codex review
+
+In the worker's worktree, in the foreground:
+
+```bash
+codex_dir=$(/bin/ls -d "$HOME"/.claude/plugins/cache/openai-codex/codex/*/ | sort -V | /usr/bin/tail -n 1)
+node "${codex_dir}scripts/codex-companion.mjs" adversarial-review "--wait --base origin/master <the invariant of the change, one sentence>"
+```
+
+Judge every finding yourself. Reproduce it or read the code. A reviewer's claim is not a fact.
+
+- **Confirmed:** send it to the worker (SendMessage) with the reproduction. The worker fixes it through `/ship` rules: a code fix gets its rerun round. Then run the Codex review again.
+- **Rejected:** record it in the review record with the reason.
+
+The gate is a Codex round with no confirmed finding. Three rounds without that: park.
+
+## 4. Record the escape
+
+Every confirmed Codex finding is an escape: `/ship` should have caught it. Before the merge, in the same branch, fix the place that let it through:
+
+- a missing invariant: `docs/agents/review-checklist.md`
+- a missing rule: `AGENTS.md`
+- a gap in the ticket: the ticket template or the `/implement` skill
+- the same class of finding for the second time (check `docs/reviews/escapes.md`): a mechanical check, a test or a Credo check, not more prose
+
+Add one row per ticket to `docs/reviews/escapes.md`: date, ticket, ship findings per round, Codex findings per round, what was changed so it does not recur. The target is zero Codex findings in round one.
+
+## 5. Merge
+
+Serial, one ticket at a time:
+
+1. `git fetch`, rebase the branch on `origin/master`. A conflict that is not mechanical: park.
+2. Precommit into the log, as `AGENTS.md` says. It must pass after the rebase, not before it. The same failure twice: park.
+3. Push. `gh pr create` with a body that contains `Closes #<n>`. No attribution lines.
+4. `gh pr merge --merge --delete-branch`. Confirm the issue closed; close it with a pointer to the PR when it did not.
+5. Remove the worktree. Recompute the frontier. Rebase the other live branch before its own gate.
+
+## Park
+
+Park when: three Codex rounds are not clean; a conflict is not mechanical; precommit fails twice for one cause; the ticket needs a design decision, an interface change, or an ADR it does not state; anything would need a destructive or irreversible step outside step 5.
+
+To park: push the branch, keep the worktree, comment on the ticket, and swap the label to `ready-for-human`. The comment is what `/hitl` reads, so it has this exact shape:
+
+```markdown
+## Decision needed
+
+**Question:** one sentence that ends with a question mark.
+
+**Options:**
+1. <option> (recommended): <consequence>
+2. <option>: <consequence>
+
+**State:** branch `<name>`, worktree `<path>`, what is done, what waits on the answer.
+```
+
+Then take the next ticket. One parked ticket never stops the queue, except a ticket that blocks all the rest.
+
+## End of run
+
+When the frontier is empty, write a devlog in `docs/devlogs/`: merged tickets, parked tickets with their question, the escapes table rows of the run, and what the system change was for each escape. That devlog goes in through its own small PR by the same merge rule.
