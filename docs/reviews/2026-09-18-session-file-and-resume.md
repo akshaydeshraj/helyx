@@ -94,3 +94,15 @@ Two mechanism deepenings followed from the fix-round reviews, both under the two
 - **A shared `defguard`/constant for the `[:end_turn, :tool_use, :max_tokens]` set** (raised by reuse, simplification, standards, and altitude across rounds): three literal restatements (consume guard, encode clauses, decode clauses), each comment-linked to `SessionFile` as the owner; a new stop reason is a documented format change and drift fails loudly in tests. A shared guard adds public API for three atoms.
 - **Move JSON-encode out of `persist` and validate encodability there** (altitude): `persist` runs in the session process, so a raise there crashes the session; the ingress check in `consume/3` (in the turn Task) fails the turn gracefully instead, and every non-`consume` path into `persist` already carries only encodable values.
 - **`usage` map keys round-trip atom to string on resume**: same as the original-round skip; the file is the source of truth and providers receive JSON.
+
+## Greptile P1 round (PR #41, after the fix push)
+
+Greptile posted one P1 on the fix commit: the Provider behaviour declared `stop_reason: atom()` while `consume/3` enforces the closed set, so a third-party provider following the declared contract could emit `:refusal` and have a valid turn fail. Confirmed as a contract mismatch. Resolution: narrow the declared contract, the option the feature doc already mandates ("A new stop reason is a format change"). `lib/helyx/provider.ex` gains `@type stop_reason :: :end_turn | :tool_use | :max_tokens`, `stream_event` references it, and the moduledoc states that a provider normalizes its wire reason into the set `Helyx.SessionFile` owns.
+
+Full round on the two-line contract change. Simplify: efficiency, reuse, and altitude clean; altitude confirmed narrowing at the behaviour is the root-cause depth (normalization must live in the adapter that knows its wire protocol; moving the type into `SessionFile` would point the extension surface at a persistence module). Simplification trimmed the doc paragraph. Axes: standards and spec clean; failure-path ran Dialyzer in the root (test env) and both provider plugins (0 errors — `stream_event/0` is referenced by no spec, so the `:refusal` test emitter cannot become inconsistent), round-tripped all three set members through append and resume, and re-ran the pinned out-of-set tests. No findings.
+
+Skipped, with reasons:
+
+- **Shared `defguard` for the set** (simplification, fifth vote): unchanged calculus — a type cannot appear in a guard or pattern, so the named type creates no zero-cost reference for the restatement sites.
+- **Comment on the `@type` pointing at `SessionFile`** (standards, judgement call): the moduledoc two paragraphs above already names the owner; a comment would duplicate prose in the same module.
+- **Widen `Helyx.Message.t()`'s `stop_reason` to `Provider.stop_reason() | :aborted | :error | nil`** (reuse, standards, altitude, all optional): messages deliberately carry event-only reasons the file never sees; out of this diff's scope.

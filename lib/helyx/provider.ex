@@ -9,13 +9,16 @@ defmodule Helyx.Provider do
     * `{:text_delta, binary}`: a delta of assistant text
     * `{:thinking_delta, binary}`: a delta of thinking text
     * `{:tool_call, Helyx.Message.ToolCall.t()}`: one complete tool call
-    * `{:done, %{stop_reason: atom, usage: map}}`: the call finished
+    * `{:done, %{stop_reason: stop_reason, usage: map}}`: the call finished
     * `{:error, term}`: the call failed
 
   Consecutive deltas of one kind form one block. A tool call arrives whole;
   a provider that streams tool call arguments assembles them first. There is
   no image event: providers do not produce image blocks. A malformed event
   fails the turn with `{:bad_stream_event, event}`.
+
+  `stop_reason` is the closed set `Helyx.SessionFile` owns: a provider
+  normalizes whatever its wire protocol reports into it.
 
   The session calls `stream/3` with `opts` carrying `:core`, `:session_id`,
   and `:turn_id`, so a provider can scope state and label its calls.
@@ -29,11 +32,13 @@ defmodule Helyx.Provider do
 
   use Helyx.Interface, mode: :multi, required: true
 
+  @type stop_reason :: :end_turn | :tool_use | :max_tokens
+
   @type stream_event ::
           {:text_delta, String.t()}
           | {:thinking_delta, String.t()}
           | {:tool_call, Helyx.Message.ToolCall.t()}
-          | {:done, %{stop_reason: atom(), usage: map()}}
+          | {:done, %{stop_reason: stop_reason(), usage: map()}}
           | {:error, term()}
 
   @doc "Finds the provider plugin whose id matches a model ref prefix. Two matches is an error."
