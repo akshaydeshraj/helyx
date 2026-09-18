@@ -28,8 +28,18 @@ Fix every confirmed finding. Record the findings and their resolution in `docs/r
 
 If step 2 changed any code, review that change again. Review is always the last pass over the code. A rerun round is smaller than the first round:
 
-- **A fix that patches a path** gets the spec and failure-path agents only. They found every real bug in the rerun rounds of PR #30; the simplify and standards agents found none.
-- **A fix that replaces a mechanism** gets the full round: step 1, then all of step 2.
+- **Reduced round:** the spec and failure-path agents only. They found every real bug in the rerun rounds of PR #30; the simplify and standards agents found none.
+- **Full round:** step 1, then all of step 2.
+
+Count the fix from its diff, without test files and Markdown. The rerun is a full round when any one of these is true:
+
+- it changes more than 15 lines, added plus removed
+- it touches more than one code file
+- it adds or removes a function, a module, a process, or a dependency
+- it changes the arity, the return shape, or the spec of a function
+- the two-findings rule below applies to it
+
+Otherwise the rerun is a reduced round. If a line of this list is in doubt, the answer is a full round. The review record states the counts and the round type for each rerun.
 
 The first round is always complete. No round is ever done by hand.
 
