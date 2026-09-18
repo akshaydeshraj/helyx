@@ -4,11 +4,11 @@ defmodule Helyx.ModelContext.Default do
   the home directory down to the working directory, in that order.
 
   Each file follows a heading with its path, capped by `Helyx.Tool.truncate/2`
-  so one file cannot flood the prompt. A level without an `AGENTS.md`, or
-  with one that `Helyx.Tool.read_file/1` rejects or that is not valid UTF-8,
-  is skipped without error. A working directory outside the home directory
-  contributes only its own `AGENTS.md`. `opts` can carry `:home` to override
-  the home directory, for tests.
+  so one file cannot flood the prompt. A level without an `AGENTS.md`, or with
+  one that `Helyx.Tool.read_file/1` rejects (including a file that is not
+  valid UTF-8), is skipped without error. A working directory outside the home
+  directory contributes only its own `AGENTS.md`. `opts` can carry `:home` to
+  override the home directory, for tests.
   """
 
   @behaviour Helyx.ModelContext
@@ -24,7 +24,6 @@ defmodule Helyx.ModelContext.Default do
       for dir <- chain(cwd, home),
           path = Path.join(dir, "AGENTS.md"),
           {:ok, content} <- [Helyx.Tool.read_file(path)],
-          String.valid?(content),
           do: "## #{path}\n\n#{Helyx.Tool.truncate(content, :head)}"
 
     %{context | system: Enum.join([@base_prompt | sections], "\n\n")}

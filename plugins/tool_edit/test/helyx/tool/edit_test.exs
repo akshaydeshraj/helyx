@@ -25,6 +25,17 @@ defmodule Helyx.Tool.EditTest do
     assert File.read!(Path.join(dir, "a.txt")) == "one\n2\n2b\nthree\n"
   end
 
+  test "a file that is not valid UTF-8 is an error and the file is untouched", %{
+    tmp_dir: dir,
+    run: run
+  } do
+    File.write!(Path.join(dir, "raw.bin"), <<255, 254>>)
+    result = run.(%{"path" => "raw.bin", "old_text" => "a", "new_text" => "b"})
+    assert result.is_error
+    assert Helyx.Message.text(result) == "cannot read raw.bin: binary file, 2 bytes"
+    assert File.read!(Path.join(dir, "raw.bin")) == <<255, 254>>
+  end
+
   test "absent text is an error and the file is untouched", %{tmp_dir: dir, run: run} do
     result = run.(%{"path" => "a.txt", "old_text" => "four", "new_text" => "x"})
     assert result.is_error

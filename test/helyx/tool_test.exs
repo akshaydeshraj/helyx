@@ -85,6 +85,20 @@ defmodule Helyx.ToolTest do
     {String.to_integer(first), String.to_integer(last), String.to_integer(total), content}
   end
 
+  @tag :tmp_dir
+  test "read_file/1 rejects a file that is not valid UTF-8", %{tmp_dir: dir} do
+    path = Path.join(dir, "raw.bin")
+    File.write!(path, <<"a", 255, "b">>)
+    assert Tool.read_file(path) == {:error, "binary file, 3 bytes"}
+  end
+
+  @tag :tmp_dir
+  test "read_file/1 accepts multibyte UTF-8", %{tmp_dir: dir} do
+    path = Path.join(dir, "multi.txt")
+    File.write!(path, "héllo wörld €😀")
+    assert Tool.read_file(path) == {:ok, "héllo wörld €😀"}
+  end
+
   test "short text is returned as is" do
     assert Tool.truncate("a\nb", :head) == "a\nb"
     assert Tool.truncate("a\nb", :tail) == "a\nb"
@@ -144,6 +158,19 @@ defmodule Helyx.ToolTest do
       assert String.valid?(out)
       assert out =~ "showing lines 1-1 of 1"
     end
+  end
+
+  test "a cut on text that was never valid gives up after three byte retreats" do
+    out = Tool.truncate(:binary.copy(<<255>>, 60_000), :head)
+
+    assert [cut, "[truncated: showing lines 1-1 of 1]"] = String.split(out, "\n", parts: 2)
+    assert cut == :binary.copy(<<255>>, 51_197)
+
+    # The hands replace the invalid bytes at delivery; the replacement is
+    # valid and grows the text by at most a factor of three.
+    replaced = String.replace_invalid(out)
+    assert String.valid?(replaced)
+    assert byte_size(replaced) <= 3 * byte_size(out)
   end
 
   test "an input whose last line is exactly the notice is a truncation fixed point" do

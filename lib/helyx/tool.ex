@@ -62,11 +62,13 @@ defmodule Helyx.Tool do
 
   @doc """
   Reads a regular file of at most #{@max_file_bytes} bytes, whole. A device,
-  a directory, or a larger file is an error, so a tool never loads unbounded
-  input. The read itself is bounded, so a file that grows after the check is
-  still an error. The error is a short reason without the path.
+  a directory, a larger file, or a file that is not valid UTF-8 is an error,
+  so a tool never loads unbounded input and never returns text a later
+  encoder cannot handle. The read itself is bounded, so a file that grows
+  after the check is still an error. The error is a short reason without
+  the path.
   """
-  @spec read_file(Path.t()) :: {:ok, binary()} | {:error, String.t()}
+  @spec read_file(Path.t()) :: {:ok, String.t()} | {:error, String.t()}
   def read_file(full) do
     case File.stat(full) do
       {:ok, %File.Stat{type: :regular}} -> read_bounded(full)
@@ -93,7 +95,9 @@ defmodule Helyx.Tool do
   defp bounded(bin) when byte_size(bin) > @max_file_bytes,
     do: {:error, "over #{@max_file_bytes} bytes; read it in parts"}
 
-  defp bounded(bin), do: {:ok, bin}
+  defp bounded(bin) do
+    if String.valid?(bin), do: {:ok, bin}, else: {:error, "binary file, #{byte_size(bin)} bytes"}
+  end
 
   @doc """
   Caps text at #{@max_lines} lines or #{@max_bytes} bytes of line content,

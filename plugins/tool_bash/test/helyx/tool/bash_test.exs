@@ -79,6 +79,12 @@ defmodule Helyx.Tool.BashTest do
     assert Helyx.Message.text(run.(%{"command" => "true"})) == "(no output)"
   end
 
+  test "output with invalid bytes is delivered as valid text", %{run: run} do
+    result = run.(%{"command" => ~S|printf 'a\xffb'|})
+    refute result.is_error
+    assert Helyx.Message.text(result) == "a�b"
+  end
+
   test "long output is cut from the head end and says so", %{run: run} do
     text = Helyx.Message.text(run.(%{"command" => "seq 1 3000"}))
     assert String.starts_with?(text, "[truncated: showing lines 1001-3000 of 3000]\n1001\n")

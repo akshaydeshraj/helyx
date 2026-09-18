@@ -60,6 +60,13 @@ defmodule Helyx.Tool.ReadTest do
              "cannot read big.bin: over 10485760 bytes; read it in parts"
   end
 
+  test "a file that is not valid UTF-8 is an error result", %{tmp_dir: dir, run: run} do
+    File.write!(Path.join(dir, "raw.bin"), <<255, 254>>)
+    result = run.(%{"path" => "raw.bin"})
+    assert result.is_error
+    assert Helyx.Message.text(result) == "cannot read raw.bin: binary file, 2 bytes"
+  end
+
   test "missing arguments are an error result", %{run: run} do
     assert run.(%{}).is_error
   end

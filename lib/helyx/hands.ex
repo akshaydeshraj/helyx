@@ -7,7 +7,9 @@ defmodule Helyx.Hands do
   as `{:tool_result, turn_id, call_id, {:ok, text} | {:error, text}}`. A Task
   that dies without a result gives an error result, and so does a working
   directory that is gone when the call starts. Tool calls and results are
-  plain terms.
+  plain terms. Result text is valid UTF-8 when it leaves the hands: each
+  invalid sequence is replaced with U+FFFD, so a later encoder never sees
+  invalid stored text.
 
   A tool that starts an OS process group registers it with
   `Helyx.Tool.register_group/1`, so the hands hold the group id outside the
@@ -131,8 +133,15 @@ defmodule Helyx.Hands do
       await_gone([group], 5_000)
     end
 
-    send(state.session, {:tool_result, turn_id, call_id, result})
+    send(state.session, {:tool_result, turn_id, call_id, scrub(result)})
     %{state | tasks: tasks, groups: groups}
+  end
+
+  # Every result leaves the hands through here, so text is made valid once,
+  # for the ok, error, crash, and catch paths alike. Valid text, the common
+  # case, is passed through without a copy.
+  defp scrub({status, text}) do
+    if String.valid?(text), do: {status, text}, else: {status, String.replace_invalid(text)}
   end
 
   # The os pids of the ports a Task opened. Each is a process group leader,
