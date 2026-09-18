@@ -30,20 +30,20 @@ docs/
   reviews/         Code review outputs and follow-ups
 lib/helyx/         Helyx core, interfaces, session, and message shapes
 test/              Tests, mirrors lib/. test/support/ holds test-only plugins
-plugins/<name>/    Bundled plugins, one Mix project each, path dependency on the root
-apps/<name>/       Products, one Mix project each (planned)
+plugins/bundled/   All bundled plugins in one Mix project, app helyx_plugins, path dependency on the root (ADR 0005)
+apps/<name>/       Products, one Mix project each
 ```
 
 ## Commands
 
-Run from the repository root. Plugins and apps are separate Mix projects. The root `precommit` alias finds every `plugins/*/mix.exs` and `apps/*/mix.exs` and runs `mix precommit` in each project.
+Run from the repository root. The Mix projects are the root, `plugins/bundled` with all bundled plugins, and one project for each app. The root `precommit` alias finds every `plugins/*/mix.exs` and `apps/*/mix.exs` and runs `mix precommit` in each project.
 
 - `mix test`: run all tests
 - `mix test path/to/file_test.exs:123`: run one test by line number
 - `mix format`: format code
-- `mix precommit`: in the root, format, compile with warnings as errors, Credo strict over all sources, Dialyzer, and test. Then, in every plugin and app, format, compile, Dialyzer with a forced PLT check, and test. A new project needs its own `precommit` alias. The root run fails without one. Every precommit alias starts with `deps.get --check-locked`, so a fresh worktree or a rebase that brings a new project needs no manual fetch. `mix precommit` never changes a lock file: after you change a dependency in a `mix.exs`, update the locks yourself and commit them. Projects depend on each other by path, so one change can make other locks stale. Fetch in all of them: `for d in . plugins/* apps/*; do (cd "$d" && mix deps.get); done`. Run `mix precommit` before you finish any change.
+- `mix precommit`: in the root, format, compile with warnings as errors, Credo strict over all sources, Dialyzer, and test. Then, in `plugins/bundled` and in every app, format, compile, Dialyzer with a forced PLT check, and test. A new project needs its own `precommit` alias. The root run fails without one. Every precommit alias starts with `deps.get --check-locked`, so a fresh worktree or a rebase that brings a new project needs no manual fetch. `mix precommit` never changes a lock file: after you change a dependency in a `mix.exs`, update the locks yourself and commit them. Projects depend on each other by path, so one change can make other locks stale. Fetch in all of them: `for d in . plugins/* apps/*; do (cd "$d" && mix deps.get); done`. Run `mix precommit` before you finish any change.
 - Send precommit output to a log file and search the log: `mix precommit > precommit.log 2>&1 && echo passed || { echo failed; false; }`, then `grep -n "==> precommit\|\*\* (\|error\|warning\|failure" precommit.log`. The root run prints `==> precommit <project>` before each project, so the last such line above an error names the project. An error above the first such line belongs to the root. Git ignores `precommit.log`. The run takes minutes, and the line that names the failure is rarely among the last ones. Never pipe it to `tail`, and never rerun it to read an error.
-- `cd plugins/<name> && mix test`: run one plugin's tests
+- `cd plugins/bundled && mix test test/helyx/tool/read_test.exs`: run one test file of a plugin
 
 ## Elixir guidelines
 
@@ -64,6 +64,7 @@ Run from the repository root. Plugins and apps are separate Mix projects. The ro
 - A plugin is `<Root>.<Interface>.<Name>`. The root tells you who owns the code:
   - Bundled plugins use the `Helyx` root: `Helyx.Provider.Anthropic`, `Helyx.Tool.Shell`, `Helyx.Transport.Local`.
   - External plugins use their own root: `Acme.Provider.Bedrock`. Do not define modules under `Helyx.*` outside this repo. Module names are global in a BEAM node, and two packages that define the same module fail to compile together.
+- A new bundled plugin is a module under `plugins/bundled/lib/helyx/<interface>/` with its tests under the same path in `test/`, not a Mix project. A small, pure Elixir dependency is a normal dependency of `helyx_plugins`. A heavy or native one is `optional: true`. The modules that need it are defined only when it is loaded. The product lists the dependency itself. `ex_ratatui` and `Helyx.TUI` are the example (ADR 0005). An application env key of `helyx_plugins` names its plugin, for example `:openai_req_options`.
 - Core resolves a plugin by its registration entry and a behaviour check, not by its module name. The module path is a reading aid only.
 - An interface module such as `Helyx.Provider` stays a pure behaviour and public API. It never becomes a default implementation. Implementations live one level below it.
 

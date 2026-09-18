@@ -8,7 +8,7 @@ From the TUI, prompt the agent about a repository. It reads, edits, and runs she
 
 ## Shape
 
-- Root `helyx` Mix project. Plugins under `plugins/` and the product under `apps/coding_agent` are separate Mix projects that depend on Helyx by path. No umbrella.
+- Root `helyx` Mix project. All bundled plugins live in one Mix project, `plugins/bundled` (app `helyx_plugins`), and the product lives in `apps/coding_agent`. Both depend on Helyx by path, and the product depends on `helyx_plugins` and on `ex_ratatui`, which is optional there (ADR 0005). No umbrella.
 - Elixir 1.19 and OTP 28, pinned in `.tool-versions`. Started with a Mix task.
 
 ## Runtime
@@ -138,7 +138,7 @@ Two more holes are open and accepted for checkpoint one. Nothing locks a session
 
 ## TUI
 
-- ex_ratatui, alternate screen. The TUI is `Helyx.TUI` under `plugins/tui`. It implements no Core interface and is not in Core's plugin list: it is a client that subscribes to one session. Local delivery is OTP messages from `Helyx.Session.subscribe/1`; a Transport interface arrives with the first remote client.
+- ex_ratatui, alternate screen. The TUI is `Helyx.TUI` in `plugins/bundled`, defined only when `ex_ratatui` is loaded (ADR 0005). It implements no Core interface and is not in Core's plugin list: it is a client that subscribes to one session. Local delivery is OTP messages from `Helyx.Session.subscribe/1`; a Transport interface arrives with the first remote client.
 - The view model is a pure fold over events, `Helyx.TUI.ViewModel`, tested with scripted event lists. It grows with the conversation, bounded by the session. The composer is human input; its size is accepted as unbounded, like a queue entry's text (#29). Tool results render at most four content lines each, plus one truncation row naming the hidden line count.
 - Escape aborts. Enter sends a steer during a turn and a prompt when idle. Alt plus Enter queues a follow-up: most terminals cannot tell Shift+Enter from Enter without the kitty keyboard protocol, so Alt is the modifier. The status bar shows the model, the run state, and the queue counts.
 - Queued steers are delivered together at the next provider call. On a harness turn, a steer aborts and resends (see Harness turns).

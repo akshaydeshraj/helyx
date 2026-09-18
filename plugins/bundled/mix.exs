@@ -1,17 +1,14 @@
-defmodule CodingAgent.MixProject do
+defmodule Helyx.Plugins.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :coding_agent,
+      app: :helyx_plugins,
       version: "0.1.0",
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      aliases: aliases(),
-      # The Mix task calls Mix.Task.run/1 and Mix.raise/1; :mix is not in
-      # the default PLT.
-      dialyzer: [plt_add_apps: [:mix]]
+      aliases: aliases()
     ]
   end
 
@@ -26,9 +23,11 @@ defmodule CodingAgent.MixProject do
   defp deps do
     [
       {:helyx, path: "../.."},
-      {:helyx_plugins, path: "../../plugins/bundled"},
-      # Optional in helyx_plugins; listing it here makes Helyx.TUI exist.
-      {:ex_ratatui, "~> 0.14"},
+      {:req, "~> 0.5"},
+      # Optional: a Rust NIF that only the TUI needs. Helyx.TUI is defined
+      # only when it is loaded; a product that wants the TUI lists it (ADR 0005).
+      {:ex_ratatui, "~> 0.14", optional: true},
+      {:plug, "~> 1.16", only: :test},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
   end

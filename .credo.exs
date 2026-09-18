@@ -1,5 +1,5 @@
-# One Credo run from the root covers the plugins too; they have no config of
-# their own.
+# One Credo run from the root covers plugins/bundled and the apps too; they
+# have no config of their own.
 %{
   configs: [
     %{

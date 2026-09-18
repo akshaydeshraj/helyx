@@ -22,6 +22,8 @@ Helyx has four kinds of components.
 Core stays small. It contains only plugin registration, OTP supervision, and interface dispatch.
 Everything else, including memory, tools, model context, compaction, transports, and user interfaces, is a plugin.
 
+The plugins that ship with Helyx live in one Mix project, `plugins/bundled` (app `helyx_plugins`). A product depends on it and registers the modules it wants. A plugin with a heavy or native dependency, such as the TUI on `ex_ratatui`, exists only when the product also lists that dependency (`docs/adr/0005-one-project-for-bundled-plugins.md`). External plugins are separate packages under their own module root.
+
 ## Architecture
 
 The server owns agent and session state. Thin clients connect over pluggable transports.
