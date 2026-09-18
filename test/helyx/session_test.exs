@@ -61,6 +61,21 @@ defmodule Helyx.SessionTest do
     assert stop_reason(collect_until(:agent_end)) == :error
   end
 
+  # Halt-on-error only cancels the provider's request if the session never
+  # pulls past the error; the fixture's tail raises on a drain.
+  test "an error event fails the turn without pulling the stream further", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/error_tail")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:agent_end)
+    assert stop_reason(events) == :error
+    assert List.last(events).data.error == :overloaded
+
+    :ok = Session.prompt(session, "again")
+    assert stop_reason(collect_until(:agent_end)) == :error
+  end
+
   test "consumption stops at the first terminal event", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/overrun")
     :ok = Session.subscribe(session)

@@ -95,8 +95,9 @@ defmodule Helyx.Test.Provider do
   #   "ok"         one delta, then done, after a short pause
   #   "empty"      an empty stream, no terminal event
   #   "crash"      one delta, then the stream raises
-  #   "overrun"    done, then another delta that must be ignored
+  #   "overrun"    a delta, done, then a raise if pulled further
   #   "blocks"     thinking, text, and a tool call, then done; text after the result
+  #   "error_tail" an error event, then a raise if pulled further
   #   "garbage"    one event that is not a stream event
   #   "wide"       a delta tuple with an extra element
   #   "tools"      the names of the tools in the context, as text
@@ -146,7 +147,7 @@ defmodule Helyx.Test.Provider do
   end
 
   def stream("crash", _context, _opts) do
-    {:ok, Stream.concat([{:text_delta, "so far"}], Stream.map([1], fn _ -> raise "boom" end))}
+    {:ok, raise_after([{:text_delta, "so far"}], "boom")}
   end
 
   def stream("blocks", %Helyx.Context{messages: messages}, _opts) do
@@ -197,11 +198,21 @@ defmodule Helyx.Test.Provider do
     end
   end
 
+  def stream("error_tail", _context, _opts) do
+    {:ok, raise_after([{:error, :overloaded}], "pulled past the error")}
+  end
+
   def stream("garbage", _context, _opts), do: {:ok, [{:text_delta, 42}]}
   def stream("wide", _context, _opts), do: {:ok, [{:text_delta, "hello", :extra}]}
 
   def stream("overrun", _context, _opts) do
-    {:ok, [{:text_delta, "kept"}, done(), {:text_delta, " dropped"}]}
+    {:ok, raise_after([{:text_delta, "kept"}, done()], "pulled past done")}
+  end
+
+  # A lazy tail that raises when pulled, so a consumer that reads past
+  # `events` fails its test instead of passing silently.
+  defp raise_after(events, message) do
+    Stream.concat(events, Stream.map([1], fn _ -> raise message end))
   end
 
   defp blocks do
