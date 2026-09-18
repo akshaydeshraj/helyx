@@ -5,7 +5,7 @@ description: The only way to commit in this repo. Simplify, review on three axes
 
 # Ship
 
-Every commit goes through this skill. Run the steps in order. The only exemption: a change that touches nothing but Markdown skips steps 1 and 2. There is no diff-size exemption and no reviewed-by-hand path; a one-line code fix gets the same agents as a feature.
+Every commit goes through this skill. Run the steps in order. The only exemption: a change that touches nothing but Markdown skips steps 1 and 2. There is no diff-size exemption and no reviewed-by-hand path; a one-line code fix gets the same first round as a feature. Only a rerun round after a review fix is smaller, see step 2.
 
 ## 1. Simplify
 
@@ -26,7 +26,14 @@ A review agent that dies or stalls is rerun. Never substitute any pass by hand, 
 
 Fix every confirmed finding. Record the findings and their resolution in `docs/reviews/YYYY-MM-DD-<scope>.md`.
 
-If step 2 changed any code, run step 1 again on that change and then step 2 again on it. Review is always the last pass over the code. Two rules govern the loop:
+If step 2 changed any code, review that change again. Review is always the last pass over the code. A rerun round is smaller than the first round:
+
+- **A fix that patches a path** gets the spec and failure-path agents only. They found every real bug in the rerun rounds of PR #30; the simplify and standards agents found none.
+- **A fix that replaces a mechanism** gets the full round: step 1, then all of step 2.
+
+The first round is always complete. No round is ever done by hand.
+
+Two more rules govern the loop:
 
 - **Fix reviews target the invariant, not the reproduction.** When the change fixes a review finding, every review brief names the invariant the fix restores and asks the agents to find another path that breaks the same invariant. The finding's reproduction is the first test the agents run, not the last.
 - **Two findings on one mechanism stop the patching.** When a second finding lands on a mechanism a previous round already patched, the next round fixes the mechanism, not the path. See `docs/agents/review-checklist.md`, "Races and resource ownership".
