@@ -1,3 +1,21 @@
+defmodule Helyx.TUI.Test.Tool.Slow do
+  @moduledoc false
+  # Sleeps, so a test can hold a turn open while it fills the queues.
+  @behaviour Helyx.Tool
+
+  @impl true
+  def name, do: "slow"
+  @impl true
+  def description, do: "Sleeps, then echoes."
+  @impl true
+  def parameters, do: %{"type" => "object"}
+  @impl true
+  def run(%{"ms" => ms, "text" => text}, _cwd) do
+    Process.sleep(ms)
+    {:ok, text}
+  end
+end
+
 defmodule Helyx.TUITest do
   # The app callbacks, driven directly: mount subscribes the caller, key
   # events edit and send the composer, session events fold into the view
@@ -12,7 +30,7 @@ defmodule Helyx.TUITest do
 
   setup do
     core = :"tui_core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: [Fake]})
+    start_supervised!({Helyx.Core, name: core, plugins: [Fake, Helyx.TUI.Test.Tool.Slow]})
     %{core: core}
   end
 
@@ -39,6 +57,24 @@ defmodule Helyx.TUITest do
     after
       1_000 -> flunk("no agent_end; view model: #{inspect(state.vm)}")
     end
+  end
+
+  test "a rejected send keeps the composer text", %{core: core} do
+    call = %Helyx.Message.ToolCall{
+      id: "c",
+      name: "slow",
+      arguments: %{"ms" => 60_000, "text" => "x"}
+    }
+
+    state = mounted(core, "hold", [[call]])
+
+    state = state |> press("g") |> press("o") |> press("enter")
+    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
+
+    for n <- 1..32, do: :ok = Session.steer(state.session, "s#{n}")
+
+    state = state |> press("x") |> press("enter")
+    assert ExRatatui.text_input_get_value(state.input) == "x"
   end
 
   test "typing edits the composer and ignores command keys", %{core: core} do

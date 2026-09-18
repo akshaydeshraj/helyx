@@ -502,6 +502,31 @@ defmodule Helyx.SessionTest do
     refute_receive {:helyx_event, %Event{type: :agent_start}}, 100
   end
 
+  test "a full queue rejects the next steer or follow-up", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/abort")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
+
+    # One under the limit, then at the limit, with multibyte text.
+    for n <- 1..31, do: :ok = Session.steer(session, "stér #{n}")
+    assert Session.queue_count(session) == %{steers: 31, follow_ups: 0}
+    :ok = Session.steer(session, "stér 32 🚀")
+    for n <- 1..32, do: :ok = Session.follow_up(session, "折り返し #{n}")
+
+    # 64 accepted writes, one queue_update each.
+    for _ <- 1..64, do: assert_receive({:helyx_event, %Event{type: :queue_update}}, 1_000)
+
+    # One over the limit is rejected, changes nothing, and emits no event.
+    assert Session.steer(session, "s33") == {:error, :queue_full}
+    assert Session.follow_up(session, "f33") == {:error, :queue_full}
+    assert Session.queue_count(session) == %{steers: 32, follow_ups: 32}
+    refute_receive {:helyx_event, %Event{type: :queue_update}}, 50
+
+    :ok = Session.abort(session)
+  end
+
   @tag :tmp_dir
   test "a session with a sessions dir writes a header and completed messages", %{
     core: core,
