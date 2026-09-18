@@ -26,6 +26,7 @@ docs/
   agents/          Per-repo config for the engineering skills
   devlogs/         Dated work logs: YYYY-MM-DD-<topic>.md
   features/        One design doc per feature, written before implementation
+  research/        Source research that feature docs cite: <topic>.md
   reviews/         Code review outputs and follow-ups
 lib/helyx/         Helyx core, interfaces, session, and message shapes
 test/              Tests, mirrors lib/. test/support/ holds test-only plugins
@@ -69,6 +70,7 @@ Run from the repository root. Plugins and apps are separate Mix projects. The ro
 
 - **Devlogs** (`docs/devlogs/`): one file per work session, named `YYYY-MM-DD-<topic>.md`. Record what was done, what broke, and what is next.
 - **Features** (`docs/features/`): one file per feature, named `<slug>.md`. Write the design before the implementation, starting from `docs/features/TEMPLATE.md`. State the goal, the interface changes, the bounds of every input, buffer, and wait, and what stays out of scope.
+- **Research** (`docs/research/`): facts gathered from outside sources, named `<topic>.md`, with the date and the source revisions. It records observations; tickets and feature docs hold the decisions.
 - **Reviews** (`docs/reviews/`): outputs of code reviews, named `YYYY-MM-DD-<scope>.md`, with findings and their resolution.
 - **Decisions** (`docs/adr/`): architecture decision records, named `NNNN-<slug>.md`, with context, decision, and consequences.
 
