@@ -54,7 +54,7 @@ A harness runs its own loop and its own tools. Helyx starts the program for the 
 | What | Bound | Over the bound |
 | ---- | ----- | -------------- |
 | file read (read, edit, model context) | one regular file, at most 10,485,760 bytes, valid UTF-8 | a device, a directory, or a larger file is an error; invalid UTF-8 is an error, `binary file, N bytes` |
-| tool result text | 2000 lines or 51,200 bytes of line content, on whole lines | cut from the head (read) or the tail (bash), the result says which lines it shows |
+| tool result text | 2000 lines or 51,200 bytes of line content, on whole lines | read keeps the head and bash keeps the tail; the result says which absolute lines it shows, and a truncated head names the offset that continues the read |
 | bash output buffer while the command runs | the last 204,800 bytes | older output is dropped, the result says so; the byte cut can land inside a character, and the fragment becomes U+FFFD at delivery |
 | tool result text validity | valid UTF-8 before it enters the transcript | the hands replace each invalid byte sequence with one U+FFFD (`String.replace_invalid/1`) before the session sees the result; replacement runs after a tool's own truncation and can grow the text to at most three times its byte size |
 | wait for a bash command | unbounded; abort ends it (the bash tool's `ponytail:` marker) | the turn abort kills the command's process group |

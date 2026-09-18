@@ -83,7 +83,7 @@ defmodule Helyx.ModelContext.DefaultTest do
     system = system(home, home)
 
     assert system =~ "line 1\n"
-    assert system =~ ~r/\[truncated: showing lines 1-\d+ of 3000\]/
+    assert system =~ ~r/\[truncated: showing lines 1-\d+ of 3000; read again with offset \d+\]/
     refute system =~ "line 3000"
   end
 

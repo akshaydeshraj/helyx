@@ -41,7 +41,7 @@ defmodule Helyx.Tool do
     %{name: tool.name(), description: tool.description(), parameters: tool.parameters()}
   end
 
-  @doc "The byte limit of `truncate/2`."
+  @doc "The byte limit of `truncate/2` and `truncate/3`."
   @spec max_bytes() :: pos_integer()
   def max_bytes, do: @max_bytes
 
@@ -93,7 +93,7 @@ defmodule Helyx.Tool do
   defp bounded({:error, reason}), do: {:error, to_string(:file.format_error(reason))}
 
   defp bounded(bin) when byte_size(bin) > @max_file_bytes,
-    do: {:error, "over #{@max_file_bytes} bytes; read it in parts"}
+    do: {:error, "over the #{@max_file_bytes}-byte limit"}
 
   defp bounded(bin) do
     if String.valid?(bin), do: {:ok, bin}, else: {:error, "binary file, #{byte_size(bin)} bytes"}
@@ -103,20 +103,11 @@ defmodule Helyx.Tool do
   Caps text at #{@max_lines} lines or #{@max_bytes} bytes of line content,
   on whole lines. One trailing newline is a terminator and does not count.
   `:head` keeps the start and `:tail` keeps the end. A truncated result says
-  which lines it shows.
+  which lines it shows; a truncated `:head` result also names the offset that
+  continues the read.
   """
   @spec truncate(String.t(), :head | :tail) :: String.t()
-  def truncate(text, :head) do
-    lines = lines(text)
-
-    case take_within_limits(lines, :head) do
-      :all ->
-        text
-
-      {kept, n} ->
-        Enum.join(kept, "\n") <> "\n[truncated: showing lines 1-#{n} of #{length(lines)}]"
-    end
-  end
+  def truncate(text, :head), do: truncate(text, :head, 1)
 
   def truncate(text, :tail) do
     lines = lines(text)
@@ -129,6 +120,33 @@ defmodule Helyx.Tool do
       {kept, n} ->
         "[truncated: showing lines #{total - n + 1}-#{total} of #{total}]\n" <>
           Enum.join(Enum.reverse(kept), "\n")
+    end
+  end
+
+  @doc """
+  Like `truncate/2` with `:head`, starting at line `first`: earlier lines are
+  dropped before the caps apply. A truncated result names the absolute line
+  numbers it shows and the offset that continues the read. A window that
+  starts past line 1 is rebuilt from its lines, so it carries no trailing
+  newline.
+  """
+  @spec truncate(String.t(), :head, pos_integer()) :: String.t()
+  def truncate(text, :head, first) do
+    shown = Enum.drop(lines(text), first - 1)
+
+    case take_within_limits(shown, :head) do
+      :all when first == 1 ->
+        text
+
+      :all ->
+        Enum.join(shown, "\n")
+
+      {kept, n} ->
+        last = first + n - 1
+
+        Enum.join(kept, "\n") <>
+          "\n[truncated: showing lines #{first}-#{last} of #{first - 1 + length(shown)}; " <>
+          "read again with offset #{last + 1}]"
     end
   end
 

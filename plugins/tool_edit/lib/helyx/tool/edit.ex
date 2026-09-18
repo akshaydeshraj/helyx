@@ -49,10 +49,26 @@ defmodule Helyx.Tool.Edit do
   defp replace_once(_content, "", _new, _path), do: {:error, "old_text is empty"}
 
   defp replace_once(content, old, new, path) do
-    case String.split(content, old) do
-      [before, rest] -> {:ok, before <> new <> rest}
-      [_] -> {:error, "old_text not found in #{path}"}
-      parts -> {:error, "old_text matches #{length(parts) - 1} places in #{path}; make it unique"}
+    case :binary.match(content, old) do
+      :nomatch ->
+        {:error, "old_text not found in #{path}"}
+
+      {pos, len} ->
+        # A second match may overlap the first, so the search restarts one
+        # byte after the start of the first match, not after its end.
+        scope = {pos + 1, byte_size(content) - pos - 1}
+
+        case :binary.match(content, old, scope: scope) do
+          :nomatch ->
+            rest = pos + len
+
+            {:ok,
+             binary_part(content, 0, pos) <>
+               new <> binary_part(content, rest, byte_size(content) - rest)}
+
+          _second ->
+            {:error, "old_text matches more than once in #{path}; make it unique"}
+        end
     end
   end
 
