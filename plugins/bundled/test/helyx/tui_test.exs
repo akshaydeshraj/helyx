@@ -59,6 +59,13 @@ defmodule Helyx.TUITest do
     end
   end
 
+  test "the optional-dependency guard matches what is loaded" do
+    # ex_ratatui is always present in this project. The build without it is
+    # checked with a scratch product, see ADR 0005.
+    assert Helyx.TUI.Available.available?()
+    refute Helyx.TUI.Available.__mix_recompile__?()
+  end
+
   test "a rejected send keeps the composer text", %{core: core} do
     call = %Helyx.Message.ToolCall{
       id: "c",
