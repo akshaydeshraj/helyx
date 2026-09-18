@@ -197,6 +197,12 @@ defmodule Helyx.Session do
     GenServer.call(via(core, id), :queue_count)
   end
 
+  @doc "The session's current model ref, as a `provider/model` string."
+  @spec model(t()) :: String.t()
+  def model(%__MODULE__{id: id, core: core}) do
+    GenServer.call(via(core, id), :model)
+  end
+
   @doc """
   Aborts the running turn. Returns after the hands have killed every process
   the turn started, so a prompt sent next starts on a clean working
@@ -250,6 +256,10 @@ defmodule Helyx.Session do
 
   def handle_call(:queue_count, _from, %State{} = state) do
     {:reply, queue_counts(state), state}
+  end
+
+  def handle_call(:model, _from, %State{model: ref} = state) do
+    {:reply, ModelRef.to_string(ref), state}
   end
 
   def handle_call(:abort, _from, %State{turn: nil} = state), do: {:reply, :ok, state}

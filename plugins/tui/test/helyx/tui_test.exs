@@ -183,11 +183,12 @@ defmodule Helyx.TUITest do
     refute Enum.any?(texts, &String.contains?(&1, "\e"))
 
     # Bash output is arbitrary bytes: invalid UTF-8 (a raw one-byte CSI)
-    # must render, not crash.
+    # must render, not crash. Message.tool_result scrubs the byte to the
+    # replacement character before the TUI sees it.
     broken = Helyx.Message.tool_result(call, {:ok, <<"a", 0x9B, "b">>})
     vm = %ViewModel{ViewModel.new("fake/m") | cells: [{:tool, call, broken}]}
     texts = for line <- TUI.transcript_lines(vm, 80), span <- line.spans, do: span.content
-    assert "  ab" in texts
+    assert "  a�b" in texts
   end
 
   test "the transcript renders width-bounded lines with tool cells" do

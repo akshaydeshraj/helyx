@@ -5,11 +5,15 @@ defmodule Mix.Tasks.Helyx do
   @moduledoc """
   Starts the coding agent in the alternate screen.
 
-      mix helyx [directory] [--model provider/model]
+      mix helyx [directory] [--model provider/model] [--resume]
 
   `directory` is the session's working directory and defaults to the current
   one. `--model` defaults to `#{@default_model}`, which needs
   `OPENCODE_API_KEY`. `fake/echo` runs without a key.
+
+  Sessions are written under `~/.helyx/sessions` as they run. `--resume`
+  continues the most recent session for the directory and keeps its saved
+  model, so it does not combine with `--model`.
   """
 
   use Mix.Task
@@ -18,10 +22,14 @@ defmodule Mix.Tasks.Helyx do
   def run(argv) do
     {opts, args} =
       try do
-        OptionParser.parse!(argv, strict: [model: :string])
+        OptionParser.parse!(argv, strict: [model: :string, resume: :boolean])
       rescue
         error in OptionParser.ParseError -> Mix.raise(Exception.message(error))
       end
+
+    if opts[:resume] && opts[:model] do
+      Mix.raise("--model does not combine with --resume; a resumed session keeps its saved model")
+    end
 
     cwd =
       case args do
@@ -34,7 +42,12 @@ defmodule Mix.Tasks.Helyx do
 
     Mix.Task.run("app.start")
 
-    result = CodingAgent.run(model: Keyword.get(opts, :model, @default_model), cwd: cwd)
+    result =
+      CodingAgent.run(
+        model: Keyword.get(opts, :model, @default_model),
+        cwd: cwd,
+        resume: Keyword.get(opts, :resume, false)
+      )
 
     with {:error, reason} <- result do
       Mix.raise("could not start the agent: #{inspect(reason)}")

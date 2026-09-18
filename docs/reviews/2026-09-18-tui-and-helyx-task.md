@@ -62,3 +62,19 @@ The final review found the same mechanism a third time: key-shape guards let mal
 2. The first fix for the linked-exit finding (trap exits in `TUI.run/1`) swallowed `:EXIT` messages from other links, such as Core, leaving them in the caller's mailbox after the flag restore. **Fixed**: reverted to the reviewer's prescription, monitor plus unlink.
 3. `sanitize/1` raised `ArgumentError` on invalid UTF-8 (bash output is arbitrary bytes; a raw `0x9B` is a one-byte CSI). **Fixed**: `String.replace_invalid/2` runs first, with a test.
 4. The corrected doc line said "Eleven events" and still listed the nonexistent `tool_execution_update`. **Fixed** against the `Helyx.Event` type union. Verified closed by the same reviewer.
+
+## Round 7 — session persistence and resume (Greptile P1 on PR #43)
+
+Change under review: `mix helyx` always passes `sessions_dir` (default `~/.helyx/sessions`), a `--resume` flag resumes the most recent session for the directory (saved model wins; `--resume` with `--model` is a `Mix.raise` before `app.start`), and `Helyx.Session.model/1` supplies the TUI status-bar model. One consolidated agent over simplify, standards, spec, and failure paths.
+
+1. `Session.model/1` on a session that died after `start_session` exited `{:noproc, _}` raw, skipping the `{:error, reason} -> Mix.raise` surface. **Fixed**: `fetch_model/1` in `CodingAgent` catches the exit and returns `{:error, {:session_down, reason}}` through the `with`.
+2. `Path.expand("~/.helyx/sessions")` with `HOME` unset raises a raw `RuntimeError` inside `start_session`. **Accepted**: the terminal state is safe (the TUI has not started), and a machine without `HOME` cannot run the agent usefully.
+
+Clean: no fileless path remains through `Mix.Tasks.Helyx.run`; resume restores transcript and model and the status bar shows the saved model; the flag conflict raises before `app.start`; empty and corrupt session files and an absent provider all reach `Mix.raise`; 200 stop-then-resume iterations hit no Registry clash.
+
+## Round 8 — fix-round review of round 7
+
+Invariant: every failure between `start_session` and the TUI surfaces through `{:error, reason}`, never a raw exit.
+
+1. The invariant broke one step later: a failed `Helyx.TUI.run/1` init (session dead pre-mount, or no TTY) killed the linked caller raw on OTP 28 before `start_link` returned (reproduced 300/300). **Fixed**: `run/1` traps exits for just the start window and restores the flag before blocking; a crash inside the window is flushed by pid after the DOWN. This narrows round 6's objection to whole-run trapping: no `:EXIT` residue survives the window, and other links keep their kill semantics while the TUI runs. The verifying round proved the first version's error-branch flush was dead code — `proc_lib` unlinks and flushes the child's exit before `start_link` returns an error — and that it could eat an unrelated `{:EXIT, ...}` from an already-trapping caller; it was deleted.
+2. Rebase fallout, found by the plugin suite: the sanitize test expected the raw `0x9B` byte stripped to `""`, but `Message.tool_result` now scrubs invalid bytes to `�` upstream (master's UTF-8 work). The invariant — no control characters or raw bytes reach the terminal — holds; the expectation now follows the real pipeline (`"  a�b"`).

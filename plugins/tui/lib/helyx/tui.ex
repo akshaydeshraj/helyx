@@ -37,16 +37,42 @@ defmodule Helyx.TUI do
   @doc "Starts the TUI for a session and blocks until the user quits."
   @spec run(keyword()) :: :ok | {:error, term()}
   def run(opts) do
-    with {:ok, pid} <- start_link(opts) do
-      ref = Process.monitor(pid)
-      # Unlinked, an abnormal exit reaches the receive as a DOWN instead of
-      # killing the caller through the link before it can return the error.
-      Process.unlink(pid)
+    # A failed init (dead session, no terminal) exits the linked caller
+    # before start_link can return the error. Trapping for just the start
+    # window turns that into the {:error, reason} return; the flag is
+    # restored before blocking, so the caller's other links keep their kill
+    # semantics while the TUI runs.
+    trap = Process.flag(:trap_exit, true)
 
-      receive do
-        {:DOWN, ^ref, :process, ^pid, :normal} -> :ok
-        {:DOWN, ^ref, :process, ^pid, reason} -> {:error, reason}
-      end
+    case start_link(opts) do
+      {:ok, pid} ->
+        ref = Process.monitor(pid)
+        # Unlinked, an abnormal exit reaches the receive as a DOWN instead
+        # of killing the caller through the link before it can return the
+        # error. Unlink before restoring the flag, so no kill window opens.
+        Process.unlink(pid)
+        Process.flag(:trap_exit, trap)
+
+        receive do
+          {:DOWN, ^ref, :process, ^pid, :normal} -> flush_exit(pid, :ok)
+          {:DOWN, ^ref, :process, ^pid, reason} -> flush_exit(pid, {:error, reason})
+        end
+
+      {:error, reason} ->
+        # proc_lib unlinks and flushes the dead child's exit signal before
+        # start_link returns an error, so there is nothing to drain here.
+        Process.flag(:trap_exit, trap)
+        {:error, reason}
+    end
+  end
+
+  # A crash inside the trap window queues an {:EXIT, pid, _} message the
+  # restored flag can no longer prevent; drop it with the result.
+  defp flush_exit(pid, result) do
+    receive do
+      {:EXIT, ^pid, _reason} -> result
+    after
+      0 -> result
     end
   end
 

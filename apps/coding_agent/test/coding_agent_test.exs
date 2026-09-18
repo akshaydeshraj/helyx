@@ -45,6 +45,37 @@ defmodule CodingAgentTest do
     assert_raise Mix.Error, ~r/not a directory/, fn ->
       Mix.Tasks.Helyx.run(["/nonexistent/helyx-test-dir"])
     end
+
+    assert_raise Mix.Error, ~r/does not combine/, fn ->
+      Mix.Tasks.Helyx.run(["--resume", "--model", "fake/echo"])
+    end
+  end
+
+  @tag :tmp_dir
+  test "start_session persists to disk and resume restores the saved model", %{tmp_dir: dir} do
+    core = :"agent_core_#{System.unique_integer([:positive])}"
+    start_supervised!({Helyx.Core, name: core, plugins: CodingAgent.plugins()})
+
+    {:ok, session} =
+      CodingAgent.start_session(core: core, cwd: dir, sessions_dir: dir, model: "fake/echo")
+
+    assert [_file] = Path.wildcard(Path.join(dir, "*/*.jsonl"))
+
+    :ok = GenServer.stop(Session.pid(session))
+
+    {:ok, resumed} =
+      CodingAgent.start_session(core: core, cwd: dir, sessions_dir: dir, resume: true)
+
+    assert Session.model(resumed) == "fake/echo"
+  end
+
+  @tag :tmp_dir
+  test "resume without a saved session reports not_found", %{tmp_dir: dir} do
+    core = :"agent_core_#{System.unique_integer([:positive])}"
+    start_supervised!({Helyx.Core, name: core, plugins: CodingAgent.plugins()})
+
+    assert {:error, :not_found} =
+             CodingAgent.start_session(core: core, cwd: dir, sessions_dir: dir, resume: true)
   end
 
   defp collect_until(type, acc \\ []) do
