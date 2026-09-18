@@ -51,3 +51,7 @@ The last fix changed Markdown only. I ran the loop as written: eleven projects, 
 
 - Main checkout: `mix precommit > precommit.log` exit 0, eleven Dialyzer runs clean, eleven test runs with 0 failures, ten banners.
 - Fresh worktree at `origin/master` with the round 1 diff and zero `deps/` directories: exit 0 with no manual fetch, eleven test runs with 0 failures, no lock file changed. It used about five minutes of CPU, most of it eleven new Dialyzer PLTs. The wall time is not usable: other precommit runs shared the machine.
+
+## After the PR: Greptile
+
+- **Fixed:** the documented command ended in `; echo $?`, so the whole command exited 0 after a failed precommit. It now ends in `&& echo passed || { echo failed; false; }`, which prints the result and keeps a non-zero status. Tested in zsh and bash with a failing and a passing command. Markdown only, so no review round; precommit passed when run with the new command.
