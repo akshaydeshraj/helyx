@@ -112,6 +112,7 @@ defmodule Helyx.Test.Provider do
   #   "serial"     three calls to the slow tool, then echoes the results
   #   "bad_call"   a tool call whose name is not a string
   #   "kill"       calls the kill tool, then echoes the result as text
+  #   "binary"     calls the binary tool, then echoes the result as text
   #   "hang"       one delta, then the stream blocks forever
   #   "transcript" every message in the context as "role:text" lines
   #   "abort"      three calls to the slow tool that sleep for a minute;
@@ -187,6 +188,17 @@ defmodule Helyx.Test.Provider do
       _ ->
         {:ok,
          [{:tool_call, %Helyx.Message.ToolCall{id: "k", name: "kill", arguments: %{}}}, done()]}
+    end
+  end
+
+  def stream("binary", %Helyx.Context{messages: messages}, _opts) do
+    case List.last(messages) do
+      %Helyx.Message{role: :tool_result} ->
+        {:ok, echo_results(messages)}
+
+      _ ->
+        {:ok,
+         [{:tool_call, %Helyx.Message.ToolCall{id: "b", name: "binary", arguments: %{}}}, done()]}
     end
   end
 
@@ -337,6 +349,22 @@ defmodule Helyx.Test.Tool.Kill do
   @dialyzer {:nowarn_function, run: 2}
   @impl true
   def run(_args, _cwd), do: Process.exit(self(), :kill)
+end
+
+defmodule Helyx.Test.Tool.Binary do
+  @moduledoc false
+  # Returns bytes that are not valid UTF-8, so tests can see the hands make
+  # the result valid.
+  @behaviour Helyx.Tool
+
+  @impl true
+  def name, do: "binary"
+  @impl true
+  def description, do: "Returns invalid bytes."
+  @impl true
+  def parameters, do: %{"type" => "object"}
+  @impl true
+  def run(_args, _cwd), do: {:ok, <<"a", 255, "b">>}
 end
 
 defmodule Helyx.Test.Tool.Slow do

@@ -49,6 +49,17 @@ A harness runs its own loop and its own tools. Helyx starts the program for the 
 - Steer: a harness does not accept a message inside a turn. On a harness turn, a steer aborts the turn and starts a new turn with the steer as its prompt. The transcript keeps whatever the harness completed before the abort.
 - Resume: each harness issues its own session id. Helyx writes it to the transcript as a `harness_session` entry when the first harness turn starts, and passes it back on later turns and after a restart. If the harness no longer has that session, the next harness turn starts a fresh harness session, the transcript gets a new `harness_session` entry, and the TUI shows a notice that the harness lost its own context. The Helyx transcript is unaffected. Replaying the transcript into a fresh harness session is out of scope.
 
+## Bounds
+
+| What | Bound | Over the bound |
+| ---- | ----- | -------------- |
+| file read (read, edit, model context) | one regular file, at most 10,485,760 bytes, valid UTF-8 | a device, a directory, or a larger file is an error; invalid UTF-8 is an error, `binary file, N bytes` |
+| tool result text | 2000 lines or 51,200 bytes of line content, on whole lines | cut from the head (read) or the tail (bash), the result says which lines it shows |
+| bash output buffer while the command runs | the last 204,800 bytes | older output is dropped, the result says so; the byte cut can land inside a character, and the fragment becomes U+FFFD at delivery |
+| tool result text validity | valid UTF-8 before it enters the transcript | the hands replace each invalid byte sequence with one U+FFFD (`String.replace_invalid/1`) before the session sees the result; replacement runs after a tool's own truncation and can grow the text to at most three times its byte size |
+| wait for a bash command | unbounded; abort ends it (the bash tool's `ponytail:` marker) | the turn abort kills the command's process group |
+| wait for a killed process group | 500 ms TERM grace, then KILL, then a 5 s ceiling | an unkillable process stops blocking the hands after 5 s |
+
 ## Transcript and events
 
 - Message shape and session file format: see ADR 0001 and the section below.

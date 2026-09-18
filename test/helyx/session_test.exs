@@ -12,7 +12,8 @@ defmodule Helyx.SessionTest do
       Helyx.Test.Provider,
       Helyx.Test.Tool.Upcase,
       Helyx.Test.Tool.Kill,
-      Helyx.Test.Tool.Slow
+      Helyx.Test.Tool.Slow,
+      Helyx.Test.Tool.Binary
     ]
 
     start_supervised!({Helyx.Core, name: core, plugins: plugins})
@@ -215,7 +216,7 @@ defmodule Helyx.SessionTest do
     :ok = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    assert final_text(collect_until(:agent_end)) == "kill,slow,upcase"
+    assert final_text(collect_until(:agent_end)) == "binary,kill,slow,upcase"
   end
 
   test "tool calls run on the hands and the loop continues until the provider stops", %{
@@ -321,6 +322,24 @@ defmodule Helyx.SessionTest do
 
     {:ok, restored} = Helyx.SessionFile.resume(dir, File.cwd!())
     assert "recovered" in Enum.map(restored.messages, &Helyx.Message.text/1)
+  end
+
+  test "a tool result with invalid bytes is made valid before it reaches the session", %{
+    core: core
+  } do
+    {:ok, session} = Session.start(core, model: "test/binary")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:agent_end)
+    assert final_text(events) == "a�b"
+
+    result = Enum.find(events, &(&1.type == :tool_execution_end)).data.message
+    assert Helyx.Message.text(result) == "a�b"
+    refute result.is_error
+
+    :ok = Session.prompt(session, "again")
+    assert stop_reason(collect_until(:agent_end)) == :end_turn
   end
 
   test "a tool Task that dies gives an error result and the loop continues", %{core: core} do

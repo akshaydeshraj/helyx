@@ -179,6 +179,50 @@ defmodule Helyx.Provider.OpenAITest do
            ]
   end
 
+  defmodule BinaryTool do
+    @moduledoc false
+    # A tool whose result is not valid UTF-8, so the composition test below
+    # can show the hands deliver text the request encoder accepts.
+    @behaviour Helyx.Tool
+
+    @impl true
+    def name, do: "binary"
+    @impl true
+    def description, do: "Returns invalid bytes."
+    @impl true
+    def parameters, do: %{"type" => "object"}
+    @impl true
+    def run(_args, _cwd), do: {:ok, <<"a", 255, "b">>}
+  end
+
+  test "a tool result with invalid bytes from the hands encodes and sends" do
+    core = :"core_#{System.unique_integer([:positive])}"
+    start_supervised!({Helyx.Core, name: core, plugins: [OpenAI.Go, BinaryTool]})
+    {:ok, hands} = Helyx.Hands.start_link(core: core, cwd: File.cwd!(), session: self())
+
+    call = %Helyx.Message.ToolCall{id: "call_1", name: "binary", arguments: %{}}
+    :ok = Helyx.Hands.run(hands, "t1", call)
+    assert_receive {:tool_result, "t1", "call_1", result}, 1_000
+
+    stub([delta(%{content: "ok"}, "stop"), "[DONE]"])
+
+    context = %Helyx.Context{
+      messages: [
+        Helyx.Message.user("go"),
+        %Helyx.Message{role: :assistant, content: [call]},
+        Helyx.Message.tool_result(call, result)
+      ]
+    }
+
+    assert {:ok, stream} = OpenAI.Go.stream("kimi-k2", context, [])
+    assert List.last(Enum.to_list(stream)) == {:done, %{stop_reason: :end_turn, usage: %{}}}
+
+    assert_received {:request, _conn, body}
+
+    assert List.last(body["messages"]) ==
+             %{"role" => "tool", "tool_call_id" => "call_1", "content" => "a�b"}
+  end
+
   test "a non-2xx response yields one error event with the body" do
     plug(&Plug.Conn.send_resp(&1, 401, ~s({"error": "bad key"})))
     context = %Helyx.Context{messages: [Helyx.Message.user("hi")]}
