@@ -396,6 +396,112 @@ defmodule Helyx.SessionTest do
     refute_receive {:helyx_event, _}, 50
   end
 
+  defp user_texts(events) do
+    for %{type: :message_end, data: %{message: %Helyx.Message{role: :user} = m}} <- events,
+        do: Helyx.Message.text(m)
+  end
+
+  defp queue_counts(events) do
+    for %{type: :queue_update, data: data} <- events, do: data
+  end
+
+  test "steers during a tool run reach the next provider call after the result, in order", %{
+    core: core
+  } do
+    {:ok, session} = Session.start(core, model: "test/steer")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
+    :ok = Session.steer(session, "s1")
+    :ok = Session.steer(session, "s2")
+
+    events = collect_until(:agent_end)
+    assert final_text(events) == "hello|s1|s2"
+
+    result_at = Enum.find_index(events, &(&1.type == :tool_execution_end))
+
+    steer_at =
+      Enum.find_index(events, fn
+        %Event{type: :message_end, data: %{message: %Helyx.Message{role: :user} = m}} ->
+          Helyx.Message.text(m) == "s1"
+
+        _ ->
+          false
+      end)
+
+    assert result_at < steer_at
+
+    assert queue_counts(events) == [
+             %{steers: 1, follow_ups: 0},
+             %{steers: 2, follow_ups: 0},
+             %{steers: 0, follow_ups: 0}
+           ]
+  end
+
+  test "a follow-up during a turn starts a new turn after agent_end", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/ok")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    :ok = Session.follow_up(session, "next")
+
+    first = collect_until(:agent_end)
+    assert user_texts(first) == ["hello"]
+    assert queue_counts(first) == [%{steers: 0, follow_ups: 1}]
+
+    second = collect_until(:agent_end)
+    assert [:queue_update, :agent_start | _] = Enum.map(second, & &1.type)
+    assert List.first(second).turn_id == nil
+    assert user_texts(second) == ["next"]
+    assert queue_counts(second) == [%{steers: 0, follow_ups: 0}]
+  end
+
+  test "a steer left at turn end starts a new turn", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/ok")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    :ok = Session.steer(session, "later")
+
+    collect_until(:agent_end)
+    second = collect_until(:agent_end)
+    assert user_texts(second) == ["later"]
+  end
+
+  test "a steer or follow-up with no turn running starts a turn at once", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/ok")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.follow_up(session, "go")
+    events = collect_until(:agent_end)
+    assert user_texts(events) == ["go"]
+    assert stop_reason(events) == :end_turn
+
+    :ok = Session.steer(session, "again")
+    events = collect_until(:agent_end)
+    assert user_texts(events) == ["again"]
+  end
+
+  test "abort drops queued steers and follow-ups", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/abort")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
+    :ok = Session.steer(session, "s")
+    :ok = Session.follow_up(session, "f")
+    assert Session.queue_count(session) == %{steers: 1, follow_ups: 1}
+
+    :ok = Session.abort(session)
+    assert Session.queue_count(session) == %{steers: 0, follow_ups: 0}
+    events = collect_until(:agent_end)
+    assert stop_reason(events) == :aborted
+    assert List.last(queue_counts(events)) == %{steers: 0, follow_ups: 0}
+
+    refute_receive {:helyx_event, %Event{type: :agent_start}}, 100
+  end
+
   @tag :tmp_dir
   test "a session with a sessions dir writes a header and completed messages", %{
     core: core,

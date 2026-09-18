@@ -24,6 +24,9 @@ defmodule Helyx.Event do
       an aborted turn ends with `stop_reason: :aborted` after a
       `:tool_execution_end` with an `aborted` error result for each open
       tool call
+    * `:queue_update` – `%{steers: non_neg_integer, follow_ups: non_neg_integer}`,
+      emitted whenever the session's message queues change; the drain at a
+      normal turn end goes out between turns, with a nil turn id
   """
 
   @enforce_keys [:type, :session_id, :turn_id, :seq, :data]
@@ -39,6 +42,7 @@ defmodule Helyx.Event do
           | :message_end
           | :tool_execution_start
           | :tool_execution_end
+          | :queue_update
 
   @type t :: %__MODULE__{
           type: type(),

@@ -116,6 +116,8 @@ defmodule Helyx.Test.Provider do
   #   "transcript" every message in the context as "role:text" lines
   #   "abort"      three calls to the slow tool that sleep for a minute;
   #                after the results, echoes them as text
+  #   "steer"      one slow call; after the result, echoes the user message
+  #                texts so far, so tests see which steers reached the call
   @behaviour Helyx.Provider
 
   @impl true
@@ -211,6 +213,15 @@ defmodule Helyx.Test.Provider do
   def stream("transcript", %Helyx.Context{messages: messages}, _opts) do
     text = Enum.map_join(messages, "\n", &"#{&1.role}:#{Helyx.Message.text(&1)}")
     {:ok, [{:text_delta, text}, done()]}
+  end
+
+  def stream("steer", %Helyx.Context{messages: messages}, _opts) do
+    if Enum.any?(messages, &(&1.role == :tool_result)) do
+      users = for %{role: :user} = m <- messages, do: Helyx.Message.text(m)
+      {:ok, [{:text_delta, Enum.join(users, "|")}, done()]}
+    else
+      {:ok, slow_calls([{"1", 200}]) ++ [done()]}
+    end
   end
 
   def stream("garbage", _context, _opts), do: {:ok, [{:text_delta, 42}]}

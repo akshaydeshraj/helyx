@@ -25,6 +25,10 @@ Abort ends the current turn by id. The session kills the turn Task and tells the
 
 When a turn is aborted, by the user or by a restart, every tool call in it that has no result gets a tool result entry with `is_error` true and the text `aborted`. The entry is appended to the transcript, so the next provider call sees a complete call and result pair. Providers reject a tool call without a result, so removing the call is not an option.
 
+### Steer and follow-up queues
+
+Queued steers join the transcript as user messages, in order, before the next provider call inside the turn. Queued follow-ups start a new turn after the current turn ends normally; anything still queued at that point, steers included, becomes that one new turn's prompt, steers first, so no typed message is lost. A steer or follow-up sent with no turn running starts a turn at once, like a prompt, so the client never races the end of a turn. Abort and turn failure drop both queues. Every change emits a `queue_update` event; the drain at a normal turn end goes out between turns with a nil turn id, and `Helyx.Session.queue_count/1` reads the counts. The queues are unbounded, ticket #29.
+
 ## Interfaces and bundled plugins
 
 | Interface | Plugins in this checkpoint |
