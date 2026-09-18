@@ -78,6 +78,7 @@ Run from the repository root. Plugins and apps are separate Mix projects. The ro
 ## Git conventions
 
 - Every commit goes through `/ship`: simplify, review on three axes, `mix precommit`, commit. See `.claude/skills/ship/SKILL.md`.
+- `/orchestrate` runs the ready tickets to merged on master without the user: worktree, `/implement`, a Codex review until clean, rebase, merge. It parks what needs a person as `ready-for-human`. `/hitl` asks the user those parked decisions and starts the orchestrator again.
 - Tickets are built with `/implement <n>`, the project skill, which ends in `/ship`. Do not use `mattpocock-skills:implement` here; it reviews and commits on its own path.
 - Conventional commits: `type(scope): message` (see existing history).
 - Do not commit generated artifacts (`_build/`, `deps/`, `.elixir_ls/`).
