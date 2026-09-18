@@ -149,6 +149,10 @@ defmodule Helyx.Session do
     :ok
   end
 
+  @doc "The pid behind a session handle, or nil when the session is not running."
+  @spec pid(t()) :: pid() | nil
+  def pid(%__MODULE__{id: id, core: core}), do: GenServer.whereis(via(core, id))
+
   @doc "Sends a prompt. Starts a turn if none is running. The text must be valid UTF-8."
   @spec prompt(t(), String.t()) :: :ok | {:error, :turn_running | :invalid_utf8}
   def prompt(%__MODULE__{id: id, core: core}, text) when is_binary(text) do
@@ -270,7 +274,7 @@ defmodule Helyx.Session do
     %State{turn: turn} = state = start_assistant_message(state)
 
     {:noreply,
-     %{state | turn: %{turn | partial: add_block(event, turn.partial)}}
+     %{state | turn: %{turn | partial: Message.add_block(turn.partial, event)}}
      |> emit(:message_update, Map.new([event]))}
   end
 
@@ -422,19 +426,6 @@ defmodule Helyx.Session do
 
   defp forward(false = _valid, event, _session, _turn_id, _acc),
     do: {:halt, {:error, {:bad_stream_event, event}}}
-
-  # Consecutive deltas of one kind extend the head block; anything else
-  # starts a new block. The list is reversed.
-  defp add_block({:text_delta, d}, [%Message.Text{text: t} = b | rest]),
-    do: [%{b | text: t <> d} | rest]
-
-  defp add_block({:text_delta, d}, blocks), do: [%Message.Text{text: d} | blocks]
-
-  defp add_block({:thinking_delta, d}, [%Message.Thinking{thinking: t} = b | rest]),
-    do: [%{b | thinking: t <> d} | rest]
-
-  defp add_block({:thinking_delta, d}, blocks), do: [%Message.Thinking{thinking: d} | blocks]
-  defp add_block({:tool_call, call}, blocks), do: [call | blocks]
 
   defp end_turn({:done, %{stop_reason: stop_reason, usage: usage}}, state) do
     %State{turn: turn} = state = start_assistant_message(state)

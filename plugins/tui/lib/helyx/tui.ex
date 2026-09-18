@@ -1,0 +1,258 @@
+defmodule Helyx.TUI do
+  @moduledoc """
+  The terminal interface, an `ExRatatui.App` in the alternate screen.
+
+  The TUI subscribes to one session and renders from `Helyx.TUI.ViewModel`,
+  a pure fold over the session's events. It holds no session state of its
+  own. Keys:
+
+    * typing fills the composer (`ExRatatui.Widgets.TextInput`: cursor
+      movement, Home/End, Delete, Backspace)
+    * Enter sends the composer as a steer (a prompt when no turn runs)
+    * Alt+Enter sends it as a follow-up
+    * Escape aborts the running turn
+    * Ctrl+C quits and restores the terminal
+
+  Start it with `run/1`, which blocks until the user quits:
+
+      Helyx.TUI.run(session: session, model: "opencode-go/kimi-k2")
+  """
+
+  use ExRatatui.App
+
+  alias ExRatatui.Event.{Key, Paste}
+  alias ExRatatui.Layout
+  alias ExRatatui.Layout.Rect
+  alias ExRatatui.Style
+  alias ExRatatui.Text.{Line, Span}
+  alias ExRatatui.Widgets.{Block, Paragraph, TextInput}
+  alias Helyx.{Message, Session}
+  alias Helyx.TUI.ViewModel
+
+  @dim %Style{modifiers: [:dim]}
+  @bold %Style{modifiers: [:bold]}
+  @tool %Style{fg: :cyan}
+  @bad %Style{fg: :red}
+
+  @doc "Starts the TUI for a session and blocks until the user quits."
+  @spec run(keyword()) :: :ok | {:error, term()}
+  def run(opts) do
+    with {:ok, pid} <- start_link(opts) do
+      ref = Process.monitor(pid)
+
+      receive do
+        {:DOWN, ^ref, :process, ^pid, :normal} -> :ok
+        {:DOWN, ^ref, :process, ^pid, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def mount(opts) do
+    session = Keyword.fetch!(opts, :session)
+    :ok = Session.subscribe(session)
+
+    # A monitor surfaces a dying session through run/1. A session that is
+    # already gone has nothing to monitor; exit now rather than hang idle.
+    case Session.pid(session) do
+      nil -> exit({:session_down, :noproc})
+      pid -> Process.monitor(pid)
+    end
+
+    {:ok,
+     %{
+       session: session,
+       vm: ViewModel.new(Keyword.fetch!(opts, :model)),
+       input: ExRatatui.text_input_new()
+     }}
+  end
+
+  @impl true
+  def handle_info({:helyx_event, event}, state) do
+    {:noreply, %{state | vm: ViewModel.apply(state.vm, event)}}
+  end
+
+  # A dead session leaves nothing to render; exiting surfaces the reason
+  # through run/1 instead of a noproc crash on the next keypress.
+  def handle_info({:DOWN, _ref, :process, _pid, reason}, _state) do
+    exit({:session_down, reason})
+  end
+
+  def handle_info(_msg, state), do: {:noreply, state}
+
+  @impl true
+  def handle_event(%Key{code: "c", modifiers: ["ctrl"]}, state), do: {:stop, state}
+
+  def handle_event(%Key{code: "esc", kind: "press"}, state) do
+    # Abort waits for the hands to kill every OS process; a Task keeps that
+    # wait off the render loop.
+    session = state.session
+    Task.start(fn -> Session.abort(session) end)
+    {:noreply, state}
+  end
+
+  def handle_event(%Key{code: "enter", kind: "press"} = key, state) do
+    case ExRatatui.text_input_get_value(state.input) do
+      "" ->
+        {:noreply, state}
+
+      text ->
+        if "alt" in key.modifiers do
+          :ok = Session.follow_up(state.session, text)
+        else
+          :ok = Session.steer(state.session, text)
+        end
+
+        ExRatatui.text_input_set_value(state.input, "")
+        {:noreply, state}
+    end
+  end
+
+  # Everything else goes to the input widget, which inserts printable
+  # characters and handles its own editing keys.
+  def handle_event(%Key{} = key, state) do
+    if key.kind in ["press", "repeat"] and key.modifiers -- ["shift"] == [] do
+      ExRatatui.text_input_handle_key(state.input, key.code)
+    end
+
+    {:noreply, state}
+  end
+
+  def handle_event(%Paste{content: content}, state) do
+    ExRatatui.text_input_insert_str(state.input, content)
+    {:noreply, state}
+  end
+
+  def handle_event(_event, state), do: {:noreply, state}
+
+  @impl true
+  def render(state, frame) do
+    area = %Rect{x: 0, y: 0, width: frame.width, height: frame.height}
+
+    [transcript, composer, status] =
+      Layout.split(area, :vertical, [{:min, 0}, {:length, 3}, {:length, 1}])
+
+    [
+      {transcript_widget(state.vm, transcript), transcript},
+      {composer_widget(state.input), composer},
+      {status_widget(state.vm), status}
+    ]
+  end
+
+  # Transcript
+
+  # The newest lines win: everything is rendered to width-bounded lines and
+  # the last rows that fit are shown.
+  # ponytail: no scrollback, add a scroll offset when reading history matters (#39)
+  defp transcript_widget(vm, %Rect{width: width, height: height}) do
+    # Every cell yields at least one line, so the last `height` cells
+    # always fill the screen; older ones would be wrapped and dropped.
+    vm = %{vm | cells: Enum.take(vm.cells, -height)}
+    %Paragraph{text: Enum.take(transcript_lines(vm, width), -height)}
+  end
+
+  @doc false
+  # Public for tests: the transcript as width-bounded `Line` structs.
+  def transcript_lines(%ViewModel{} = vm, width) do
+    streaming =
+      if vm.streaming,
+        do: [%Message{role: :assistant, content: Enum.reverse(vm.streaming)}],
+        else: []
+
+    Enum.flat_map(vm.cells ++ streaming, &(cell_lines(&1, width) ++ [%Line{}]))
+  end
+
+  defp cell_lines(%Message{role: :user} = message, width) do
+    styled_lines("› " <> Message.text(message), width, @bold)
+  end
+
+  defp cell_lines(%Message{role: :assistant} = message, width) do
+    block_lines(message.content, width)
+  end
+
+  defp cell_lines({:tool, call, result}, width) do
+    call_line = styled_lines("⚙ #{call.name} #{compact_arguments(call)}", width, @tool)
+    call_line ++ result_lines(result, width)
+  end
+
+  defp cell_lines({:notice, text}, width), do: styled_lines("✕ #{text}", width, @bad)
+
+  defp block_lines(blocks, width) do
+    Enum.flat_map(blocks, fn
+      %Message.Text{text: text} -> styled_lines(text, width, %Style{})
+      %Message.Thinking{thinking: text} -> styled_lines(text, width, @dim)
+      %Message.ToolCall{} -> []
+    end)
+  end
+
+  defp result_lines(nil, width), do: styled_lines("… running", width, @dim)
+
+  # Long tool output would drown the transcript; four lines tell the story.
+  defp result_lines(%Message{} = result, width) do
+    style = if result.is_error, do: @bad, else: @dim
+    lines = result |> Message.text() |> String.trim_trailing("\n") |> String.split("\n")
+
+    shown = Enum.flat_map(Enum.take(lines, 4), &styled_lines("  " <> &1, width, style))
+
+    case length(lines) - 4 do
+      hidden when hidden > 0 ->
+        plural = if hidden == 1, do: "line", else: "lines"
+        shown ++ styled_lines("  … #{hidden} more #{plural}", width, @dim)
+
+      _ ->
+        shown
+    end
+  end
+
+  defp compact_arguments(%Message.ToolCall{arguments: arguments}) do
+    arguments
+    |> Enum.map_join(" ", fn {key, value} -> "#{key}=#{inspect(value)}" end)
+    |> String.replace("\n", "␤")
+  end
+
+  # One styled Line per screen row: split on newlines, then chunk to width.
+  # ponytail: width counts graphemes, wide CJK glyphs overflow by one column (#40)
+  defp styled_lines(text, width, style) do
+    for source_line <- String.split(text, "\n"),
+        chunk <- wrap(source_line, width) do
+      %Line{spans: [%Span{content: chunk, style: style}]}
+    end
+  end
+
+  defp wrap(line, width) do
+    case line |> String.graphemes() |> Enum.chunk_every(max(width, 1)) do
+      [] -> [""]
+      chunks -> Enum.map(chunks, &Enum.join/1)
+    end
+  end
+
+  # Composer and status
+
+  defp composer_widget(input) do
+    %TextInput{
+      state: input,
+      cursor_style: %Style{modifiers: [:reversed]},
+      block: %Block{borders: [:all], title: "prompt"}
+    }
+  end
+
+  defp status_widget(vm) do
+    state = if vm.running?, do: "working", else: "idle"
+    %{steers: steers, follow_ups: follow_ups} = vm.queue
+
+    %Paragraph{
+      text: %Line{
+        spans: [
+          %Span{
+            content: " #{vm.model} · #{state} · queued #{steers}+#{follow_ups} ",
+            style: @bold
+          },
+          %Span{
+            content: " Enter steer · Alt+Enter follow-up · Esc abort · Ctrl+C quit",
+            style: @dim
+          }
+        ]
+      }
+    }
+  end
+end

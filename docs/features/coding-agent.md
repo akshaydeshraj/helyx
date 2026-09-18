@@ -104,9 +104,11 @@ Two more holes are open and accepted for checkpoint one. Nothing locks a session
 
 ## TUI
 
-- ex_ratatui, alternate screen.
-- Escape aborts. Enter sends a steer during a turn. A modifier plus Enter queues a follow-up. The status bar shows the queue count.
+- ex_ratatui, alternate screen. The TUI is `Helyx.TUI` under `plugins/tui`. It implements no Core interface and is not in Core's plugin list: it is a client that subscribes to one session. Local delivery is OTP messages from `Helyx.Session.subscribe/1`; a Transport interface arrives with the first remote client.
+- The view model is a pure fold over events, `Helyx.TUI.ViewModel`, tested with scripted event lists. It grows with the conversation, bounded by the session. The composer is human input, unbounded like the queues (ticket #29). Tool results render at most four content lines each, plus one truncation row naming the hidden line count.
+- Escape aborts. Enter sends a steer during a turn and a prompt when idle. Alt plus Enter queues a follow-up: most terminals cannot tell Shift+Enter from Enter without the kitty keyboard protocol, so Alt is the modifier. The status bar shows the model, the run state, and the queue counts.
 - Queued steers are delivered together at the next provider call. On a harness turn, a steer aborts and resends (see Harness turns).
+- The `helyx` Mix task lives in `apps/coding_agent`. `mix helyx [directory] [--model provider/model]` starts Core with the bundled plugins, one session in `directory` (default: the current one), and the TUI, and quitting restores the terminal.
 
 ## Out of scope
 

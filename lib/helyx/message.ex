@@ -127,6 +127,25 @@ defmodule Helyx.Message do
     _ -> false
   end
 
+  @doc """
+  Adds a stream delta to a reversed block list, newest first. Consecutive
+  deltas of one kind extend the head block. The session and every client
+  build assistant content with this, so the delta vocabulary lives in one
+  place.
+  """
+  @spec add_block(
+          [block()],
+          {:text_delta, String.t()} | {:thinking_delta, String.t()} | {:tool_call, ToolCall.t()}
+        ) :: [block()]
+  def add_block([%Text{text: t} = b | rest], {:text_delta, d}), do: [%{b | text: t <> d} | rest]
+  def add_block(blocks, {:text_delta, d}), do: [%Text{text: d} | blocks]
+
+  def add_block([%Thinking{thinking: t} = b | rest], {:thinking_delta, d}),
+    do: [%{b | thinking: t <> d} | rest]
+
+  def add_block(blocks, {:thinking_delta, d}), do: [%Thinking{thinking: d} | blocks]
+  def add_block(blocks, {:tool_call, %ToolCall{} = call}), do: [call | blocks]
+
   @doc "Concatenates the text blocks of a message. Other blocks are skipped."
   @spec text(t()) :: String.t()
   def text(%__MODULE__{content: content}) do
