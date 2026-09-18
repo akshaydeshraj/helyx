@@ -163,18 +163,60 @@ defmodule Helyx.Provider.OpenAI do
   end
 
   # The error body names the reason for a 401 or 429; without it the turn
-  # error is just a number.
+  # error is just a number. A diagnostic, so the limit is small; halting the
+  # reduce cancels the rest of the response. The cut can land inside a UTF-8
+  # character; `String.replace_invalid` keeps the diagnostic valid text.
+  @max_error_body_bytes 16_384
+
   defp drain(resp) do
-    Enum.join(resp.body)
+    resp.body
+    |> Enum.reduce_while({[], 0}, fn chunk, {body, size} ->
+      case size + byte_size(chunk) do
+        size when size <= @max_error_body_bytes -> {:cont, {[body, chunk], size}}
+        _over -> {:halt, {:over, [body, chunk]}}
+      end
+    end)
+    |> case do
+      {:over, body} ->
+        cut =
+          body
+          |> IO.iodata_to_binary()
+          |> binary_part(0, @max_error_body_bytes)
+          |> String.replace_invalid("")
+
+        cut <> "\n[truncated at the #{@max_error_body_bytes}-byte limit]"
+
+      {body, _size} ->
+        IO.iodata_to_binary(body)
+    end
   rescue
     _ -> ""
   end
 
   # Wire events
 
+  # No gateway sends an SSE line near 1 MiB; a line past this is a broken or
+  # hostile peer, and the buffer must not grow without bound.
+  @max_line_bytes 1_048_576
+
+  # Room for a Write of a large file; past this the model is looping or the
+  # peer is hostile, and `calls` must not grow without bound. The budget
+  # charges everything `calls` retains: argument fragments plus the list
+  # cells that hold them, ids, names, and a flat cost per entry, so a peer
+  # spraying indexes or one-byte fragments is bounded like one spraying
+  # bytes.
+  @max_tool_call_bytes 10_485_760
+  @call_entry_bytes 100
+  # Measured retention of a kept fragment: the cons pair plus the heap
+  # binary that holds the copy.
+  @call_fragment_bytes 64
+
   # The accumulator: `buffer` holds a partial SSE line across chunks, `calls`
-  # assembles tool calls by index, `finish` and `usage` wait for `[DONE]`.
-  @acc %{buffer: "", calls: %{}, finish: nil, usage: %{}}
+  # assembles tool calls by index with `tool_bytes` their charged size,
+  # `finish` and `usage` wait for `[DONE]`. `finish` and `usage` are
+  # normalized to an atom and an integer map at ingest, so they retain no
+  # wire bytes.
+  @acc %{buffer: "", calls: %{}, tool_bytes: 0, finish: nil, usage: %{}}
 
   @doc """
   Transforms a stream of SSE body chunks into provider stream events.
@@ -200,13 +242,23 @@ defmodule Helyx.Provider.OpenAI do
     Enum.flat_map_reduce(lines, %{acc | buffer: buffer}, &line/2)
   end
 
-  # Complete lines and the trailing partial one. SSE delimits with \n or \r\n.
+  # Complete lines and the trailing partial one. SSE delimits with \n or
+  # \r\n. A partial past the limit is promoted to a complete line so the one
+  # guard in `line/2` errors now, before any terminator, and the buffer never
+  # grows past the limit by more than one chunk.
   defp split_lines(data) do
     {partial, complete} = data |> :binary.split(["\r\n", "\n"], [:global]) |> List.pop_at(-1)
-    {complete, partial}
+
+    if byte_size(partial) > @max_line_bytes,
+      do: {complete ++ [partial], ""},
+      else: {complete, partial}
   end
 
   defp line(_line, :halted), do: {:halt, :halted}
+
+  defp line(line, _acc) when byte_size(line) > @max_line_bytes,
+    do: {[{:error, {:line_over_limit, @max_line_bytes}}], :halted}
+
   defp line("data:" <> payload, acc), do: data(String.trim_leading(payload, " "), acc)
   defp line(_line, acc), do: {[], acc}
 
@@ -255,16 +307,31 @@ defmodule Helyx.Provider.OpenAI do
 
   defp valid_delta?(_delta), do: false
 
+  # Everything the call accumulator retains must be typed and bounded here,
+  # or a peer could retain terms the byte budget cannot charge. An index is
+  # a map key, so it may also be an integer; the cap keeps a bignum from
+  # smuggling megabytes past the budget, and no wire sends indexes near it.
+  @max_call_index 10_000
+
   defp valid_call?(%{} = call) do
-    case call["function"] do
-      nil -> true
-      # Non-binary argument fragments can raise later, at flush.
-      %{} = function -> function["arguments"] == nil or is_binary(function["arguments"])
-      _function -> false
-    end
+    valid_index?(call["index"]) and valid_leaf?(call["id"]) and valid_function?(call["function"])
   end
 
   defp valid_call?(_call), do: false
+
+  defp valid_index?(nil), do: true
+  defp valid_index?(index) when is_integer(index), do: index in 0..@max_call_index
+  defp valid_index?(index), do: is_binary(index)
+
+  defp valid_function?(nil), do: true
+
+  # Non-binary argument fragments can raise later, at flush.
+  defp valid_function?(%{} = function),
+    do: valid_leaf?(function["name"]) and valid_leaf?(function["arguments"])
+
+  defp valid_function?(_function), do: false
+
+  defp valid_leaf?(leaf), do: leaf == nil or is_binary(leaf)
 
   # A gateway reports a mid-stream failure as an error object in the data.
   defp chunk_events(%{"error" => error}, acc), do: {[{:error, {:api_error, error}}], acc}
@@ -273,14 +340,24 @@ defmodule Helyx.Provider.OpenAI do
     choice = List.first(chunk["choices"] || []) || %{}
     delta = choice["delta"] || %{}
 
+    acc = Enum.reduce(delta["tool_calls"] || [], acc, &add_call_delta/2)
+
+    # Normalizing here, not at flush, releases the decoded chunk: a raw
+    # `finish_reason` or `usage` is a sub-binary that pins its whole parent.
+    finish = choice["finish_reason"]
+    usage = chunk["usage"]
+
     acc = %{
       acc
-      | calls: Enum.reduce(delta["tool_calls"] || [], acc.calls, &add_call_delta/2),
-        finish: choice["finish_reason"] || acc.finish,
-        usage: chunk["usage"] || acc.usage
+      | finish: if(finish, do: stop_reason(finish), else: acc.finish),
+        usage: if(usage, do: usage(usage), else: acc.usage)
     }
 
-    {delta_events(delta), acc}
+    if acc.tool_bytes > @max_tool_call_bytes do
+      {[{:error, {:tool_call_bytes_over_limit, @max_tool_call_bytes}}], :halted}
+    else
+      {delta_events(delta), acc}
+    end
   end
 
   # Thinking arrives as `reasoning_content` (DeepSeek style) or `reasoning`
@@ -299,24 +376,55 @@ defmodule Helyx.Provider.OpenAI do
   # without an index starts the next call when it carries an id and extends
   # the last call otherwise. The id and name are taken from the first delta
   # that has them.
-  defp add_call_delta(delta, calls) do
+  defp add_call_delta(delta, acc) do
     function = delta["function"] || %{}
-    arguments = function["arguments"] || ""
+    # A decoded field is a sub-binary that keeps the whole coalesced chunk
+    # it was split from alive, and chunk size has no bound of its own; the
+    # copies release the chunk, so the charge tells the truth about what
+    # the accumulator retains.
+    arguments = copy(function["arguments"] || "")
+    id = copy(delta["id"] || "")
+    name = copy(function["name"] || "")
+    index = copy(Map.get_lazy(delta, "index", fn -> implied_index(delta, acc.calls) end))
 
-    Map.update(
-      calls,
-      Map.get_lazy(delta, "index", fn -> implied_index(delta, calls) end),
-      %{id: delta["id"], name: function["name"] || "", arguments: [arguments]},
-      fn call ->
-        %{
-          call
-          | id: call.id || delta["id"],
-            name: if(call.name == "", do: function["name"] || "", else: call.name),
-            arguments: [call.arguments, arguments]
-        }
-      end
-    )
+    fragment = if arguments == "", do: 0, else: @call_fragment_bytes + byte_size(arguments)
+
+    tool_bytes =
+      acc.tool_bytes + fragment + byte_size(id) + byte_size(name) + entry_bytes(acc.calls, index)
+
+    calls =
+      Map.update(
+        acc.calls,
+        index,
+        %{id: id, name: name, arguments: [arguments]},
+        fn call ->
+          %{
+            call
+            | id: if(call.id == "", do: id, else: call.id),
+              name: if(call.name == "", do: name, else: call.name),
+              # An empty fragment appends nothing, so a delta that charges
+              # zero bytes also retains zero bytes.
+              arguments:
+                if(arguments == "", do: call.arguments, else: [call.arguments, arguments])
+          }
+        end
+      )
+
+    %{acc | calls: calls, tool_bytes: tool_bytes}
   end
+
+  defp copy(bin) when is_binary(bin), do: :binary.copy(bin)
+  defp copy(term), do: term
+
+  # A new entry costs its key plus a flat charge for the entry itself.
+  defp entry_bytes(calls, index) do
+    if Map.has_key?(calls, index), do: 0, else: @call_entry_bytes + bin_size(index)
+  end
+
+  # After the shape gate, ids and names are nil or binary; an index may
+  # also be an integer, which costs only its flat entry charge.
+  defp bin_size(bin) when is_binary(bin), do: byte_size(bin)
+  defp bin_size(_bin), do: 0
 
   defp implied_index(%{"id" => id}, calls) when is_binary(id), do: map_size(calls)
   defp implied_index(_delta, calls), do: max(map_size(calls) - 1, 0)
@@ -335,7 +443,7 @@ defmodule Helyx.Provider.OpenAI do
 
       nil ->
         calls = Enum.map(results, fn {:ok, call} -> {:tool_call, call} end)
-        done = {:done, %{stop_reason: stop_reason(acc.finish), usage: usage(acc.usage)}}
+        done = {:done, %{stop_reason: acc.finish, usage: acc.usage}}
         {calls ++ [done], acc}
     end
   end

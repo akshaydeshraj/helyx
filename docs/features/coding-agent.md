@@ -91,6 +91,11 @@ Bounds:
 | Project directory slug | Last 100 characters of the slugged cwd | Collisions are disambiguated by the header `cwd` |
 | Prompt text | Must be valid UTF-8 | `{:error, :invalid_utf8}` at the client boundary |
 | `cwd` and model on create | Must be valid UTF-8 | `{:error, {:create_failed, :invalid_utf8}}` |
+| SSE line from the model gateway | 1 MiB, terminated or not; the buffer overshoots by at most one transport chunk | One `{:error, {:line_over_limit, limit}}` event ends the stream |
+| Tool call bytes per response (argument fragments with a flat charge each, ids, names, entry keys, a flat charge per call) | 10 MiB across all calls, overshooting by at most one line; integer call indexes at most 10,000 | One `{:error, {:tool_call_bytes_over_limit, limit}}` event ends the stream; no partial call is emitted |
+| HTTP error response body | 16 KiB; the accumulator overshoots by at most one transport chunk | The body is cut to valid UTF-8 at the limit and marked `[truncated at the N-byte limit]`; the rest of the response is cancelled |
+
+The three provider limits carry no research citation: `docs/research/coding-tools.md` covers tool output truncation, not gateway input, so the values are set here.
 
 Ownership:
 

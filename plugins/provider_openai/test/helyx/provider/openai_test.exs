@@ -264,12 +264,193 @@ defmodule Helyx.Provider.OpenAITest do
         ~s([1,2]),
         ~s({"choices":[{"delta":{"tool_calls":"x"}}]}),
         ~s({"choices":[{"delta":{"tool_calls":[{"function":"x"}]}}]}),
-        ~s({"choices":[{"delta":{"tool_calls":[{"function":{"arguments":{}}}]}}]})
+        ~s({"choices":[{"delta":{"tool_calls":[{"function":{"arguments":{}}}]}}]}),
+        ~s({"choices":[{"delta":{"tool_calls":[{"id":42}]}}]}),
+        ~s({"choices":[{"delta":{"tool_calls":[{"function":{"name":42}}]}}]}),
+        ~s({"choices":[{"delta":{"tool_calls":[{"index":[1]}]}}]}),
+        ~s({"choices":[{"delta":{"tool_calls":[{"index":-1}]}}]}),
+        ~s({"choices":[{"delta":{"tool_calls":[{"index":10001}]}}]})
       ] do
     test "a chunk with the wrong shape is an error event: #{chunk}" do
       assert Enum.to_list(OpenAI.events([sse([unquote(chunk)])])) ==
                [{:error, {:bad_chunk, unquote(chunk)}}]
     end
+  end
+
+  # Limits on network input. At the limit and one under pass; one over ends
+  # the stream with one error event.
+
+  @max_line_bytes 1_048_576
+
+  defp content_line(pad), do: ~s(data: {"choices":[{"delta":{"content":"#{pad}"}}]})
+
+  # A full SSE line, `data: ` prefix included, of exactly `bytes` bytes,
+  # the content ending in `tail`.
+  defp content_line_of(bytes, tail \\ "") do
+    pad = String.duplicate("a", bytes - byte_size(content_line("")) - byte_size(tail))
+    content_line(pad <> tail)
+  end
+
+  for bytes <- [@max_line_bytes, @max_line_bytes - 1] do
+    test "an SSE line of #{bytes} bytes parses normally" do
+      chunks = [content_line_of(unquote(bytes)) <> "\n\ndata: [DONE]\n\n"]
+
+      assert [{:text_delta, _}] = Enum.to_list(OpenAI.events(chunks))
+    end
+  end
+
+  test "an SSE line over the limit ends the stream with one error event" do
+    chunks = [content_line_of(@max_line_bytes + 1) <> "\n\n", sse(["[DONE]"])]
+
+    assert Enum.to_list(OpenAI.events(chunks)) ==
+             [{:error, {:line_over_limit, @max_line_bytes}}]
+  end
+
+  test "a multibyte character at the line limit parses and one over errors" do
+    at = [content_line_of(@max_line_bytes, "😀") <> "\n\ndata: [DONE]\n\n"]
+    assert [{:text_delta, _}] = Enum.to_list(OpenAI.events(at))
+
+    over = [content_line_of(@max_line_bytes + 1, "😀") <> "\n\ndata: [DONE]\n\n"]
+
+    assert Enum.to_list(OpenAI.events(over)) ==
+             [{:error, {:line_over_limit, @max_line_bytes}}]
+  end
+
+  test "an unterminated line over the limit errors before any terminator" do
+    half = String.duplicate("a", div(@max_line_bytes, 2) + 1)
+    chunks = ["data: " <> half, half, half]
+
+    assert Enum.to_list(OpenAI.events(chunks)) ==
+             [{:error, {:line_over_limit, @max_line_bytes}}]
+  end
+
+  @max_tool_call_bytes 10_485_760
+  @call_entry_bytes 100
+  @call_fragment_bytes 64
+
+  defp n_fragments(json_bytes), do: div(json_bytes - 1, 500_000) + 1
+
+  defp binary_chunks(bin, size) when byte_size(bin) <= size, do: [bin]
+
+  defp binary_chunks(bin, size) do
+    <<head::binary-size(^size), rest::binary>> = bin
+    [head | binary_chunks(rest, size)]
+  end
+
+  # One tool call whose charged bytes (entry, id, name, argument fragments
+  # with their per-fragment charge) total exactly `bytes`, the arguments
+  # ending in `tail`. The tail stays inside the last fragment, so every
+  # fragment is valid UTF-8 and survives the JSON encode in `sse/1`.
+  defp call_deltas(bytes, tail \\ "") do
+    charged = byte_size("c1") + byte_size("bash") + @call_entry_bytes
+
+    # The per-fragment charge depends on the fragment count, so settle the
+    # JSON size in a second pass; away from a 500 KB boundary it converges.
+    json_bytes = bytes - charged
+    json_bytes = bytes - charged - @call_fragment_bytes * n_fragments(json_bytes)
+
+    pad = String.duplicate("a", json_bytes - byte_size(~s({"a":""})) - byte_size(tail))
+    json = ~s({"a":"#{pad}#{tail}"})
+
+    first =
+      delta(%{tool_calls: [%{index: 0, id: "c1", function: %{name: "bash", arguments: ""}}]})
+
+    fragments =
+      for frag <- binary_chunks(json, 500_000),
+          do: delta(%{tool_calls: [%{index: 0, function: %{arguments: frag}}]})
+
+    [first | fragments] ++ [delta(%{}, "tool_calls"), "[DONE]"]
+  end
+
+  for bytes <- [@max_tool_call_bytes, @max_tool_call_bytes - 1] do
+    test "tool arguments of #{bytes} bytes assemble into the call" do
+      events = Enum.to_list(OpenAI.events([sse(call_deltas(unquote(bytes)))]))
+
+      assert [
+               {:tool_call,
+                %Helyx.Message.ToolCall{id: "c1", name: "bash", arguments: %{"a" => _}}},
+               {:done, _}
+             ] = events
+    end
+  end
+
+  test "tool arguments over the limit end the stream with one error event" do
+    events = Enum.to_list(OpenAI.events([sse(call_deltas(@max_tool_call_bytes + 1))]))
+
+    assert events == [{:error, {:tool_call_bytes_over_limit, @max_tool_call_bytes}}]
+  end
+
+  test "multibyte tool arguments at the limit assemble and one over errors" do
+    at = Enum.to_list(OpenAI.events([sse(call_deltas(@max_tool_call_bytes, "😀"))]))
+    assert [{:tool_call, %Helyx.Message.ToolCall{}}, {:done, _}] = at
+
+    over = Enum.to_list(OpenAI.events([sse(call_deltas(@max_tool_call_bytes + 1, "😀"))]))
+    assert over == [{:error, {:tool_call_bytes_over_limit, @max_tool_call_bytes}}]
+  end
+
+  test "tool call ids and names count toward the limit" do
+    name = String.duplicate("n", 900_000)
+
+    deltas =
+      for i <- 0..12,
+          do:
+            delta(%{
+              tool_calls: [%{index: i, id: "c#{i}", function: %{name: name, arguments: ""}}]
+            })
+
+    events = Enum.to_list(OpenAI.events([sse(deltas ++ ["[DONE]"])]))
+
+    assert events == [{:error, {:tool_call_bytes_over_limit, @max_tool_call_bytes}}]
+  end
+
+  # A delta that only names an index still creates an entry; the entry and
+  # its key are charged, so index spraying is bounded too.
+  test "tool call entry keys count toward the limit" do
+    deltas =
+      for i <- 0..12,
+          do: delta(%{tool_calls: [%{index: "#{i}#{String.duplicate("k", 900_000)}"}]})
+
+    events = Enum.to_list(OpenAI.events([sse(deltas ++ ["[DONE]"])]))
+
+    assert events == [{:error, {:tool_call_bytes_over_limit, @max_tool_call_bytes}}]
+  end
+
+  @max_error_body_bytes 16_384
+
+  for bytes <- [@max_error_body_bytes, @max_error_body_bytes - 1] do
+    test "an error body of #{bytes} bytes arrives whole" do
+      body = String.duplicate("a", unquote(bytes))
+      plug(&Plug.Conn.send_resp(&1, 500, body))
+
+      assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+      assert Enum.to_list(stream) == [{:error, {:http_status, 500, body}}]
+    end
+  end
+
+  test "an error body over the limit is cut and marked" do
+    body = String.duplicate("a", @max_error_body_bytes + 1)
+    plug(&Plug.Conn.send_resp(&1, 500, body))
+
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+    assert [{:error, {:http_status, 500, cut}}] = Enum.to_list(stream)
+
+    assert cut ==
+             binary_part(body, 0, @max_error_body_bytes) <>
+               "\n[truncated at the #{@max_error_body_bytes}-byte limit]"
+  end
+
+  test "an error body cut inside a multibyte character retreats to a boundary" do
+    body = String.duplicate("a", @max_error_body_bytes - 2) <> "😀😀"
+    plug(&Plug.Conn.send_resp(&1, 500, body))
+
+    assert {:ok, stream} = OpenAI.Go.stream("m", %Helyx.Context{}, [])
+    assert [{:error, {:http_status, 500, cut}}] = Enum.to_list(stream)
+
+    assert cut ==
+             String.duplicate("a", @max_error_body_bytes - 2) <>
+               "\n[truncated at the #{@max_error_body_bytes}-byte limit]"
+
+    assert String.valid?(cut)
   end
 
   # The [DONE] arrives in a later chunk so the test covers both halts: the
