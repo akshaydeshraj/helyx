@@ -11,3 +11,4 @@ Every session has a hands process that owns the working directory and runs tool 
 - Tool calls and results contain no pids, functions, or references.
 - The set of available tools is reported by the hands, not configured on the session.
 - Harness providers are also spawned on the hands side, because they are shell processes that act on the working directory.
+- OS resources that tools create are registered with the hands before the external work starts, never held by a Task (ADR 0004).
