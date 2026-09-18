@@ -22,6 +22,14 @@ defmodule Helyx.Session do
   working directory at once. Each result joins the transcript as it arrives,
   and the provider is called again after the last one. The turn ends on an
   assistant message with no tool calls.
+
+  Messages sent during a turn queue instead of failing. A steer is delivered,
+  with the other queued steers in order, as user messages before the next
+  provider call inside the same turn. A follow-up starts a new turn after the
+  current turn ends. Anything still queued when a turn ends normally starts a
+  new turn; an aborted or failed turn drops its queues. Queues live in the
+  session process only and are not persisted. Every change emits a
+  `:queue_update` event.
   """
 
   use GenServer, restart: :temporary
@@ -58,7 +66,9 @@ defmodule Helyx.Session do
       tools: [],
       transcript: [],
       seq: 0,
-      turn: nil
+      turn: nil,
+      steers: [],
+      follow_ups: []
     ]
   end
 
@@ -139,6 +149,10 @@ defmodule Helyx.Session do
     :ok
   end
 
+  @doc "The pid behind a session handle, or nil when the session is not running."
+  @spec pid(t()) :: pid() | nil
+  def pid(%__MODULE__{id: id, core: core}), do: GenServer.whereis(via(core, id))
+
   @doc "Sends a prompt. Starts a turn if none is running. The text must be valid UTF-8."
   @spec prompt(t(), String.t()) :: :ok | {:error, :turn_running | :invalid_utf8}
   def prompt(%__MODULE__{id: id, core: core}, text) when is_binary(text) do
@@ -147,6 +161,46 @@ defmodule Helyx.Session do
     else
       {:error, :invalid_utf8}
     end
+  end
+
+  @doc """
+  Steers the running turn. The text joins the queued steers and is delivered
+  before the next provider call inside the turn. With no turn running it
+  starts a turn, like a prompt. The text must be valid UTF-8.
+  """
+  @spec steer(t(), String.t()) :: :ok | {:error, :invalid_utf8}
+  def steer(%__MODULE__{id: id, core: core}, text) when is_binary(text) do
+    if Message.valid_utf8?(text) do
+      GenServer.call(via(core, id), {:steer, text})
+    else
+      {:error, :invalid_utf8}
+    end
+  end
+
+  @doc """
+  Queues a follow-up prompt. It starts a new turn after the current turn ends
+  normally. With no turn running it starts a turn at once. The text must be
+  valid UTF-8.
+  """
+  @spec follow_up(t(), String.t()) :: :ok | {:error, :invalid_utf8}
+  def follow_up(%__MODULE__{id: id, core: core}, text) when is_binary(text) do
+    if Message.valid_utf8?(text) do
+      GenServer.call(via(core, id), {:follow_up, text})
+    else
+      {:error, :invalid_utf8}
+    end
+  end
+
+  @doc "Reads the queue counts, as in the `:queue_update` event."
+  @spec queue_count(t()) :: %{steers: non_neg_integer(), follow_ups: non_neg_integer()}
+  def queue_count(%__MODULE__{id: id, core: core}) do
+    GenServer.call(via(core, id), :queue_count)
+  end
+
+  @doc "The session's current model ref, as a `provider/model` string."
+  @spec model(t()) :: String.t()
+  def model(%__MODULE__{id: id, core: core}) do
+    GenServer.call(via(core, id), :model)
   end
 
   @doc """
@@ -187,18 +241,25 @@ defmodule Helyx.Session do
     {:reply, {:error, :turn_running}, state}
   end
 
-  def handle_call({:prompt, text}, _from, %State{} = state) do
-    user = Message.user(text)
+  def handle_call({:steer, text}, _from, %State{turn: %Turn{}} = state) do
+    {:reply, :ok, queue(state, :steers, text)}
+  end
 
-    state =
-      %{append_message(state, user) | turn: %Turn{id: Helyx.Id.new()}}
-      |> emit(:agent_start, %{})
-      |> emit(:turn_start, %{})
-      |> emit(:message_start, %{message: user})
-      |> emit(:message_end, %{message: user})
-      |> start_provider_call()
+  def handle_call({:follow_up, text}, _from, %State{turn: %Turn{}} = state) do
+    {:reply, :ok, queue(state, :follow_ups, text)}
+  end
 
-    {:reply, :ok, state}
+  def handle_call({op, text}, _from, %State{} = state)
+      when op in [:prompt, :steer, :follow_up] do
+    {:reply, :ok, begin_turn(state, [text])}
+  end
+
+  def handle_call(:queue_count, _from, %State{} = state) do
+    {:reply, queue_counts(state), state}
+  end
+
+  def handle_call(:model, _from, %State{model: ref} = state) do
+    {:reply, ModelRef.to_string(ref), state}
   end
 
   def handle_call(:abort, _from, %State{turn: nil} = state), do: {:reply, :ok, state}
@@ -211,6 +272,7 @@ defmodule Helyx.Session do
       state
       |> abort_open_calls()
       |> close_partial_message(:aborted, :aborted)
+      |> drop_queues()
       |> emit(:agent_end, %{stop_reason: :aborted})
       |> close_turn()
 
@@ -222,7 +284,7 @@ defmodule Helyx.Session do
     %State{turn: turn} = state = start_assistant_message(state)
 
     {:noreply,
-     %{state | turn: %{turn | partial: add_block(event, turn.partial)}}
+     %{state | turn: %{turn | partial: Message.add_block(turn.partial, event)}}
      |> emit(:message_update, Map.new([event]))}
   end
 
@@ -260,6 +322,52 @@ defmodule Helyx.Session do
   def handle_info({:stream_event, _turn_id, _event}, state), do: {:noreply, state}
 
   # Turn machinery
+
+  # Starts a turn with one user message per text, in order.
+  defp begin_turn(%State{} = state, texts) do
+    state = %{state | turn: %Turn{id: Helyx.Id.new()}}
+    state = state |> emit(:agent_start, %{}) |> emit(:turn_start, %{})
+    start_provider_call(Enum.reduce(texts, state, &append_user(&2, &1)))
+  end
+
+  defp append_user(state, text) do
+    user = Message.user(text)
+
+    append_message(state, user)
+    |> emit(:message_start, %{message: user})
+    |> emit(:message_end, %{message: user})
+  end
+
+  defp queue(%State{} = state, :steers, text),
+    do: emit_queue(%{state | steers: state.steers ++ [text]})
+
+  defp queue(%State{} = state, :follow_ups, text),
+    do: emit_queue(%{state | follow_ups: state.follow_ups ++ [text]})
+
+  defp emit_queue(%State{} = state), do: emit(state, :queue_update, queue_counts(state))
+
+  defp queue_counts(%State{steers: steers, follow_ups: follow_ups}) do
+    %{steers: length(steers), follow_ups: length(follow_ups)}
+  end
+
+  defp drop_queues(%State{steers: [], follow_ups: []} = state), do: state
+  defp drop_queues(%State{} = state), do: emit_queue(%{state | steers: [], follow_ups: []})
+
+  # A normal turn end starts a new turn with everything still queued, steers
+  # first. The drain event goes out between the turns, with a nil turn id.
+  defp start_queued(%State{steers: [], follow_ups: []} = state), do: state
+
+  defp start_queued(%State{steers: steers, follow_ups: follow_ups} = state) do
+    %{state | steers: [], follow_ups: []}
+    |> emit_queue()
+    |> begin_turn(steers ++ follow_ups)
+  end
+
+  # Queued steers join the transcript before the provider call they precede.
+  defp start_provider_call(%State{steers: [_ | _] = steers} = state) do
+    state = Enum.reduce(steers, %{state | steers: []}, &append_user(&2, &1))
+    start_provider_call(emit_queue(state))
+  end
 
   defp start_provider_call(%State{turn: %Turn{id: turn_id} = turn} = state) do
     session = self()
@@ -329,19 +437,6 @@ defmodule Helyx.Session do
   defp forward(false = _valid, event, _session, _turn_id, _acc),
     do: {:halt, {:error, {:bad_stream_event, event}}}
 
-  # Consecutive deltas of one kind extend the head block; anything else
-  # starts a new block. The list is reversed.
-  defp add_block({:text_delta, d}, [%Message.Text{text: t} = b | rest]),
-    do: [%{b | text: t <> d} | rest]
-
-  defp add_block({:text_delta, d}, blocks), do: [%Message.Text{text: d} | blocks]
-
-  defp add_block({:thinking_delta, d}, [%Message.Thinking{thinking: t} = b | rest]),
-    do: [%{b | thinking: t <> d} | rest]
-
-  defp add_block({:thinking_delta, d}, blocks), do: [%Message.Thinking{thinking: d} | blocks]
-  defp add_block({:tool_call, call}, blocks), do: [call | blocks]
-
   defp end_turn({:done, %{stop_reason: stop_reason, usage: usage}}, state) do
     %State{turn: turn} = state = start_assistant_message(state)
     assistant = assistant_message(state, stop_reason: stop_reason, usage: usage)
@@ -356,6 +451,7 @@ defmodule Helyx.Session do
         |> emit(:turn_end, %{message: assistant})
         |> emit(:agent_end, %{stop_reason: stop_reason})
         |> close_turn()
+        |> start_queued()
 
       [first | _] = calls ->
         run_tool(first, %{state | turn: %{turn | task: nil, partial: nil, calls: calls}})
@@ -431,6 +527,7 @@ defmodule Helyx.Session do
   defp fail_turn(reason, state) do
     state
     |> close_partial_message(:error, reason)
+    |> drop_queues()
     |> emit(:agent_end, %{stop_reason: :error, error: reason})
     |> close_turn()
   end
@@ -466,7 +563,15 @@ defmodule Helyx.Session do
 
   defp start_assistant_message(state), do: state
 
-  defp emit(%State{turn: %Turn{id: turn_id}} = state, type, data) do
+  # Only the queue drain at a normal turn end fires between turns; every
+  # other emit with no turn is a bug and crashes here.
+  defp emit(%State{turn: nil} = state, :queue_update, data),
+    do: do_emit(state, nil, :queue_update, data)
+
+  defp emit(%State{turn: %Turn{id: turn_id}} = state, type, data),
+    do: do_emit(state, turn_id, type, data)
+
+  defp do_emit(state, turn_id, type, data) do
     seq = state.seq + 1
     event = %Event{type: type, session_id: state.id, turn_id: turn_id, seq: seq, data: data}
 

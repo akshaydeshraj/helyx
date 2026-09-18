@@ -25,6 +25,10 @@ Abort ends the current turn by id. The session kills the turn Task and tells the
 
 When a turn is aborted, by the user or by a restart, every tool call in it that has no result gets a tool result entry with `is_error` true and the text `aborted`. The entry is appended to the transcript, so the next provider call sees a complete call and result pair. Providers reject a tool call without a result, so removing the call is not an option.
 
+### Steer and follow-up queues
+
+Queued steers join the transcript as user messages, in order, before the next provider call inside the turn. Queued follow-ups start a new turn after the current turn ends normally; anything still queued at that point, steers included, becomes that one new turn's prompt, steers first, so no typed message is lost. A steer or follow-up sent with no turn running starts a turn at once, like a prompt, so the client never races the end of a turn. Abort and turn failure drop both queues. Every change emits a `queue_update` event; the drain at a normal turn end goes out between turns with a nil turn id, and `Helyx.Session.queue_count/1` reads the counts. The queues are unbounded, ticket #29.
+
 ## Interfaces and bundled plugins
 
 | Interface | Plugins in this checkpoint |
@@ -49,7 +53,7 @@ A harness runs its own loop and its own tools. Helyx starts the program for the 
 
 - Message shape and session file format: see ADR 0001 and the section below.
 - Session files live under `~/.helyx/sessions/<project>/<session>.jsonl`.
-- Ten events: `agent_start`, `agent_end`, `turn_start`, `turn_end`, `message_start`, `message_update`, `message_end`, `tool_execution_start`, `tool_execution_update`, `tool_execution_end`. Each carries the session id, the turn id, and a sequence number.
+- Ten events: `agent_start`, `agent_end`, `turn_start`, `turn_end`, `message_start`, `message_update`, `message_end`, `tool_execution_start`, `tool_execution_end`, `queue_update`. Each carries the session id, the turn id (nil on the queue drain between turns), and a sequence number.
 
 ### Session file
 
@@ -100,9 +104,11 @@ Two more holes are open and accepted for checkpoint one. Nothing locks a session
 
 ## TUI
 
-- ex_ratatui, alternate screen.
-- Escape aborts. Enter sends a steer during a turn. A modifier plus Enter queues a follow-up. The status bar shows the queue count.
+- ex_ratatui, alternate screen. The TUI is `Helyx.TUI` under `plugins/tui`. It implements no Core interface and is not in Core's plugin list: it is a client that subscribes to one session. Local delivery is OTP messages from `Helyx.Session.subscribe/1`; a Transport interface arrives with the first remote client.
+- The view model is a pure fold over events, `Helyx.TUI.ViewModel`, tested with scripted event lists. It grows with the conversation, bounded by the session. The composer is human input, unbounded like the queues (ticket #29). Tool results render at most four content lines each, plus one truncation row naming the hidden line count.
+- Escape aborts. Enter sends a steer during a turn and a prompt when idle. Alt plus Enter queues a follow-up: most terminals cannot tell Shift+Enter from Enter without the kitty keyboard protocol, so Alt is the modifier. The status bar shows the model, the run state, and the queue counts.
 - Queued steers are delivered together at the next provider call. On a harness turn, a steer aborts and resends (see Harness turns).
+- The `helyx` Mix task lives in `apps/coding_agent`. `mix helyx [directory] [--model provider/model] [--resume]` starts Core with the bundled plugins, one session in `directory` (default: the current one), and the TUI, and quitting restores the terminal. The session is written under `~/.helyx/sessions`; `--resume` continues the most recent session for the directory with its saved model, so it does not combine with `--model`.
 
 ## Out of scope
 
