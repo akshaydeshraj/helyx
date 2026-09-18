@@ -57,8 +57,24 @@ A harness runs its own loop and its own tools. Helyx starts the program for the 
 | tool result text | 2000 lines or 51,200 bytes of line content, on whole lines | read keeps the head and bash keeps the tail; the result says which absolute lines it shows, and a truncated head names the offset that continues the read |
 | bash output buffer while the command runs | the last 204,800 bytes | older output is dropped, the result says so; the byte cut can land inside a character, and the fragment becomes U+FFFD at delivery |
 | tool result text validity | valid UTF-8 before it enters the transcript | the hands replace each invalid byte sequence with one U+FFFD (`String.replace_invalid/1`) before the session sees the result; replacement runs after a tool's own truncation and can grow the text to at most three times its byte size |
+| bash command and working directory | no NUL byte; port arguments and the cd option are NUL-terminated C strings that would cut the string silently | an error result before the port opens; nothing runs |
+| bash working directory at port open | must still exist; the hands check it, but it can vanish before the port opens | open, ticket #52: the port reports exit code 2 in an ok result for a command that never ran |
 | wait for a bash command | unbounded; abort ends it (the bash tool's `ponytail:` marker) | the turn abort kills the command's process group |
-| wait for a killed process group | 500 ms TERM grace, then KILL, then a 5 s ceiling | an unkillable process stops blocking the hands after 5 s |
+| wait for a killed process group | 500 ms TERM grace, then KILL, then a 5 s ceiling of real elapsed time | a group that survives KILL past the ceiling is stuck: the result is an error, `cancel/2` reports the failure, and the hands refuse later tool calls with an error result while the group lives; chat, abort, and quit are not blocked |
+
+## Ownership
+
+When anything above a command dies, the command stops. Two rules cover every path (ADR 0004): inside the VM, work is linked to its owner, and the owner traps exits so a crash below it stays a message; at the OS boundary, a command's life is tied to its port through the perl watchdog. perl is required; the bash tool's `check/0` reports a system without it when the hands start, and the session fails to start with a clear error.
+
+| Resource | Created by | Held by | Released on normal end | Released when the holder crashes | Released on abort |
+| -------- | ---------- | ------- | ---------------------- | -------------------------------- | ----------------- |
+| provider stream Task | session | session, linked | reply consumed, monitor flushed | the link kills the Task with the session, even through an untrappable kill | `Task.shutdown(:brutal_kill)` |
+| tool Task | hands | hands, linked | result delivered | the link kills the Task with the hands; a Task's own crash becomes an error result | `cancel/2` brutal-kills the turn's Tasks |
+| command port | bash tool, inside the tool Task | the Task | closes when the watchdog exits | closes when the Task dies, however it died, down to a `kill -9` of the whole VM | closes when the Task is killed |
+| command process group | the watchdog's fork; the id is registered with the hands before the command may run | hands (the id) and watchdog (the life) | the hands KILL the group at delivery and wait until it is gone | the closed port ends the watchdog's stdin: TERM, 500 ms grace, KILL, reap | `cancel/2` TERMs and KILLs the registered groups and returns only when every one is gone |
+| watchdog process (its own group) | `Port.open` in the bash tool; registered with the hands like a group | the port | exits after it reaps the command | the closed port is its signal; it ignores TERM so a group sweep cannot cut its cleanup short | the hands wait for it, so an abort cannot return while the command is unreaped |
+
+A call can register several groups; the hands hold them as a set per Task, and every one is cleaned. A group that survives KILL is remembered as stuck (see the bounds table). A child that leaves its process group on purpose with `setsid` stays a documented limit.
 
 ## Transcript and events
 

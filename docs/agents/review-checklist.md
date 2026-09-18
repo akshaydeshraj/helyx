@@ -8,13 +8,13 @@ Invariants the review axes check on every diff. Add one when a review or a PR co
 - Any numeric limit in code has a property test or, at minimum, tests at the limit, one under, one over, and a multibyte case.
 - Every `ponytail:` marker names a ticket. Judge whether the debt is safe to ship, not only whether it is recorded.
 - A design decision that the tools research (`docs/research/coding-tools.md`, issue #17) covered cites it in the feature doc, so the spec axis can check the design against how codex, opencode, and pi behave.
-- Every external resource in the diff (OS process, process group, port, file handle, socket, temp file) has a row in the feature doc's ownership table. A row whose holder is a Task is a design flag the spec axis raises (ADR 0004).
+- Every external resource in the diff (OS process, process group, port, file handle, socket, temp file) has a row in the feature doc's ownership table. A row whose release path dies with its owner is a design flag the spec axis raises (ADR 0004).
 
 ## Races and resource ownership
 
 - A race is closed structurally or stated as a hole. It is never accepted by window size or by who the caller is today. An open race is written in the ownership table as "open, ticket #N", the same vocabulary as an unbounded input.
 - Two findings on one mechanism stop the patching. The next round fixes the mechanism, not the path.
-- An OS resource is owned by a long-lived process, never by a Task (ADR 0004). The owner is registered before the external work starts and releases the resource on delivery, on the holder's crash, and on abort.
+- Every resource has a release path that works when its owner dies (ADR 0004): inside the VM through links to the owner, at the OS boundary through the port watchdog. The resource is still registered with the hands before the external work starts, because delivery and cancel wait until it is gone.
 
 ## Events
 

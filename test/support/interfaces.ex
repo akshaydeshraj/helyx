@@ -384,3 +384,41 @@ defmodule Helyx.Test.Tool.Slow do
     {:ok, text}
   end
 end
+
+defmodule Helyx.Test.Tool.Register do
+  @moduledoc false
+  # Registers the given process group ids with the hands, then sleeps `ms`,
+  # so tests can drive the group bookkeeping without a real command.
+  @behaviour Helyx.Tool
+
+  @impl true
+  def name, do: "register"
+  @impl true
+  def description, do: "Registers process groups."
+  @impl true
+  def parameters, do: %{"type" => "object"}
+  @impl true
+  def run(%{"groups" => groups} = args, _cwd) do
+    Enum.each(groups, &Helyx.Tool.register_group/1)
+    Process.sleep(Map.get(args, "ms", 0))
+    {:ok, "registered"}
+  end
+end
+
+defmodule Helyx.Test.Tool.Unavailable do
+  @moduledoc false
+  # A tool whose check always fails, so tests can see the hands refuse to
+  # start.
+  @behaviour Helyx.Tool
+
+  @impl true
+  def name, do: "unavailable"
+  @impl true
+  def description, do: "Never available."
+  @impl true
+  def parameters, do: %{"type" => "object"}
+  @impl true
+  def run(_args, _cwd), do: {:ok, ""}
+  @impl true
+  def check, do: {:error, "the frob is missing"}
+end

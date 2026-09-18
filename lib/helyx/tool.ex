@@ -8,6 +8,11 @@ defmodule Helyx.Tool do
   decoded argument map and the working directory, and returns the text the
   model sees. `{:error, text}` marks the result as an error; a tool that
   raises is reported the same way.
+
+  The optional `check/0` runs when the hands start. A tool that needs
+  something from the system, an executable for example, reports it missing
+  there, so the session fails to start with a clear error instead of every
+  call failing later.
   """
 
   use Helyx.Interface, mode: :multi
@@ -18,6 +23,9 @@ defmodule Helyx.Tool do
   @callback description() :: String.t()
   @callback parameters() :: map()
   @callback run(arguments :: map(), cwd :: String.t()) :: {:ok, String.t()} | {:error, String.t()}
+  @callback check() :: :ok | {:error, String.t()}
+
+  @optional_callbacks check: 0
 
   @max_lines 2000
   @max_bytes 51_200
@@ -46,11 +54,12 @@ defmodule Helyx.Tool do
   def max_bytes, do: @max_bytes
 
   @doc """
-  Registers the OS process group a tool call started with the hands that run
-  it. The hands kill the group when the call delivers or the turn is aborted,
-  so the group cannot outlive the Task that started it. A no-op when the tool
-  runs outside the hands. Groups below 2 are rejected: `kill -- -1` would
-  signal every process the user may signal.
+  Registers an OS process group the tool call started with the hands that
+  run it. A call can register several groups; the hands hold them as a set
+  and kill every one when the call delivers or the turn is aborted, so no
+  group outlives the Task that started it. A no-op when the tool runs
+  outside the hands. Groups below 2 are rejected: `kill -- -1` would signal
+  every process the user may signal.
   """
   @spec register_group(pos_integer()) :: :ok
   def register_group(group) when is_integer(group) and group > 1 do
