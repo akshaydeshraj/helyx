@@ -6,7 +6,7 @@
       name: "default",
       strict: true,
       files: %{
-        included: ["lib/", "test/", "plugins/"],
+        included: ["lib/", "test/", "plugins/", "apps/"],
         excluded: [~r"/_build/", ~r"/deps/"]
       },
       checks: %{

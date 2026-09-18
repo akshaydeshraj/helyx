@@ -35,12 +35,12 @@ apps/<name>/       Products, one Mix project each (planned)
 
 ## Commands
 
-Run from the repository root. Plugins are separate Mix projects; the root `precommit` alias runs theirs too.
+Run from the repository root. Plugins and apps are separate Mix projects. The root `precommit` alias finds every `plugins/*/mix.exs` and `apps/*/mix.exs` and runs `mix precommit` in each project.
 
 - `mix test`: run all tests
 - `mix test path/to/file_test.exs:123`: run one test by line number
 - `mix format`: format code
-- `mix precommit`: alias for format, compile with warnings as errors, and test, in the root and in every plugin. Run it before you finish any change.
+- `mix precommit`: in the root, format, compile with warnings as errors, Credo strict over all sources, Dialyzer, and test. Then, in every plugin and app, format, compile, Dialyzer with a forced PLT check, and test. A new project needs its own `precommit` alias. The root run fails without one. Run it before you finish any change.
 - `cd plugins/<name> && mix test`: run one plugin's tests
 
 ## Elixir guidelines

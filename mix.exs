@@ -33,26 +33,30 @@ defmodule Helyx.MixProject do
   end
 
   defp aliases do
+    # Credo covers plugin and app sources from the root via .credo.exs.
+    # Dialyzer cannot: they depend on the root, not the reverse, so each
+    # project's precommit runs its own, with a forced PLT check because a path
+    # dependency never changes the lock file that triggers one.
+    # No glob and no command string: a glob character in the checkout path or a
+    # quote in a directory name made earlier forms pass while skipping a project.
+    projects =
+      for parent <- ["plugins", "apps"],
+          root = Path.join(__DIR__, parent),
+          File.dir?(root),
+          name <- Enum.sort(File.ls!(root)),
+          dir = Path.join(root, name),
+          File.regular?(Path.join(dir, "mix.exs")) do
+        fn _ ->
+          # A child that inherits MIX_EXS loads this project again and recurses.
+          System.delete_env("MIX_EXS")
+          Mix.Task.run("cmd", ["--cd", dir, "mix", "precommit"])
+        end
+      end
+
     [
-      precommit: [
-        "format",
-        "compile --warnings-as-errors",
-        "credo --strict",
-        "dialyzer",
-        "test",
-        # Credo covers plugin sources from the root via .credo.exs. Dialyzer
-        # cannot: plugins depend on the root, not the reverse, so each plugin's
-        # precommit runs its own dialyzer, with a forced PLT check because a
-        # path dependency never changes the lock file that triggers one.
-        "cmd --cd plugins/provider_fake mix precommit",
-        "cmd --cd plugins/provider_openai mix precommit",
-        "cmd --cd plugins/tool_read mix precommit",
-        "cmd --cd plugins/tool_bash mix precommit",
-        "cmd --cd plugins/tool_edit mix precommit",
-        "cmd --cd plugins/tool_write mix precommit",
-        "cmd --cd plugins/model_context_default mix precommit",
-        "cmd --cd plugins/compaction_none mix precommit"
-      ]
+      precommit:
+        ["format", "compile --warnings-as-errors", "credo --strict", "dialyzer", "test"] ++
+          projects
     ]
   end
 end
