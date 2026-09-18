@@ -256,4 +256,36 @@ defmodule Helyx.Provider.OpenAITest do
     assert Enum.to_list(OpenAI.events(["data: {oops\n\n"])) ==
              [{:error, {:bad_chunk, "{oops"}}]
   end
+
+  for chunk <- [
+        ~s({"choices":[{"delta":"oops"}]}),
+        ~s({"choices":{"a":1}}),
+        ~s({"choices":[42]}),
+        ~s([1,2]),
+        ~s({"choices":[{"delta":{"tool_calls":"x"}}]}),
+        ~s({"choices":[{"delta":{"tool_calls":[{"function":"x"}]}}]}),
+        ~s({"choices":[{"delta":{"tool_calls":[{"function":{"arguments":{}}}]}}]})
+      ] do
+    test "a chunk with the wrong shape is an error event: #{chunk}" do
+      assert Enum.to_list(OpenAI.events([sse([unquote(chunk)])])) ==
+               [{:error, {:bad_chunk, unquote(chunk)}}]
+    end
+  end
+
+  # The [DONE] arrives in a later chunk so the test covers both halts: the
+  # line one inside the bad chunk and the chunk one that cancels the request.
+  test "a bad chunk ends the stream after the events before it" do
+    chunks = [
+      sse([
+        delta(%{content: "Hi"}),
+        delta(%{tool_calls: [%{index: 0, id: "c1", function: %{name: "bash", arguments: "{"}}]}),
+        ~s({"choices":[42]}),
+        delta(%{}, "stop")
+      ]),
+      sse(["[DONE]"])
+    ]
+
+    assert Enum.to_list(OpenAI.events(chunks)) ==
+             [{:text_delta, "Hi"}, {:error, {:bad_chunk, ~s({"choices":[42]})}}]
+  end
 end
