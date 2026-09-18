@@ -101,6 +101,9 @@ defmodule Helyx.Test.Provider do
   #   "garbage"    one event that is not a stream event
   #   "raw_bytes"  a text delta that is not valid UTF-8
   #   "raw_call"   a tool call whose name is not valid UTF-8
+  #   "bad_stop"   done with a stop reason outside the file format's set
+  #   "bad_args"   a tool call whose arguments the file format cannot hold
+  #   "recover"    a first turn the file cannot hold, then a clean "again" turn
   #   "wide"       a delta tuple with an extra element
   #   "tools"      the names of the tools in the context, as text
   #   "system"     the system prompt in the context, as text
@@ -216,6 +219,26 @@ defmodule Helyx.Test.Provider do
   def stream("raw_call", _context, _opts) do
     call = %Helyx.Message.ToolCall{id: "c", name: <<"bash", 255>>, arguments: %{}}
     {:ok, [{:tool_call, call}, done()]}
+  end
+
+  def stream("bad_stop", _context, _opts),
+    do: {:ok, [{:text_delta, "hi"}, {:done, %{stop_reason: :refusal, usage: %{}}}]}
+
+  def stream("bad_args", _context, _opts) do
+    call = %Helyx.Message.ToolCall{id: "c", name: "bash", arguments: %{"text" => {1, 2}}}
+    {:ok, [{:tool_call, call}, done()]}
+  end
+
+  # First turn ends with a usage the file format cannot hold; a later "again"
+  # prompt ends cleanly, so a test can prove persistence survived the first.
+  def stream("recover", %Helyx.Context{messages: messages}, _opts) do
+    case List.last(messages) do
+      %Helyx.Message{role: :user, content: [%Helyx.Message.Text{text: "again"}]} ->
+        {:ok, [{:text_delta, "recovered"}, done()]}
+
+      _ ->
+        {:ok, [{:text_delta, "hi"}, {:done, %{stop_reason: :end_turn, usage: %{"in" => {1, 2}}}}]}
+    end
   end
 
   def stream("wide", _context, _opts), do: {:ok, [{:text_delta, "hello", :extra}]}

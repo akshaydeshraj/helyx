@@ -279,6 +279,50 @@ defmodule Helyx.SessionTest do
              List.last(events).data.error
   end
 
+  test "a stop reason outside the format's set is a malformed stream event", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/bad_stop")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:agent_end)
+
+    assert {:bad_stream_event, {:done, %{stop_reason: :refusal}}} =
+             List.last(events).data.error
+  end
+
+  test "a tool call whose arguments the file cannot hold is a malformed stream event", %{
+    core: core
+  } do
+    {:ok, session} = Session.start(core, model: "test/bad_args")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:agent_end)
+
+    assert {:bad_stream_event, {:tool_call, _}} = List.last(events).data.error
+  end
+
+  @tag :tmp_dir
+  test "a terminal the file cannot hold fails the turn and leaves persistence on", %{
+    core: core,
+    tmp_dir: dir
+  } do
+    {:ok, session} = Session.start(core, model: "test/recover", sessions_dir: dir)
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:agent_end)
+
+    assert {:bad_stream_event, {:done, %{usage: %{"in" => {1, 2}}}}} =
+             List.last(events).data.error
+
+    :ok = Session.prompt(session, "again")
+    collect_until(:agent_end)
+
+    {:ok, restored} = Helyx.SessionFile.resume(dir, File.cwd!())
+    assert "recovered" in Enum.map(restored.messages, &Helyx.Message.text/1)
+  end
+
   test "a tool Task that dies gives an error result and the loop continues", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/kill")
     :ok = Session.subscribe(session)
@@ -404,6 +448,29 @@ defmodule Helyx.SessionTest do
 
     assert final_text(collect_until(:agent_end)) ==
              "user:hello\nassistant:user:hello\nuser:again"
+  end
+
+  @tag :tmp_dir
+  test "resume keeps a reused tool call id open until its own result", %{
+    core: core,
+    tmp_dir: dir
+  } do
+    call = %Helyx.Message.ToolCall{id: "c1", name: "slow", arguments: %{}}
+    {:ok, file} = Helyx.SessionFile.create(dir, "reuse", File.cwd!(), "test/transcript")
+
+    [
+      %Helyx.Message{role: :assistant, stop_reason: :tool_use, content: [call]},
+      Helyx.Message.tool_result(call, {:ok, "first answer"}),
+      %Helyx.Message{role: :assistant, stop_reason: :tool_use, content: [call]}
+    ]
+    |> Enum.reduce(file, &Helyx.SessionFile.append_message(&2, &1))
+
+    {:ok, _session} = Session.resume(core, sessions_dir: dir)
+
+    {:ok, restored} = Helyx.SessionFile.resume(dir, File.cwd!())
+    assert [_call1, _result1, _call2, aborted] = restored.messages
+    assert %Helyx.Message{role: :tool_result, tool_call_id: "c1", is_error: true} = aborted
+    assert Helyx.Message.text(aborted) == "aborted"
   end
 
   @tag :tmp_dir

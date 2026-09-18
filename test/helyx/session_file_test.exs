@@ -188,6 +188,80 @@ defmodule Helyx.SessionFileTest do
     File.write!(file2.path, ~s({"id":"x","type":"model_change"}) <> "\n", [:append])
 
     assert {:error, {:invalid_file, _}} = SessionFile.resume(dir, "/repo2")
+
+    # A later valid change does not launder a bad one mid-file.
+    {:ok, file3} = SessionFile.create(dir, "sess3", "/repo3", "test/ok")
+    File.write!(file3.path, ~s({"id":"x","type":"model_change","model":42}) <> "\n", [:append])
+    SessionFile.append_model_change(file3, "test/other")
+
+    assert {:error, {:invalid_file, _}} = SessionFile.resume(dir, "/repo3")
+
+    # Nor a bad header model.
+    {:ok, file4} = SessionFile.create(dir, "sess4", "/repo4", "test/ok")
+    header = File.read!(file4.path)
+    File.write!(file4.path, String.replace(header, ~s("model":"test/ok"), ~s("model":42)))
+    SessionFile.append_model_change(file4, "test/other")
+
+    assert {:error, {:invalid_file, _}} = SessionFile.resume(dir, "/repo4")
+  end
+
+  test "resume decodes stop reasons in a VM that never interned their atoms", %{tmp_dir: dir} do
+    {:ok, file} = SessionFile.create(dir, "sess1", "/repo", "test/ok")
+
+    SessionFile.append_message(file, %Message{
+      role: :assistant,
+      stop_reason: :max_tokens,
+      content: [%Message.Text{text: "t"}]
+    })
+
+    script = """
+    {:ok, resumed} = Helyx.SessionFile.resume(#{inspect(dir)}, "/repo")
+    [%{stop_reason: :max_tokens}] = resumed.messages
+    IO.puts("resumed ok")
+    """
+
+    ebin = Path.join(Mix.Project.build_path(), "lib/helyx/ebin")
+    assert {out, 0} = System.cmd("elixir", ["-pa", ebin, "-e", script])
+    assert out =~ "resumed ok"
+  end
+
+  test "a stop reason outside the format's set is never written", %{tmp_dir: dir} do
+    {:ok, file} = SessionFile.create(dir, "sess1", "/repo", "test/ok")
+    before = File.read!(file.path)
+
+    assert_raise FunctionClauseError, fn ->
+      SessionFile.append_message(file, %Message{
+        role: :assistant,
+        stop_reason: :aborted,
+        content: []
+      })
+    end
+
+    assert File.read!(file.path) == before
+  end
+
+  test "a message field with a wrong type is rejected", %{tmp_dir: dir} do
+    entry = ~s({"id":"x","type":"message","role":"tool_result","tool_call_id":42,"content":[]})
+    {:ok, file} = SessionFile.create(dir, "sess1", "/repo", "test/ok")
+    File.write!(file.path, entry <> "\n", [:append])
+
+    assert {:error, {:invalid_file, _}} = SessionFile.resume(dir, "/repo")
+  end
+
+  test "a stop reason outside the format's set is rejected", %{tmp_dir: dir} do
+    entry = ~s({"id":"x","type":"message","role":"assistant","stop_reason":"banana","content":[]})
+    {:ok, file} = SessionFile.create(dir, "sess1", "/repo", "test/ok")
+    File.write!(file.path, entry <> "\n", [:append])
+
+    assert {:error, {:invalid_file, _}} = SessionFile.resume(dir, "/repo")
+  end
+
+  test "a content block with a wrong field type is rejected", %{tmp_dir: dir} do
+    entry = ~s({"id":"x","type":"message","role":"user","content":[{"type":"text","text":42}]})
+    {:ok, file} = SessionFile.create(dir, "sess1", "/repo", "test/ok")
+    File.write!(file.path, entry <> "\n", [:append])
+
+    assert {:error, {:invalid_file, _}} = SessionFile.resume(dir, "/repo")
   end
 
   test "an entry type the writer never produces is rejected", %{tmp_dir: dir} do

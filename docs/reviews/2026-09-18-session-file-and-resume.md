@@ -55,3 +55,42 @@ Scope: `Helyx.SessionFile`, the persistence and resume paths in `Helyx.Session`,
 
 - A `Session.start` failure after file creation can leave a header-only session; narrowed by creating the file after plugin resolution.
 - Resume reads the whole file into memory; compaction (#1) bounds the transcript itself.
+
+## Post-PR external-review fix rounds (PR #41)
+
+After the branch opened as PR #41, a Codex review and Greptile raised seven items. Triage: three fixed through `/ship`, two recorded as accepted holes, two declined.
+
+### Fixed
+
+| # | Source | Finding | Restored invariant |
+|---|---|---|---|
+| C1 | Codex | Resume used `String.to_existing_atom` for `stop_reason`, so a fresh VM that had loaded no provider crashed on a saved file | The file format owns a closed `stop_reason` set with explicit encode and decode clauses that intern their own atoms; a fresh-VM subprocess test pins it |
+| C2 | Codex | A tool result was matched against a global answered-id set, so a provider that reused a call id left a real open call unanswered | `open_calls/1` walks the transcript in order; a result deletes the first still-open earlier call with its id |
+| C3 | Codex | Content-block decode did not type-check fields, so a malformed block (`text: 42`, a null signature) decoded instead of rejecting | Every content-block and message field is guarded on decode; a wrong type rejects the file as `{:invalid_file, _}` |
+
+Two mechanism deepenings followed from the fix-round reviews, both under the two-findings-on-one-mechanism rule:
+
+- The closed `stop_reason` set is enforced on **write** too (`encode_stop_reason/1`), and `check_entries/1` validates the header model and every `model_change` model as a string, so no later entry launders an earlier bad one.
+- A provider value the file cannot hold — a stop reason outside the set, or a tuple, pid, or invalid-UTF-8 byte inside a tool call's arguments or a turn's usage — is rejected at the `consume/3` stream boundary by `Message.encodable?/1`, before any message is built. `Session.persist/2`'s rescue is narrowed to `File.Error`, so a real disk failure still degrades to persistence-off but an encode bug crashes loudly instead of silently losing the rest of the session.
+
+### Recorded as accepted holes (feature doc)
+
+- No session file is locked: two runtimes that resume the same file both append from the same leaf and interleave. Local mode is one user in one node; a lock lands with a multi-node transport.
+- A resumed session starts a new event stream: sequence numbers restart at one, and a client renders from the restored transcript, not from event history.
+
+### Declined
+
+- **Greptile: unbounded session file read into memory** — already the documented, accepted bound for checkpoint one; compaction (#1) bounds the transcript itself.
+- **Greptile: chain-lineage (`parent_id`) not verified on resume** — not load-bearing until branching, which is out of scope; resume uses file order for the leaf.
+
+### Rounds and counts
+
+- Round A (C1, C2, C3 plus doc): full round. Simplify (4 agents) then three axes. `answer_first/2` collapsed to `List.delete/2`.
+- Round B (write-side stop-reason enforcement, `check_entries` model validation): full round (two code files). Spec and failure-path found the encodability hole.
+- Round C (`Message.encodable?/1` at `consume/3`, `persist/2` rescue narrowed to `File.Error`): full round. Simplify applied a done-clause lift and moved `encodable?/1` into `Message` beside `valid_utf8?`; three axes found only a doc-faithfulness gap (the ingress wording said "not valid UTF-8" where the code rejects any non-encodable value), fixed in the feature doc. Failure-path: no findings, invariants fully closed.
+
+### Skipped fix-round findings, with reasons
+
+- **A shared `defguard`/constant for the `[:end_turn, :tool_use, :max_tokens]` set** (raised by reuse, simplification, standards, and altitude across rounds): three literal restatements (consume guard, encode clauses, decode clauses), each comment-linked to `SessionFile` as the owner; a new stop reason is a documented format change and drift fails loudly in tests. A shared guard adds public API for three atoms.
+- **Move JSON-encode out of `persist` and validate encodability there** (altitude): `persist` runs in the session process, so a raise there crashes the session; the ingress check in `consume/3` (in the turn Task) fails the turn gracefully instead, and every non-`consume` path into `persist` already carries only encodable values.
+- **`usage` map keys round-trip atom to string on resume**: same as the original-round skip; the file is the source of truth and providers receive JSON.

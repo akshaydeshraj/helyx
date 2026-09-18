@@ -84,7 +84,7 @@ defmodule Helyx.SessionFile do
          {:ok, raw} <- File.read(path),
          {entries, kept, rest} = parse(raw),
          :ok <- check_entries(entries),
-         {:ok, model} <- current_model(header, entries),
+         model = current_model(header, entries),
          messages = for(%{"type" => "message"} = entry <- entries, do: decode_message(entry)),
          # The repair write comes last, after every check passed, so a
          # file this function rejects is never mutated.
@@ -124,7 +124,7 @@ defmodule Helyx.SessionFile do
         "role" => Atom.to_string(role),
         "content" => Enum.map(message.content, &encode_block/1),
         "model" => message.model,
-        "stop_reason" => message.stop_reason && Atom.to_string(message.stop_reason),
+        "stop_reason" => message.stop_reason && encode_stop_reason(message.stop_reason),
         "tool_call_id" => message.tool_call_id,
         "tool_name" => message.tool_name,
         "usage" => map_size(message.usage) > 0 && message.usage
@@ -150,35 +150,66 @@ defmodule Helyx.SessionFile do
     %{"type" => "image", "mime_type" => mime_type, "data" => data}
   end
 
+  # A field value this format does not know misses its decode clause; the
+  # rescue in resume/2 turns that into a rejected file.
   defp decode_message(entry) do
     %Message{
       role: decode_role(entry["role"]),
       content: Enum.map(entry["content"], &decode_block/1),
-      model: entry["model"],
-      # A stop reason this node has never seen raises here; the rescue in
-      # resume/2 turns that into a rejected file.
-      stop_reason: entry["stop_reason"] && String.to_existing_atom(entry["stop_reason"]),
-      tool_call_id: entry["tool_call_id"],
-      tool_name: entry["tool_name"],
-      is_error: entry["is_error"] || false,
-      usage: entry["usage"] || %{}
+      model: optional_string(entry["model"]),
+      stop_reason: entry["stop_reason"] && decode_stop_reason(entry["stop_reason"]),
+      tool_call_id: optional_string(entry["tool_call_id"]),
+      tool_name: optional_string(entry["tool_name"]),
+      is_error: decode_is_error(entry["is_error"]),
+      usage: decode_usage(entry["usage"])
     }
   end
 
-  defp decode_role(role) when role in ~w(user assistant tool_result),
-    do: String.to_existing_atom(role)
+  defp decode_role("user"), do: :user
+  defp decode_role("assistant"), do: :assistant
+  defp decode_role("tool_result"), do: :tool_result
 
-  defp decode_block(%{"type" => "text", "text" => text}), do: %Message.Text{text: text}
+  # The format owns this closed set, enforced on both sides. The decode
+  # clauses intern the atoms in this module, so a fresh VM that has loaded
+  # no provider still decodes a saved file; a stop reason outside the set
+  # has no encode clause, so the writer fails loudly instead of appending
+  # an entry that a later resume would reject. A new stop reason is a
+  # format change.
+  defp decode_stop_reason("end_turn"), do: :end_turn
+  defp decode_stop_reason("tool_use"), do: :tool_use
+  defp decode_stop_reason("max_tokens"), do: :max_tokens
 
-  defp decode_block(%{"type" => "thinking", "thinking" => thinking} = block) do
-    %Message.Thinking{thinking: thinking, signature: block["signature"]}
-  end
+  defp encode_stop_reason(:end_turn), do: "end_turn"
+  defp encode_stop_reason(:tool_use), do: "tool_use"
+  defp encode_stop_reason(:max_tokens), do: "max_tokens"
 
-  defp decode_block(%{"type" => "tool_call", "id" => id, "name" => name, "arguments" => args}) do
+  defp optional_string(nil), do: nil
+  defp optional_string(value) when is_binary(value), do: value
+
+  defp decode_is_error(nil), do: false
+  defp decode_is_error(value) when is_boolean(value), do: value
+
+  defp decode_usage(nil), do: %{}
+  defp decode_usage(value) when is_map(value), do: value
+
+  defp decode_block(%{"type" => "text", "text" => text}) when is_binary(text),
+    do: %Message.Text{text: text}
+
+  defp decode_block(%{"type" => "thinking", "thinking" => thinking, "signature" => signature})
+       when is_binary(thinking) and is_binary(signature),
+       do: %Message.Thinking{thinking: thinking, signature: signature}
+
+  defp decode_block(%{"type" => "thinking", "thinking" => thinking} = block)
+       when is_binary(thinking) and not is_map_key(block, "signature"),
+       do: %Message.Thinking{thinking: thinking}
+
+  defp decode_block(%{"type" => "tool_call", "id" => id, "name" => name, "arguments" => args})
+       when is_binary(id) and is_binary(name) and is_map(args) do
     %Message.ToolCall{id: id, name: name, arguments: args}
   end
 
-  defp decode_block(%{"type" => "image", "mime_type" => mime_type, "data" => data}) do
+  defp decode_block(%{"type" => "image", "mime_type" => mime_type, "data" => data})
+       when is_binary(mime_type) and is_binary(data) do
     %Message.Image{mime_type: mime_type, data: data}
   end
 
@@ -186,37 +217,33 @@ defmodule Helyx.SessionFile do
   defp check_version(header), do: {:error, {:unknown_version, header["version"]}}
 
   # The writer only produces a header on line one, then messages and model
-  # changes, every one with an id. Anything else is on-disk corruption,
-  # never silently dropped.
-  defp check_entries([%{"type" => "session", "id" => id} | rest]) when is_binary(id) do
-    bad =
-      Enum.find(rest, fn entry ->
-        entry["type"] not in ~w(message model_change) or not is_binary(entry["id"])
-      end)
-
-    if bad do
-      {:error, {:invalid_file, "entry the writer never produces: #{inspect(bad["type"])}"}}
-    else
-      :ok
+  # changes, every one with an id, every model a string. Anything else is
+  # on-disk corruption, never silently dropped, and never laundered by a
+  # later entry that overrides it.
+  defp check_entries([%{"type" => "session", "id" => id, "model" => model} | rest])
+       when is_binary(id) and is_binary(model) do
+    case Enum.find(rest, &(not valid_entry?(&1))) do
+      nil -> :ok
+      bad -> {:error, {:invalid_file, "entry the writer never produces: #{inspect(bad["type"])}"}}
     end
   end
 
   defp check_entries(_entries), do: {:error, {:invalid_file, "the first entry is not a header"}}
 
-  # The last model change wins, else the header's model. A model that is
-  # missing or not a string is on-disk corruption.
-  defp current_model(header, entries) do
-    model =
-      Enum.reduce(entries, header["model"], fn
-        %{"type" => "model_change"} = entry, _acc -> entry["model"]
-        _entry, acc -> acc
-      end)
+  defp valid_entry?(%{"type" => "message", "id" => id}), do: is_binary(id)
 
-    if is_binary(model) do
-      {:ok, model}
-    else
-      {:error, {:invalid_file, "model is not a string: #{inspect(model)}"}}
-    end
+  defp valid_entry?(%{"type" => "model_change", "id" => id, "model" => model}),
+    do: is_binary(id) and is_binary(model)
+
+  defp valid_entry?(_entry), do: false
+
+  # The last model change wins, else the header's model. Both are strings:
+  # check_entries validated every entry before this runs.
+  defp current_model(header, entries) do
+    Enum.reduce(entries, header["model"], fn
+      %{"type" => "model_change"} = entry, _acc -> entry["model"]
+      _entry, acc -> acc
+    end)
   end
 
   # The most recently started session whose header matches the working

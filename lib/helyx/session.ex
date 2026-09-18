@@ -298,10 +298,20 @@ defmodule Helyx.Session do
 
       {:tool_call, %Message.ToolCall{id: id, name: name, arguments: args}} = event, acc
       when is_binary(id) and is_binary(name) and is_map(args) ->
-        forward(Message.valid_utf8?([id, name, args]), event, session, turn_id, acc)
+        forward(Message.encodable?([id, name, args]), event, session, turn_id, acc)
 
-      {:done, %{stop_reason: _, usage: _}} = terminal, _acc ->
-        {:halt, terminal}
+      # The file format owns the closed stop reason set (see SessionFile) and
+      # holds only JSON. A terminal whose stop reason is outside the set, or
+      # whose usage the file cannot encode, fails the turn here, before the
+      # message exists, instead of raising in persist and silently turning
+      # persistence off for the rest of the session.
+      {:done, %{stop_reason: reason, usage: usage}} = terminal, _acc
+      when reason in [:end_turn, :tool_use, :max_tokens] and is_map(usage) ->
+        {:halt,
+         if(Message.encodable?(usage),
+           do: terminal,
+           else: {:error, {:bad_stream_event, terminal}}
+         )}
 
       {:error, _} = terminal, _acc ->
         {:halt, terminal}
@@ -379,8 +389,12 @@ defmodule Helyx.Session do
     SessionFile.append_message(file, message)
   rescue
     # A disk failure must not take the session down. The turn goes on with
-    # the in-memory transcript; persistence stays off for this session.
-    error ->
+    # the in-memory transcript; persistence stays off for this session. Only
+    # the disk write is caught: a value the file cannot encode is rejected
+    # at the stream boundary (see consume/3), so an encode error here is a
+    # bug and crashes loudly rather than silently losing the rest of the
+    # session.
+    error in File.Error ->
       Logger.warning("session file append failed, persistence off: " <> Exception.message(error))
       nil
   end
@@ -394,14 +408,22 @@ defmodule Helyx.Session do
   # The tool calls in the transcript that have no tool result yet, in call
   # order. During a turn this is exactly the calls still to answer; on a
   # transcript restored after a crash it is the calls the crash orphaned.
+  # A result answers the first still-open earlier call with its id, so a
+  # call id a provider reuses in a later turn stays open until its own
+  # result arrives.
   defp open_calls(transcript) do
-    answered =
-      for %Message{role: :tool_result} = m <- transcript, into: MapSet.new(), do: m.tool_call_id
+    Enum.reduce(transcript, [], fn
+      %Message{role: :assistant, content: content}, open ->
+        open ++ for %Message.ToolCall{} = call <- content, do: call
 
-    for %Message{role: :assistant, content: content} <- transcript,
-        %Message.ToolCall{} = call <- content,
-        call.id not in answered,
-        do: call
+      %Message{role: :tool_result, tool_call_id: id}, open ->
+        # Deleting nil is a no-op, so a result with no open call changes
+        # nothing.
+        List.delete(open, Enum.find(open, &(&1.id == id)))
+
+      _message, open ->
+        open
+    end)
   end
 
   # A partial assistant message is closed with a failure stop reason so

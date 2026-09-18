@@ -94,8 +94,10 @@ defmodule Helyx.Message do
   Whether every string in the value, keys and values at any depth, is
   valid UTF-8.
 
-  The one predicate behind every transcript ingress: prompts and tool
-  calls are rejected against it, tool output is scrubbed instead.
+  The cheap transcript-ingress check, for the values that are plain text:
+  prompts and provider deltas are rejected against it, tool output is
+  scrubbed instead. A compound provider value that must round-trip to the
+  file is checked against `encodable?/1`, the stricter predicate.
   """
   @spec valid_utf8?(term()) :: boolean()
   def valid_utf8?(value) when is_binary(value), do: String.valid?(value)
@@ -108,6 +110,22 @@ defmodule Helyx.Message do
   # covers the empty list and every non-text terminal.
   def valid_utf8?([head | tail]), do: valid_utf8?(head) and valid_utf8?(tail)
   def valid_utf8?(_value), do: true
+
+  @doc """
+  Whether the value round-trips to the session file, which holds only JSON.
+
+  Stricter than `valid_utf8?/1`: it also rejects a term JSON cannot encode,
+  such as a tuple, a pid, or a non-string, non-atom map key. Used at the
+  provider-stream boundary for a tool call's fields and a turn's usage,
+  where the value is arbitrary and must survive the write to disk.
+  """
+  @spec encodable?(term()) :: boolean()
+  def encodable?(value) do
+    JSON.encode!(value)
+    true
+  rescue
+    _ -> false
+  end
 
   @doc "Concatenates the text blocks of a message. Other blocks are skipped."
   @spec text(t()) :: String.t()
