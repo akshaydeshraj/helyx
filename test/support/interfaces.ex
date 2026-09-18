@@ -400,6 +400,7 @@ defmodule Helyx.Test.Tool.Register do
   @impl true
   def run(%{"groups" => groups} = args, _cwd) do
     Enum.each(groups, &Helyx.Tool.register_group/1)
+    Enum.each(Map.get(args, "watchdogs", []), &Helyx.Tool.register_group(&1, :watchdog))
     Process.sleep(Map.get(args, "ms", 0))
     {:ok, "registered"}
   end

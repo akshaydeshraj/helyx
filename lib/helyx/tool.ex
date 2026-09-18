@@ -55,17 +55,21 @@ defmodule Helyx.Tool do
 
   @doc """
   Registers an OS process group the tool call started with the hands that
-  run it. A call can register several groups; the hands hold them as a set
+  run it. A call can register several groups; the hands hold them per Task
   and kill every one when the call delivers or the turn is aborted, so no
-  group outlives the Task that started it. A no-op when the tool runs
-  outside the hands. Groups below 2 are rejected: `kill -- -1` would signal
-  every process the user may signal.
+  group outlives the Task that started it. A group registered as
+  `:watchdog` is a reaper: the hands sweep it only after every `:command`
+  group swept with it is gone or stuck, and give it time to exit by itself
+  first, so a KILL from the hands can never leave a command unreaped. A no-op when
+  the tool runs outside the hands. Groups below 2 are rejected: `kill -- -1`
+  would signal every process the user may signal.
   """
-  @spec register_group(pos_integer()) :: :ok
-  def register_group(group) when is_integer(group) and group > 1 do
+  @spec register_group(pos_integer(), :command | :watchdog) :: :ok
+  def register_group(group, kind \\ :command)
+      when is_integer(group) and group > 1 and kind in [:command, :watchdog] do
     case Process.get(:helyx_hands) do
       nil -> :ok
-      hands -> GenServer.call(hands, {:register_group, group}, :infinity)
+      hands -> GenServer.call(hands, {:register_group, group, kind}, :infinity)
     end
   end
 

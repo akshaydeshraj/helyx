@@ -415,6 +415,19 @@ defmodule Helyx.SessionTest do
     refute_receive {:helyx_event, _}, 50
   end
 
+  # A crash of a linked process that is not a provider Task, the sessions
+  # Registry for example, must take the session with it: a session that
+  # outlives its registration keeps working where no client can reach it.
+  @tag :capture_log
+  test "an exit that is not from a provider Task stops the session", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/ok")
+    pid = Session.pid(session)
+    ref = Process.monitor(pid)
+
+    Process.exit(pid, {:shutdown, :registry_gone})
+    assert_receive {:DOWN, ^ref, :process, ^pid, {:shutdown, :registry_gone}}, 1_000
+  end
+
   # The ownership chain (ADR 0004): work inside the VM is linked to its
   # owner, so a killed session takes the provider Task, the hands, and the
   # tool Tasks with it, even through an untrappable kill.
