@@ -126,13 +126,19 @@ defmodule Helyx.TUI do
         {:noreply, state}
 
       text ->
-        if "alt" in key.modifiers do
-          :ok = Session.follow_up(state.session, text)
-        else
-          :ok = Session.steer(state.session, text)
+        sent =
+          if "alt" in key.modifiers do
+            Session.follow_up(state.session, text)
+          else
+            Session.steer(state.session, text)
+          end
+
+        # A rejected message (full queue, bad UTF-8) stays in the composer.
+        case sent do
+          :ok -> ExRatatui.text_input_set_value(state.input, "")
+          {:error, _reason} -> :ok
         end
 
-        ExRatatui.text_input_set_value(state.input, "")
         {:noreply, state}
     end
   end

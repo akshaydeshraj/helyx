@@ -27,9 +27,10 @@ defmodule Helyx.Session do
   with the other queued steers in order, as user messages before the next
   provider call inside the same turn. A follow-up starts a new turn after the
   current turn ends. Anything still queued when a turn ends normally starts a
-  new turn; an aborted or failed turn drops its queues. Queues live in the
-  session process only and are not persisted. Every change emits a
-  `:queue_update` event.
+  new turn; an aborted or failed turn drops its queues. Each queue holds at
+  most 32 entries; past the cap the call returns `{:error, :queue_full}`.
+  Queues live in the session process only and are not persisted. Every
+  change emits a `:queue_update` event.
   """
 
   use GenServer, restart: :temporary
@@ -37,6 +38,8 @@ defmodule Helyx.Session do
   require Logger
 
   alias Helyx.{Context, Event, Message, ModelRef, SessionFile}
+
+  @queue_limit 32
 
   @enforce_keys [:id, :core]
   defstruct [:id, :core]
@@ -166,9 +169,10 @@ defmodule Helyx.Session do
   @doc """
   Steers the running turn. The text joins the queued steers and is delivered
   before the next provider call inside the turn. With no turn running it
-  starts a turn, like a prompt. The text must be valid UTF-8.
+  starts a turn, like a prompt. The text must be valid UTF-8. A full queue
+  returns `{:error, :queue_full}`.
   """
-  @spec steer(t(), String.t()) :: :ok | {:error, :invalid_utf8}
+  @spec steer(t(), String.t()) :: :ok | {:error, :invalid_utf8 | :queue_full}
   def steer(%__MODULE__{id: id, core: core}, text) when is_binary(text) do
     if Message.valid_utf8?(text) do
       GenServer.call(via(core, id), {:steer, text})
@@ -180,9 +184,9 @@ defmodule Helyx.Session do
   @doc """
   Queues a follow-up prompt. It starts a new turn after the current turn ends
   normally. With no turn running it starts a turn at once. The text must be
-  valid UTF-8.
+  valid UTF-8. A full queue returns `{:error, :queue_full}`.
   """
-  @spec follow_up(t(), String.t()) :: :ok | {:error, :invalid_utf8}
+  @spec follow_up(t(), String.t()) :: :ok | {:error, :invalid_utf8 | :queue_full}
   def follow_up(%__MODULE__{id: id, core: core}, text) when is_binary(text) do
     if Message.valid_utf8?(text) do
       GenServer.call(via(core, id), {:follow_up, text})
@@ -242,11 +246,11 @@ defmodule Helyx.Session do
   end
 
   def handle_call({:steer, text}, _from, %State{turn: %Turn{}} = state) do
-    {:reply, :ok, queue(state, :steers, text)}
+    queue_reply(state, :steers, text)
   end
 
   def handle_call({:follow_up, text}, _from, %State{turn: %Turn{}} = state) do
-    {:reply, :ok, queue(state, :follow_ups, text)}
+    queue_reply(state, :follow_ups, text)
   end
 
   def handle_call({op, text}, _from, %State{} = state)
@@ -338,11 +342,18 @@ defmodule Helyx.Session do
     |> emit(:message_end, %{message: user})
   end
 
-  defp queue(%State{} = state, :steers, text),
-    do: emit_queue(%{state | steers: state.steers ++ [text]})
+  defp queue_reply(%State{steers: steers} = state, :steers, text)
+       when length(steers) < @queue_limit do
+    {:reply, :ok, emit_queue(%{state | steers: steers ++ [text]})}
+  end
 
-  defp queue(%State{} = state, :follow_ups, text),
-    do: emit_queue(%{state | follow_ups: state.follow_ups ++ [text]})
+  defp queue_reply(%State{follow_ups: follow_ups} = state, :follow_ups, text)
+       when length(follow_ups) < @queue_limit do
+    {:reply, :ok, emit_queue(%{state | follow_ups: follow_ups ++ [text]})}
+  end
+
+  defp queue_reply(%State{} = state, key, _text) when key in [:steers, :follow_ups],
+    do: {:reply, {:error, :queue_full}, state}
 
   defp emit_queue(%State{} = state), do: emit(state, :queue_update, queue_counts(state))
 

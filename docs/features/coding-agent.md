@@ -27,7 +27,7 @@ When a turn is aborted, by the user or by a restart, every tool call in it that 
 
 ### Steer and follow-up queues
 
-Queued steers join the transcript as user messages, in order, before the next provider call inside the turn. Queued follow-ups start a new turn after the current turn ends normally; anything still queued at that point, steers included, becomes that one new turn's prompt, steers first, so no typed message is lost. A steer or follow-up sent with no turn running starts a turn at once, like a prompt, so the client never races the end of a turn. Abort and turn failure drop both queues. Every change emits a `queue_update` event; the drain at a normal turn end goes out between turns with a nil turn id, and `Helyx.Session.queue_count/1` reads the counts. The queues are unbounded, ticket #29.
+Queued steers join the transcript as user messages, in order, before the next provider call inside the turn. Queued follow-ups start a new turn after the current turn ends normally; anything still queued at that point, steers included, becomes that one new turn's prompt, steers first, so no typed message is lost. A steer or follow-up sent with no turn running starts a turn at once, like a prompt, so the client never races the end of a turn. Abort and turn failure drop both queues. Every change emits a `queue_update` event; the drain at a normal turn end goes out between turns with a nil turn id, and `Helyx.Session.queue_count/1` reads the counts. Each queue holds at most 32 entries; past the cap the call returns `{:error, :queue_full}` and the TUI keeps the text in the composer, with no visible notice yet, ticket #46.
 
 ## Interfaces and bundled plugins
 
@@ -101,6 +101,7 @@ Bounds:
 | Session file on resume | Unbounded, one conversation per file, read whole into memory | Accepted for checkpoint one; compaction bounds the transcript itself (#1) |
 | Project directory slug | Last 100 characters of the slugged cwd | Collisions are disambiguated by the header `cwd` |
 | Prompt text | Must be valid UTF-8 | `{:error, :invalid_utf8}` at the client boundary |
+| Steer and follow-up queues | 32 entries each; entry text is human input, size accepted as unbounded (#29) | The session returns `{:error, :queue_full}` |
 | `cwd` and model on create | Must be valid UTF-8 | `{:error, {:create_failed, :invalid_utf8}}` |
 | SSE line from the model gateway | 1 MiB, terminated or not; the buffer overshoots by at most one transport chunk | One `{:error, {:line_over_limit, limit}}` event ends the stream |
 | Tool call bytes per response (argument fragments with a flat charge each, ids, names, entry keys, a flat charge per call) | 10 MiB across all calls, overshooting by at most one line; integer call indexes at most 10,000 | One `{:error, {:tool_call_bytes_over_limit, limit}}` event ends the stream; no partial call is emitted |
@@ -121,7 +122,7 @@ Two more holes are open and accepted for checkpoint one. Nothing locks a session
 ## TUI
 
 - ex_ratatui, alternate screen. The TUI is `Helyx.TUI` under `plugins/tui`. It implements no Core interface and is not in Core's plugin list: it is a client that subscribes to one session. Local delivery is OTP messages from `Helyx.Session.subscribe/1`; a Transport interface arrives with the first remote client.
-- The view model is a pure fold over events, `Helyx.TUI.ViewModel`, tested with scripted event lists. It grows with the conversation, bounded by the session. The composer is human input, unbounded like the queues (ticket #29). Tool results render at most four content lines each, plus one truncation row naming the hidden line count.
+- The view model is a pure fold over events, `Helyx.TUI.ViewModel`, tested with scripted event lists. It grows with the conversation, bounded by the session. The composer is human input; its size is accepted as unbounded, like a queue entry's text (#29). Tool results render at most four content lines each, plus one truncation row naming the hidden line count.
 - Escape aborts. Enter sends a steer during a turn and a prompt when idle. Alt plus Enter queues a follow-up: most terminals cannot tell Shift+Enter from Enter without the kitty keyboard protocol, so Alt is the modifier. The status bar shows the model, the run state, and the queue counts.
 - Queued steers are delivered together at the next provider call. On a harness turn, a steer aborts and resends (see Harness turns).
 - The `helyx` Mix task lives in `apps/coding_agent`. `mix helyx [directory] [--model provider/model] [--resume]` starts Core with the bundled plugins, one session in `directory` (default: the current one), and the TUI, and quitting restores the terminal. The session is written under `~/.helyx/sessions`; `--resume` continues the most recent session for the directory with its saved model, so it does not combine with `--model`.
