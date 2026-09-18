@@ -50,7 +50,7 @@ Two more rules govern the loop:
 
 ## 3. Precommit
 
-Run `mise exec -- mix precommit`. It must pass with no warnings.
+Run `mise exec -- mix precommit > precommit.log 2>&1; echo $?`, and search the log as `AGENTS.md` says. It must pass with no warnings. Never pipe it to `tail`, and never rerun it to read an error.
 
 ## 4. Commit
 

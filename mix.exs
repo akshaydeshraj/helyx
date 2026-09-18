@@ -33,10 +33,6 @@ defmodule Helyx.MixProject do
   end
 
   defp aliases do
-    # Credo covers plugin and app sources from the root via .credo.exs.
-    # Dialyzer cannot: they depend on the root, not the reverse, so each
-    # project's precommit runs its own, with a forced PLT check because a path
-    # dependency never changes the lock file that triggers one.
     # No glob and no command string: a glob character in the checkout path or a
     # quote in a directory name made earlier forms pass while skipping a project.
     projects =
@@ -49,13 +45,30 @@ defmodule Helyx.MixProject do
         fn _ ->
           # A child that inherits MIX_EXS loads this project again and recurses.
           System.delete_env("MIX_EXS")
+          # A failure in a child does not say which project it was.
+          Mix.shell().info("==> precommit #{Path.relative_to(dir, __DIR__)}")
           Mix.Task.run("cmd", ["--cd", dir, "mix", "precommit"])
         end
       end
 
+    # deps.get runs first here and in every project, so a fresh worktree or a
+    # rebase that brings a new project needs no manual fetch. --check-locked
+    # makes a lock file that lacks an entry, or holds a version the requirement
+    # rejects, fail the run instead of being rewritten by it.
+    # Credo covers plugin and app sources from the root via .credo.exs.
+    # Dialyzer cannot: they depend on the root, not the reverse, so each
+    # project's precommit runs its own, with a forced PLT check because a path
+    # dependency never changes the lock file that triggers one.
     [
       precommit:
-        ["format", "compile --warnings-as-errors", "credo --strict", "dialyzer", "test"] ++
+        [
+          "deps.get --check-locked",
+          "format",
+          "compile --warnings-as-errors",
+          "credo --strict",
+          "dialyzer",
+          "test"
+        ] ++
           projects
     ]
   end

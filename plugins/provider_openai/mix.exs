@@ -30,6 +30,14 @@ defmodule Helyx.Provider.OpenAI.MixProject do
   end
 
   defp aliases do
-    [precommit: ["format", "compile --warnings-as-errors", "dialyzer --force-check", "test"]]
+    [
+      precommit: [
+        "deps.get --check-locked",
+        "format",
+        "compile --warnings-as-errors",
+        "dialyzer --force-check",
+        "test"
+      ]
+    ]
   end
 end
