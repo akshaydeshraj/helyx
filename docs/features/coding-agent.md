@@ -73,6 +73,27 @@ Rules:
 - Streamed partial messages are not written. Only the completed message is appended, after the provider finishes it.
 - A file is read line by line. A last line that does not parse is a torn write. On open, the file is truncated to the end of the last line that parses before anything is appended.
 - On resume, the leaf is the last entry in file order.
+- A reader never raises at the caller. A header with an unknown or missing version, and an entry with a shape the writer never produces, come back as `{:error, reason}`. Only the last line can be repaired: a bad line mid-file is a malformed file and is rejected without truncation. A repair that cannot write, and a sessions directory that cannot be written on create, are their own error classes.
+- Provider deltas and tool calls that are not valid UTF-8 fail the turn as malformed stream events, and prompts that are not valid UTF-8 are rejected at the client, so transcript text is valid from the moment it exists.
+- Tool output is scrubbed to valid UTF-8 when it becomes a tool result message, so every consumer of the transcript, the file and the providers, sees valid text. Invalid bytes become replacement characters.
+- A write failure mid-session logs a warning, turns persistence off for that session, and the turn continues on the in-memory transcript.
+
+Bounds:
+
+| What | Bound | Over the bound |
+|---|---|---|
+| Session file on resume | Unbounded, one conversation per file, read whole into memory | Accepted for checkpoint one; compaction bounds the transcript itself (#1) |
+| Project directory slug | Last 100 characters of the slugged cwd | Collisions are disambiguated by the header `cwd` |
+| Prompt text | Must be valid UTF-8 | `{:error, :invalid_utf8}` at the client boundary |
+| `cwd` and model on create | Must be valid UTF-8 | `{:error, {:create_failed, :invalid_utf8}}` |
+
+Ownership:
+
+| Resource | Holder | Release |
+|---|---|---|
+| Session file handle | The calling process; every read and append opens and closes inside one `SessionFile` call | On return; no handle outlives a call |
+
+A `Session.start` that fails after the file is created (a supervisor or hands failure) can leave a header-only session that a later resume restores as an empty transcript with the right model. Open, accepted for checkpoint one; the window is narrowed by creating the file only after the plugins resolve.
 
 ## TUI
 

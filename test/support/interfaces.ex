@@ -99,6 +99,8 @@ defmodule Helyx.Test.Provider do
   #   "blocks"     thinking, text, and a tool call, then done; text after the result
   #   "error_tail" an error event, then a raise if pulled further
   #   "garbage"    one event that is not a stream event
+  #   "raw_bytes"  a text delta that is not valid UTF-8
+  #   "raw_call"   a tool call whose name is not valid UTF-8
   #   "wide"       a delta tuple with an extra element
   #   "tools"      the names of the tools in the context, as text
   #   "system"     the system prompt in the context, as text
@@ -108,6 +110,7 @@ defmodule Helyx.Test.Provider do
   #   "bad_call"   a tool call whose name is not a string
   #   "kill"       calls the kill tool, then echoes the result as text
   #   "hang"       one delta, then the stream blocks forever
+  #   "transcript" every message in the context as "role:text" lines
   #   "abort"      three calls to the slow tool that sleep for a minute;
   #                after the results, echoes them as text
   @behaviour Helyx.Provider
@@ -202,7 +205,19 @@ defmodule Helyx.Test.Provider do
     {:ok, raise_after([{:error, :overloaded}], "pulled past the error")}
   end
 
+  def stream("transcript", %Helyx.Context{messages: messages}, _opts) do
+    text = Enum.map_join(messages, "\n", &"#{&1.role}:#{Helyx.Message.text(&1)}")
+    {:ok, [{:text_delta, text}, done()]}
+  end
+
   def stream("garbage", _context, _opts), do: {:ok, [{:text_delta, 42}]}
+  def stream("raw_bytes", _context, _opts), do: {:ok, [{:text_delta, <<"hi", 255>>}]}
+
+  def stream("raw_call", _context, _opts) do
+    call = %Helyx.Message.ToolCall{id: "c", name: <<"bash", 255>>, arguments: %{}}
+    {:ok, [{:tool_call, call}, done()]}
+  end
+
   def stream("wide", _context, _opts), do: {:ok, [{:text_delta, "hello", :extra}]}
 
   def stream("overrun", _context, _opts) do

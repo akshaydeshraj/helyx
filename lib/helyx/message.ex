@@ -77,9 +77,37 @@ defmodule Helyx.Message do
       tool_call_id: id,
       tool_name: name,
       is_error: is_error,
-      content: [%Text{text: text}]
+      content: [%Text{text: scrub(text)}]
     }
   end
+
+  # Tool output is the one text source that can carry bytes that are not
+  # UTF-8: prompts are rejected in `Helyx.Session.prompt/2` and provider
+  # deltas fail the turn as malformed stream events. Scrubbing here keeps
+  # every consumer safe: the session file, and any provider that
+  # JSON-encodes the transcript. The valid path copies nothing.
+  defp scrub(text) do
+    if String.valid?(text, :fast_ascii), do: text, else: String.replace_invalid(text)
+  end
+
+  @doc """
+  Whether every string in the value, keys and values at any depth, is
+  valid UTF-8.
+
+  The one predicate behind every transcript ingress: prompts and tool
+  calls are rejected against it, tool output is scrubbed instead.
+  """
+  @spec valid_utf8?(term()) :: boolean()
+  def valid_utf8?(value) when is_binary(value), do: String.valid?(value)
+  def valid_utf8?(%_{} = value), do: valid_utf8?(Map.from_struct(value))
+
+  def valid_utf8?(value) when is_map(value),
+    do: Enum.all?(value, fn {key, val} -> valid_utf8?(key) and valid_utf8?(val) end)
+
+  # The head-tail walk never raises on an improper list; the catch-all
+  # covers the empty list and every non-text terminal.
+  def valid_utf8?([head | tail]), do: valid_utf8?(head) and valid_utf8?(tail)
+  def valid_utf8?(_value), do: true
 
   @doc "Concatenates the text blocks of a message. Other blocks are skipped."
   @spec text(t()) :: String.t()

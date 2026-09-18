@@ -26,7 +26,9 @@ defmodule Helyx.Session do
 
   use GenServer, restart: :temporary
 
-  alias Helyx.{Context, Event, Message, ModelRef}
+  require Logger
+
+  alias Helyx.{Context, Event, Message, ModelRef, SessionFile}
 
   @enforce_keys [:id, :core]
   defstruct [:id, :core]
@@ -52,6 +54,7 @@ defmodule Helyx.Session do
       :provider,
       :cwd,
       :hands,
+      :file,
       tools: [],
       transcript: [],
       seq: 0,
@@ -61,17 +64,71 @@ defmodule Helyx.Session do
 
   # Public API
 
-  @doc "Starts a session under Core. `:model` is required. `:cwd` defaults to the current directory."
+  @doc """
+  Starts a session under Core. `:model` is required. `:cwd` defaults to the
+  current directory. With `:sessions_dir` the session is written to disk as
+  it runs, as JSON lines under `<sessions_dir>/<project>/<session>.jsonl`;
+  without it nothing is persisted.
+  """
   @spec start(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, term()}
   def start(core \\ Helyx.Core, opts) do
+    id = Helyx.Id.new()
+    cwd = Keyword.get_lazy(opts, :cwd, &File.cwd!/0)
+
+    # The file is created only after the plugins resolve, which narrows the
+    # window for an orphan file from a failed start. A supervisor failure
+    # after this point still leaves one; the feature doc records that hole.
     with {:ok, ref} <- ModelRef.parse(Keyword.fetch!(opts, :model)),
          {:ok, provider} <- Helyx.Provider.find(core, ref.provider),
          {:ok, _tools} <- Helyx.Tool.by_name(core),
-         cwd = Keyword.get_lazy(opts, :cwd, &File.cwd!/0),
-         state = %State{id: new_id(), core: core, model: ref, provider: provider, cwd: cwd},
-         {:ok, _pid} <-
+         {:ok, file} <- create_file(opts[:sessions_dir], id, cwd, ref) do
+      start_child(%State{
+        id: id,
+        core: core,
+        model: ref,
+        provider: provider,
+        cwd: cwd,
+        file: file
+      })
+    end
+  end
+
+  defp create_file(nil, _id, _cwd, _ref), do: {:ok, nil}
+
+  defp create_file(dir, id, cwd, ref),
+    do: SessionFile.create(dir, id, cwd, ModelRef.to_string(ref))
+
+  @doc """
+  Resumes the most recent session for the working directory from
+  `:sessions_dir`, restoring the transcript and the current model. Every
+  tool call without a result gets an `aborted` error result, so the next
+  provider call sees complete call and result pairs.
+  """
+  @spec resume(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, term()}
+  def resume(core \\ Helyx.Core, opts) do
+    dir = Keyword.fetch!(opts, :sessions_dir)
+    cwd = Keyword.get_lazy(opts, :cwd, &File.cwd!/0)
+
+    with {:ok, resumed} <- SessionFile.resume(dir, cwd),
+         {:ok, ref} <- ModelRef.parse(resumed.model),
+         {:ok, provider} <- Helyx.Provider.find(core, ref.provider),
+         {:ok, _tools} <- Helyx.Tool.by_name(core) do
+      start_child(%State{
+        id: resumed.session_id,
+        core: core,
+        model: ref,
+        provider: provider,
+        cwd: cwd,
+        file: resumed.file,
+        transcript: resumed.messages
+      })
+    end
+  end
+
+  defp start_child(%State{id: id, core: core} = state) do
+    with {:ok, _pid} <-
            DynamicSupervisor.start_child(Helyx.Core.session_supervisor(core), {__MODULE__, state}) do
-      {:ok, %__MODULE__{id: state.id, core: core}}
+      {:ok, %__MODULE__{id: id, core: core}}
     end
   end
 
@@ -82,10 +139,14 @@ defmodule Helyx.Session do
     :ok
   end
 
-  @doc "Sends a prompt. Starts a turn if none is running."
-  @spec prompt(t(), String.t()) :: :ok | {:error, :turn_running}
+  @doc "Sends a prompt. Starts a turn if none is running. The text must be valid UTF-8."
+  @spec prompt(t(), String.t()) :: :ok | {:error, :turn_running | :invalid_utf8}
   def prompt(%__MODULE__{id: id, core: core}, text) when is_binary(text) do
-    GenServer.call(via(core, id), {:prompt, text})
+    if Message.valid_utf8?(text) do
+      GenServer.call(via(core, id), {:prompt, text})
+    else
+      {:error, :invalid_utf8}
+    end
   end
 
   @doc """
@@ -110,7 +171,15 @@ defmodule Helyx.Session do
   @impl true
   def init(%State{} = state) do
     {:ok, hands} = Helyx.Hands.start_link(core: state.core, cwd: state.cwd, session: self())
-    {:ok, %{state | hands: hands, tools: Helyx.Hands.tools(hands)}}
+    state = %{state | hands: hands, tools: Helyx.Hands.tools(hands)}
+
+    # A resumed transcript can end mid-turn, after a crash. Each open tool
+    # call gets an `aborted` error result before anyone can subscribe, so
+    # the next provider call sees complete call and result pairs.
+    aborted =
+      Enum.map(open_calls(state.transcript), &Message.tool_result(&1, {:error, "aborted"}))
+
+    {:ok, Enum.reduce(aborted, state, &append_message(&2, &1))}
   end
 
   @impl true
@@ -122,7 +191,7 @@ defmodule Helyx.Session do
     user = Message.user(text)
 
     state =
-      %{state | transcript: state.transcript ++ [user], turn: %Turn{id: new_id()}}
+      %{append_message(state, user) | turn: %Turn{id: Helyx.Id.new()}}
       |> emit(:agent_start, %{})
       |> emit(:turn_start, %{})
       |> emit(:message_start, %{message: user})
@@ -217,18 +286,19 @@ defmodule Helyx.Session do
   end
 
   # Forwards well-formed stream events to the session and returns the first
-  # terminal event. A malformed event is a terminal error.
+  # terminal event. A malformed event is a terminal error. A delta or a
+  # tool call that is not valid UTF-8 is malformed: transcript text is
+  # valid from the moment it exists, so the file and the providers never
+  # see raw bytes.
   defp consume(stream, session, turn_id) do
     Enum.reduce_while(stream, :stream_ended, fn
       {kind, payload} = event, acc
       when kind in [:text_delta, :thinking_delta] and is_binary(payload) ->
-        send(session, {:stream_event, turn_id, event})
-        {:cont, acc}
+        forward(Message.valid_utf8?(payload), event, session, turn_id, acc)
 
       {:tool_call, %Message.ToolCall{id: id, name: name, arguments: args}} = event, acc
       when is_binary(id) and is_binary(name) and is_map(args) ->
-        send(session, {:stream_event, turn_id, event})
-        {:cont, acc}
+        forward(Message.valid_utf8?([id, name, args]), event, session, turn_id, acc)
 
       {:done, %{stop_reason: _, usage: _}} = terminal, _acc ->
         {:halt, terminal}
@@ -240,6 +310,14 @@ defmodule Helyx.Session do
         {:halt, {:error, {:bad_stream_event, other}}}
     end)
   end
+
+  defp forward(true = _valid, event, session, turn_id, acc) do
+    send(session, {:stream_event, turn_id, event})
+    {:cont, acc}
+  end
+
+  defp forward(false = _valid, event, _session, _turn_id, _acc),
+    do: {:halt, {:error, {:bad_stream_event, event}}}
 
   # Consecutive deltas of one kind extend the head block; anything else
   # starts a new block. The list is reversed.
@@ -258,10 +336,7 @@ defmodule Helyx.Session do
     %State{turn: turn} = state = start_assistant_message(state)
     assistant = assistant_message(state, stop_reason: stop_reason, usage: usage)
 
-    state =
-      emit(%{state | transcript: state.transcript ++ [assistant]}, :message_end, %{
-        message: assistant
-      })
+    state = emit(append_message(state, assistant), :message_end, %{message: assistant})
 
     calls = for %Message.ToolCall{} = call <- assistant.content, do: call
 
@@ -289,16 +364,44 @@ defmodule Helyx.Session do
   # tool_execution_end.
   defp record_result(call, result, state) do
     message = Message.tool_result(call, result)
+    emit(append_message(state, message), :tool_execution_end, %{message: message})
+  end
 
-    emit(%{state | transcript: state.transcript ++ [message]}, :tool_execution_end, %{
-      message: message
-    })
+  # Appends a completed message to the transcript and, when the session has
+  # a file, to disk. Streamed partial messages never come through here.
+  defp append_message(%State{} = state, %Message{} = message) do
+    %{state | transcript: state.transcript ++ [message], file: persist(state.file, message)}
+  end
+
+  defp persist(nil, _message), do: nil
+
+  defp persist(file, message) do
+    SessionFile.append_message(file, message)
+  rescue
+    # A disk failure must not take the session down. The turn goes on with
+    # the in-memory transcript; persistence stays off for this session.
+    error ->
+      Logger.warning("session file append failed, persistence off: " <> Exception.message(error))
+      nil
   end
 
   # Each tool call without a result gets an `aborted` error result in the
   # transcript, so the next provider call sees a complete pair.
-  defp abort_open_calls(%State{turn: %Turn{calls: calls}} = state) do
-    Enum.reduce(calls, state, &record_result(&1, {:error, "aborted"}, &2))
+  defp abort_open_calls(%State{} = state) do
+    Enum.reduce(open_calls(state.transcript), state, &record_result(&1, {:error, "aborted"}, &2))
+  end
+
+  # The tool calls in the transcript that have no tool result yet, in call
+  # order. During a turn this is exactly the calls still to answer; on a
+  # transcript restored after a crash it is the calls the crash orphaned.
+  defp open_calls(transcript) do
+    answered =
+      for %Message{role: :tool_result} = m <- transcript, into: MapSet.new(), do: m.tool_call_id
+
+    for %Message{role: :assistant, content: content} <- transcript,
+        %Message.ToolCall{} = call <- content,
+        call.id not in answered,
+        do: call
   end
 
   # A partial assistant message is closed with a failure stop reason so
@@ -353,6 +456,4 @@ defmodule Helyx.Session do
   end
 
   defp via(core, id), do: {:via, Registry, {Helyx.Core.sessions_registry(core), id}}
-
-  defp new_id, do: Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
 end
