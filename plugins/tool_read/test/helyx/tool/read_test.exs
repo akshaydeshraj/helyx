@@ -27,16 +27,42 @@ defmodule Helyx.Tool.ReadTest do
     assert Helyx.Message.text(result) == "one\ntwo\n"
   end
 
-  test "truncates a long file from the tail end and says so", %{tmp_dir: dir, run: run} do
+  test "truncates a long file to its head and names the next offset", %{
+    tmp_dir: dir,
+    run: run
+  } do
     File.write!(Path.join(dir, "long.txt"), Enum.map_join(1..3000, "\n", &to_string/1))
     text = Helyx.Message.text(run.(%{"path" => "long.txt"}))
     assert String.starts_with?(text, "1\n2\n")
-    assert String.ends_with?(text, "2000\n[truncated: showing lines 1-2000 of 3000]")
+
+    assert String.ends_with?(
+             text,
+             "2000\n[truncated: showing lines 1-2000 of 3000; read again with offset 2001]"
+           )
   end
 
   test "offset reads from a later line", %{tmp_dir: dir, run: run} do
     File.write!(Path.join(dir, "a.txt"), "one\ntwo\nthree")
     assert Helyx.Message.text(run.(%{"path" => "a.txt", "offset" => 2})) == "two\nthree"
+  end
+
+  test "a truncated offset read reports absolute lines and continues with no gap", %{
+    tmp_dir: dir,
+    run: run
+  } do
+    File.write!(Path.join(dir, "long.txt"), Enum.map_join(1..5000, "\n", &to_string/1))
+
+    first = Helyx.Message.text(run.(%{"path" => "long.txt", "offset" => 2001}))
+    assert String.starts_with?(first, "2001\n")
+
+    assert String.ends_with?(
+             first,
+             "4000\n[truncated: showing lines 2001-4000 of 5000; read again with offset 4001]"
+           )
+
+    second = Helyx.Message.text(run.(%{"path" => "long.txt", "offset" => 4001}))
+    assert String.starts_with?(second, "4001\n")
+    assert String.ends_with?(second, "\n5000")
   end
 
   test "a missing file is an error result", %{run: run} do
@@ -57,7 +83,7 @@ defmodule Helyx.Tool.ReadTest do
     assert result.is_error
 
     assert Helyx.Message.text(result) ==
-             "cannot read big.bin: over 10485760 bytes; read it in parts"
+             "cannot read big.bin: over the 10485760-byte limit"
   end
 
   test "a file that is not valid UTF-8 is an error result", %{tmp_dir: dir, run: run} do

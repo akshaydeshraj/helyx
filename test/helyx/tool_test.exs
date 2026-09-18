@@ -68,9 +68,13 @@ defmodule Helyx.ToolTest do
   end
 
   defp notice(out, :head) do
-    assert [_, content, first, last, total] =
-             Regex.run(~r/\A(.*)\n\[truncated: showing lines (\d+)-(\d+) of (\d+)\]\z/s, out)
+    assert [_, content, first, last, total, offset] =
+             Regex.run(
+               ~r/\A(.*)\n\[truncated: showing lines (\d+)-(\d+) of (\d+); read again with offset (\d+)\]\z/s,
+               out
+             )
 
+    assert String.to_integer(offset) == String.to_integer(last) + 1
     to_tuple(first, last, total, content)
   end
 
@@ -108,7 +112,11 @@ defmodule Helyx.ToolTest do
     text = Enum.map_join(1..2500, "\n", &to_string/1)
     out = Tool.truncate(text, :head)
     assert String.starts_with?(out, "1\n2\n")
-    assert String.ends_with?(out, "\n2000\n[truncated: showing lines 1-2000 of 2500]")
+
+    assert String.ends_with?(
+             out,
+             "\n2000\n[truncated: showing lines 1-2000 of 2500; read again with offset 2001]"
+           )
   end
 
   test "tail keeps the last 2000 lines and says what it shows" do
@@ -121,7 +129,12 @@ defmodule Helyx.ToolTest do
   test "the byte limit cuts on a whole line" do
     text = Enum.map_join(1..100, "\n", fn _ -> String.duplicate("x", 1000) end)
     out = Tool.truncate(text, :head)
-    assert String.ends_with?(out, "[truncated: showing lines 1-51 of 100]")
+
+    assert String.ends_with?(
+             out,
+             "[truncated: showing lines 1-51 of 100; read again with offset 52]"
+           )
+
     assert byte_size(out) <= 51_200 + 60
   end
 
@@ -130,14 +143,19 @@ defmodule Helyx.ToolTest do
 
     assert String.ends_with?(
              Tool.truncate(text, :head),
-             "[truncated: showing lines 1-2000 of 2500]"
+             "[truncated: showing lines 1-2000 of 2500; read again with offset 2001]"
            )
   end
 
   test "a first line over the byte limit is cut to the limit" do
     big = String.duplicate("x", 60_000)
     head = Tool.truncate(big <> "\nb", :head)
-    assert String.ends_with?(head, "\n[truncated: showing lines 1-1 of 2]")
+
+    assert String.ends_with?(
+             head,
+             "\n[truncated: showing lines 1-1 of 2; read again with offset 2]"
+           )
+
     assert byte_size(head) < 51_300
 
     tail = Tool.truncate("a\n" <> big, :tail)
@@ -147,7 +165,11 @@ defmodule Helyx.ToolTest do
 
   test "trailing blank lines count toward the limits" do
     out = Tool.truncate("a" <> String.duplicate("\n", 60_000), :head)
-    assert String.ends_with?(out, "[truncated: showing lines 1-2000 of 60000]")
+
+    assert String.ends_with?(
+             out,
+             "[truncated: showing lines 1-2000 of 60000; read again with offset 2001]"
+           )
   end
 
   test "a cut line stays valid UTF-8" do
@@ -163,7 +185,9 @@ defmodule Helyx.ToolTest do
   test "a cut on text that was never valid gives up after three byte retreats" do
     out = Tool.truncate(:binary.copy(<<255>>, 60_000), :head)
 
-    assert [cut, "[truncated: showing lines 1-1 of 1]"] = String.split(out, "\n", parts: 2)
+    assert [cut, "[truncated: showing lines 1-1 of 1; read again with offset 2]"] =
+             String.split(out, "\n", parts: 2)
+
     assert cut == :binary.copy(<<255>>, 51_197)
 
     # The hands replace the invalid bytes at delivery; the replacement is
@@ -174,7 +198,10 @@ defmodule Helyx.ToolTest do
   end
 
   test "an input whose last line is exactly the notice is a truncation fixed point" do
-    text = String.duplicate("a\n", 2000) <> "[truncated: showing lines 1-2000 of 2001]"
+    text =
+      String.duplicate("a\n", 2000) <>
+        "[truncated: showing lines 1-2000 of 2001; read again with offset 2001]"
+
     assert Tool.truncate(text, :head) == text
   end
 
@@ -185,7 +212,7 @@ defmodule Helyx.ToolTest do
 
     assert String.starts_with?(
              Tool.truncate(line <> "\nb", :head),
-             line <> "\n[truncated: showing lines 1-1 of 2]"
+             line <> "\n[truncated: showing lines 1-1 of 2; read again with offset 2]"
            )
   end
 end

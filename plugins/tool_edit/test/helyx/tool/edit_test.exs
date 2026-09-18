@@ -46,8 +46,22 @@ defmodule Helyx.Tool.EditTest do
   test "ambiguous text is an error and the file is untouched", %{tmp_dir: dir, run: run} do
     result = run.(%{"path" => "a.txt", "old_text" => "t", "new_text" => "x"})
     assert result.is_error
-    assert Helyx.Message.text(result) == "old_text matches 2 places in a.txt; make it unique"
+
+    assert Helyx.Message.text(result) ==
+             "old_text matches more than once in a.txt; make it unique"
+
     assert File.read!(Path.join(dir, "a.txt")) == "one\ntwo\nthree\n"
+  end
+
+  test "overlapping matches are an error and the file is untouched", %{tmp_dir: dir, run: run} do
+    File.write!(Path.join(dir, "b.txt"), "aaa")
+    result = run.(%{"path" => "b.txt", "old_text" => "aa", "new_text" => "X"})
+    assert result.is_error
+
+    assert Helyx.Message.text(result) ==
+             "old_text matches more than once in b.txt; make it unique"
+
+    assert File.read!(Path.join(dir, "b.txt")) == "aaa"
   end
 
   test "empty old_text is an error", %{run: run} do
