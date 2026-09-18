@@ -360,6 +360,16 @@ defmodule Helyx.Provider.OpenAITest do
              [{:error, {:line_over_limit, @max_line_bytes}}]
   end
 
+  test "a CRLF terminator split across chunks does not count against the limit" do
+    at = [content_line_of(@max_line_bytes) <> "\r", "\n\ndata: [DONE]\n\n"]
+    assert [{:text_delta, _}] = Enum.to_list(OpenAI.events(at))
+
+    over = [content_line_of(@max_line_bytes + 1) <> "\r", "\n\ndata: [DONE]\n\n"]
+
+    assert Enum.to_list(OpenAI.events(over)) ==
+             [{:error, {:line_over_limit, @max_line_bytes}}]
+  end
+
   test "an unterminated line over the limit errors before any terminator" do
     half = String.duplicate("a", div(@max_line_bytes, 2) + 1)
     chunks = ["data: " <> half, half, half]

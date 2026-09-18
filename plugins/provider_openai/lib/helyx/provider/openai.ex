@@ -245,14 +245,18 @@ defmodule Helyx.Provider.OpenAI do
   # Complete lines and the trailing partial one. SSE delimits with \n or
   # \r\n. A partial past the limit is promoted to a complete line so the one
   # guard in `line/2` errors now, before any terminator, and the buffer never
-  # grows past the limit by more than one chunk.
+  # grows past the limit by more than one chunk. One trailing \r does not
+  # count: it can be a CRLF terminator split across chunks, and the split
+  # consumes it when the \n arrives.
   defp split_lines(data) do
     {partial, complete} = data |> :binary.split(["\r\n", "\n"], [:global]) |> List.pop_at(-1)
 
-    if byte_size(partial) > @max_line_bytes,
+    if byte_size(partial) - pending_cr(partial) > @max_line_bytes,
       do: {complete ++ [partial], ""},
       else: {complete, partial}
   end
+
+  defp pending_cr(partial), do: if(String.ends_with?(partial, "\r"), do: 1, else: 0)
 
   defp line(_line, :halted), do: {:halt, :halted}
 

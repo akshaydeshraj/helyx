@@ -84,6 +84,16 @@ The 6.3 resolution changed comment text only, so no further round ran.
 
 Precommit's Dialyzer flagged the improper-list cons in `drain/1` (`[body | chunk]` with a binary tail); the fix builds a proper list, `[body, chunk]`, with identical iodata semantics. Two lines, one file, no function change.
 
+## Round 7 (full): split-CRLF fix after the commit
+
+A Codex review of the branch found that a CRLF terminator split across transport chunks counted its `\r` against the line limit, so a valid line of exactly `@max_line_bytes` failed as `line_over_limit`. The fix: `split_lines/1` discounts one trailing `\r` in the partial buffer (`pending_cr/1`), because the split consumes it when the `\n` arrives. The fix adds a function, so the round was full.
+
+| # | Axis | Finding | Resolution |
+|---|---|---|---|
+| 7.1 | simplify | None. `String.trim_trailing` would be wrong (it strips every trailing `\r`); the 0/1 discount is the minimal correct form | — |
+| 7.2 | standards, spec | Clean. The bounds row still states the truth: the buffer may hold limit+1 bytes, within the one-chunk overshoot | — |
+| 7.3 | failure path | None across 22 scratch tests: every CRLF split placement at, under, and over the limit, multibyte tails, `\r` as data, `\r\r\n`, and `\r`-spray. The discount cannot compound: `pending_cr` is at most 1, so the buffer never exceeds limit+1 bytes | — |
+
 ## Verification
 
 - Reproductions ran in sub-agent scratch tests at exact boundaries: the line limit at 1_048_576 and one over (multibyte included), the tool budget tripping at charge 10_485_761 and not at 10_485_760, fragment spray at the predicted delta count, and retained memory near zero against multi-megabyte pinning inputs.
