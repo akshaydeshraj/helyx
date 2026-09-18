@@ -34,6 +34,24 @@ defmodule Helyx.SessionTest do
 
   defp stop_reason(events), do: List.last(events).data.stop_reason
 
+  # Stops the session and waits until Registry frees its name, so a resume
+  # that follows cannot race the asynchronous cleanup.
+  defp stop_session(core, session, stop) do
+    registry = Helyx.Core.sessions_registry(core)
+    [{pid, _}] = Registry.lookup(registry, session.id)
+    stop.(pid)
+    await_free(registry, session.id, 100)
+  end
+
+  defp await_free(_registry, _id, 0), do: flunk("registry entry never freed")
+
+  defp await_free(registry, id, tries) do
+    if Registry.lookup(registry, id) != [] do
+      Process.sleep(10)
+      await_free(registry, id, tries - 1)
+    end
+  end
+
   test "a stream that ends without a terminal event ends the turn with an error", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/empty")
     :ok = Session.subscribe(session)
@@ -261,6 +279,50 @@ defmodule Helyx.SessionTest do
              List.last(events).data.error
   end
 
+  test "a stop reason outside the format's set is a malformed stream event", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/bad_stop")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:agent_end)
+
+    assert {:bad_stream_event, {:done, %{stop_reason: :refusal}}} =
+             List.last(events).data.error
+  end
+
+  test "a tool call whose arguments the file cannot hold is a malformed stream event", %{
+    core: core
+  } do
+    {:ok, session} = Session.start(core, model: "test/bad_args")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:agent_end)
+
+    assert {:bad_stream_event, {:tool_call, _}} = List.last(events).data.error
+  end
+
+  @tag :tmp_dir
+  test "a terminal the file cannot hold fails the turn and leaves persistence on", %{
+    core: core,
+    tmp_dir: dir
+  } do
+    {:ok, session} = Session.start(core, model: "test/recover", sessions_dir: dir)
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:agent_end)
+
+    assert {:bad_stream_event, {:done, %{usage: %{"in" => {1, 2}}}}} =
+             List.last(events).data.error
+
+    :ok = Session.prompt(session, "again")
+    collect_until(:agent_end)
+
+    {:ok, restored} = Helyx.SessionFile.resume(dir, File.cwd!())
+    assert "recovered" in Enum.map(restored.messages, &Helyx.Message.text/1)
+  end
+
   test "a tool Task that dies gives an error result and the loop continues", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/kill")
     :ok = Session.subscribe(session)
@@ -332,6 +394,143 @@ defmodule Helyx.SessionTest do
 
     assert :ok = Session.abort(session)
     refute_receive {:helyx_event, _}, 50
+  end
+
+  @tag :tmp_dir
+  test "a session with a sessions dir writes a header and completed messages", %{
+    core: core,
+    tmp_dir: dir
+  } do
+    {:ok, session} = Session.start(core, model: "test/blocks", sessions_dir: dir)
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    collect_until(:agent_end)
+
+    [path] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl"))
+    entries = path |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&JSON.decode!/1)
+
+    assert [
+             %{"type" => "session", "version" => 1, "model" => "test/blocks"},
+             %{"type" => "message", "role" => "user"},
+             %{"type" => "message", "role" => "assistant", "stop_reason" => "end_turn"},
+             %{"type" => "message", "role" => "tool_result", "tool_call_id" => "call_1"},
+             %{"type" => "message", "role" => "assistant"}
+           ] = entries
+
+    assert Enum.at(entries, 0)["cwd"] == File.cwd!()
+
+    assert [%{"type" => "thinking"}, %{"type" => "text"}, %{"type" => "tool_call"}] =
+             Enum.at(entries, 2)["content"]
+
+    ids = Enum.map(entries, & &1["id"])
+    assert Enum.map(entries, & &1["parent_id"]) == [nil | Enum.drop(ids, -1)]
+  end
+
+  @tag :tmp_dir
+  test "resume restores the transcript and the next provider call sees it", %{
+    core: core,
+    tmp_dir: dir
+  } do
+    {:ok, session} = Session.start(core, model: "test/transcript", sessions_dir: dir)
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    assert final_text(collect_until(:agent_end)) == "user:hello"
+
+    stop_session(core, session, &GenServer.stop/1)
+
+    {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+    assert resumed.id == session.id
+    :ok = Session.subscribe(resumed)
+
+    :ok = Session.prompt(resumed, "again")
+
+    assert final_text(collect_until(:agent_end)) ==
+             "user:hello\nassistant:user:hello\nuser:again"
+  end
+
+  @tag :tmp_dir
+  test "resume keeps a reused tool call id open until its own result", %{
+    core: core,
+    tmp_dir: dir
+  } do
+    call = %Helyx.Message.ToolCall{id: "c1", name: "slow", arguments: %{}}
+    {:ok, file} = Helyx.SessionFile.create(dir, "reuse", File.cwd!(), "test/transcript")
+
+    [
+      %Helyx.Message{role: :assistant, stop_reason: :tool_use, content: [call]},
+      Helyx.Message.tool_result(call, {:ok, "first answer"}),
+      %Helyx.Message{role: :assistant, stop_reason: :tool_use, content: [call]}
+    ]
+    |> Enum.reduce(file, &Helyx.SessionFile.append_message(&2, &1))
+
+    {:ok, _session} = Session.resume(core, sessions_dir: dir)
+
+    {:ok, restored} = Helyx.SessionFile.resume(dir, File.cwd!())
+    assert [_call1, _result1, _call2, aborted] = restored.messages
+    assert %Helyx.Message{role: :tool_result, tool_call_id: "c1", is_error: true} = aborted
+    assert Helyx.Message.text(aborted) == "aborted"
+  end
+
+  @tag :tmp_dir
+  test "resume after a crash mid-turn answers every open tool call", %{core: core, tmp_dir: dir} do
+    {:ok, session} = Session.start(core, model: "test/abort", sessions_dir: dir)
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
+
+    stop_session(core, session, &Process.exit(&1, :kill))
+
+    {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+    :ok = Session.subscribe(resumed)
+
+    :ok = Session.prompt(resumed, "again")
+    assert final_text(collect_until(:agent_end)) == "aborted|aborted|aborted"
+  end
+
+  test "a delta that is not valid UTF-8 is a malformed stream event", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/raw_bytes")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:agent_end)
+    assert {:bad_stream_event, {:text_delta, <<"hi", 255>>}} = List.last(events).data.error
+  end
+
+  test "a tool call that is not valid UTF-8 is a malformed stream event", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/raw_call")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:agent_end)
+    assert {:bad_stream_event, {:tool_call, _}} = List.last(events).data.error
+  end
+
+  test "a prompt that is not valid UTF-8 is rejected and the session lives", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/ok")
+    :ok = Session.subscribe(session)
+
+    assert {:error, :invalid_utf8} = Session.prompt(session, <<255, 254>>)
+
+    :ok = Session.prompt(session, "hello")
+    assert stop_reason(collect_until(:agent_end)) == :end_turn
+  end
+
+  @tag :tmp_dir
+  @tag :capture_log
+  test "a write failure turns persistence off and the session lives", %{core: core, tmp_dir: dir} do
+    {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
+    :ok = Session.subscribe(session)
+
+    File.rm_rf!(dir)
+
+    :ok = Session.prompt(session, "hello")
+    assert stop_reason(collect_until(:agent_end)) == :end_turn
+
+    :ok = Session.prompt(session, "again")
+    assert stop_reason(collect_until(:agent_end)) == :end_turn
   end
 
   @tag :tmp_dir
