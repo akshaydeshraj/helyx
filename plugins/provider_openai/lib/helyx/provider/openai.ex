@@ -199,8 +199,8 @@ defmodule Helyx.Provider.OpenAI do
 
   # Complete lines and the trailing partial one. SSE delimits with \n or \r\n.
   defp split_lines(data) do
-    [partial | complete] = data |> :binary.split(["\r\n", "\n"], [:global]) |> Enum.reverse()
-    {Enum.reverse(complete), partial}
+    {partial, complete} = data |> :binary.split(["\r\n", "\n"], [:global]) |> List.pop_at(-1)
+    {complete, partial}
   end
 
   defp line("data:" <> payload, acc), do: data(String.trim_leading(payload, " "), acc)
