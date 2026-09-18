@@ -1,6 +1,6 @@
 # Coding tools in pi, opencode, and codex
 
-Research for ticket #3 (hands and the four tools). Facts gathered on 2026-09-17 from the source of `earendil-works/pi` (main), `sst/opencode` (dev), and `openai/codex` (`c11fdc9`, `codex-rs/`). Numbers are from the source, not from documentation.
+Research ticket: issue #17. It was done for ticket #3 (hands and the four tools), and later tickets cite it under #17. Facts gathered on 2026-09-17 from the source of `earendil-works/pi` (`main` at `a8b3dd1`), `anomalyco/opencode` (`dev` at `5a83358`, the repository formerly named `sst/opencode`), and `openai/codex` (`c11fdc9`, `codex-rs/`). The pi and opencode revisions are the branch heads at the time of the research, found afterwards from the commit dates; the research read the branches and did not record a revision. Numbers are from the source, not from documentation.
 
 ## Summary table
 
