@@ -96,6 +96,50 @@ defmodule Helyx.HandsTest do
     refute group_alive?(g2)
   end
 
+  # The watchdog is the reaper: it may be KILLed only after the command
+  # group is gone, and only after it had time to exit by itself.
+  test "a watchdog group is swept only after the command group is gone", %{core: core} do
+    {:ok, agent} = Agent.start_link(fn -> MapSet.new([100, 200]) end)
+    test_pid = self()
+
+    kill = fn args ->
+      send(test_pid, {:kill, args})
+
+      case args do
+        ["-0", "--", target] ->
+          if MapSet.member?(Agent.get(agent, & &1), -String.to_integer(target)),
+            do: {"", 0},
+            else: {"no such process", 1}
+
+        ["-KILL", "--" | targets] ->
+          killed = MapSet.new(targets, &(-String.to_integer(&1)))
+          Agent.update(agent, &MapSet.difference(&1, killed))
+          {"", 0}
+      end
+    end
+
+    hands = start_hands(core, kill_cmd: kill, wait_ms: 200)
+
+    :ok =
+      Helyx.Hands.run(
+        hands,
+        "t1",
+        call("c1", "register", %{"groups" => [100], "watchdogs" => [200]})
+      )
+
+    assert_receive {:tool_result, "t1", "c1", {:ok, "registered"}}, 5_000
+    assert [[_, _, "-100"], [_, _, "-200"]] = drain_kills()
+  end
+
+  defp drain_kills(acc \\ []) do
+    receive do
+      {:kill, ["-KILL" | rest]} -> drain_kills([["-KILL" | rest] | acc])
+      {:kill, _} -> drain_kills(acc)
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
+
   test "a tool whose check fails stops the session with a clear error" do
     core = :"core_#{System.unique_integer([:positive])}"
 

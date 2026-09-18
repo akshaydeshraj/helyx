@@ -70,7 +70,8 @@ defmodule Helyx.Session do
       seq: 0,
       turn: nil,
       steers: [],
-      follow_ups: []
+      follow_ups: [],
+      provider_pids: MapSet.new()
     ]
   end
 
@@ -342,8 +343,19 @@ defmodule Helyx.Session do
     {:stop, reason, state}
   end
 
-  # A provider Task's exit signal; its reply or :DOWN carries the outcome.
-  def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
+  # A provider Task's exit signal is expected; its reply or :DOWN carries
+  # the outcome. An exit from any other linked process, the sessions
+  # Registry for example, is vital: a session that outlived its registration
+  # would keep working where no client can reach it. A pid whose exit was
+  # consumed by Task.shutdown on abort stays in the set, because a late exit
+  # signal for it can still arrive; the set grows by one pid per abort.
+  def handle_info({:EXIT, pid, reason}, %State{provider_pids: pids} = state) do
+    if MapSet.member?(pids, pid) do
+      {:noreply, %{state | provider_pids: MapSet.delete(pids, pid)}}
+    else
+      {:stop, reason, state}
+    end
+  end
 
   # The session stops only for a trapped reason; on an untrappable kill the
   # link kills the provider Task, and the hands take the tool Tasks.
@@ -426,7 +438,11 @@ defmodule Helyx.Session do
         end
       end)
 
-    %{state | turn: %{turn | task: task}}
+    %{
+      state
+      | turn: %{turn | task: task},
+        provider_pids: MapSet.put(state.provider_pids, task.pid)
+    }
   end
 
   # Forwards well-formed stream events to the session and returns the first

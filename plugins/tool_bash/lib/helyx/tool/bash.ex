@@ -137,11 +137,12 @@ defmodule Helyx.Tool.Bash do
       ])
 
     # The runtime detaches port programs into their own process group, so
-    # the port's OS pid is the watchdog's group. Registered so the hands
-    # wait for the watchdog too: it exits only after it reaped the command,
-    # so an abort cannot return while the command is a zombie.
+    # the port's OS pid is the watchdog's group. Registered as :watchdog:
+    # the hands wait for it, so an abort cannot return while the command is
+    # a zombie, and they sweep it only after the command group is gone, so
+    # a KILL from the hands can never cut the reap short.
     case Port.info(port, :os_pid) do
-      {:os_pid, os_pid} -> Helyx.Tool.register_group(os_pid)
+      {:os_pid, os_pid} -> Helyx.Tool.register_group(os_pid, :watchdog)
       nil -> :ok
     end
 

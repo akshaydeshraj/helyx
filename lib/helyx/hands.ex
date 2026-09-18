@@ -15,11 +15,14 @@ defmodule Helyx.Hands do
   later encoder never sees invalid stored text.
 
   A tool that starts an OS process group registers it with
-  `Helyx.Tool.register_group/1`, so the hands hold the groups outside the
+  `Helyx.Tool.register_group/2`, so the hands hold the groups outside the
   Task, kill them when the call delivers, however the Task ended, and hold
-  the result until every group is gone. A group that survives KILL past the
-  wait is stuck: the result becomes an error, the group is signalled again
-  at the start of each later tool call, and the hands refuse tool calls
+  the result until every group is gone. A group registered as `:watchdog`
+  is swept only after every command group is gone or stuck, and gets time
+  to exit by itself first, so the hands never KILL a reaper that still has
+  work. A group that survives KILL past the wait is stuck: the result
+  becomes an error, the group is signalled again at the start of each
+  later tool call, and the hands refuse tool calls
   with an error result while a stuck group is alive. Chat, abort, and quit
   are not blocked.
 
@@ -42,10 +45,11 @@ defmodule Helyx.Hands do
   defmodule State do
     @moduledoc false
     # `tools` is the tool module by name. `tasks` holds each running Task and
-    # its call, by monitor ref. `groups` holds the set of registered process
-    # groups per Task pid. `stuck` holds groups that survived KILL. `kill_cmd`
-    # and `wait_ms` are seams for tests: the kill(1) runner and the ceiling
-    # of the wait for a killed group.
+    # its call, by monitor ref. `groups` holds the registered process groups
+    # per Task pid, as a map of group id to kind (:command or :watchdog).
+    # `stuck` holds groups that survived KILL. `kill_cmd` and `wait_ms` are
+    # seams for tests: the kill(1) runner and the ceiling of each wait for a
+    # killed group.
     @enforce_keys [:core, :cwd, :session]
     defstruct [
       :core,
@@ -123,9 +127,9 @@ defmodule Helyx.Hands do
 
   # A registration from a Task that was already killed is dropped: its port
   # is closed, so the watchdog kills the group.
-  def handle_call({:register_group, group}, {pid, _tag}, state) do
+  def handle_call({:register_group, group, kind}, {pid, _tag}, state) do
     if Enum.any?(state.tasks, fn {_ref, {task, _turn, _call}} -> task.pid == pid end) do
-      groups = Map.update(state.groups, pid, MapSet.new([group]), &MapSet.put(&1, group))
+      groups = Map.update(state.groups, pid, %{group => kind}, &Map.put(&1, group, kind))
       {:reply, :ok, %{state | groups: groups}}
     else
       {:reply, :ok, state}
@@ -141,13 +145,16 @@ defmodule Helyx.Hands do
     Enum.each(tasks, &Task.shutdown(&1, :brutal_kill))
 
     # Killing the Tasks closed their ports, so each watchdog TERMs its own
-    # group; the TERM from here covers a watchdog that is already gone.
-    to_kill = registered |> Map.values() |> Enum.flat_map(&MapSet.to_list/1) |> Enum.uniq()
-    signal(to_kill, "TERM", state.kill_cmd)
-    left = await_gone(to_kill, @grace_ms, state.kill_cmd)
+    # group; the TERM from here covers a watchdog that is already gone. The
+    # watchdogs get no TERM (they ignore it) and are swept last.
+    merged = registered |> Map.values() |> Enum.reduce(%{}, &Map.merge(&2, &1))
+    {commands, watchdogs} = split_kinds(merged)
+    signal(commands, "TERM", state.kill_cmd)
+    left = await_gone(commands, @grace_ms, state.kill_cmd)
     {left, state} = kill_and_wait(left, state.wait_ms, state)
+    {left_watchdogs, state} = sweep_watchdogs(watchdogs, state)
 
-    {:reply, killed_error(left) || :ok, %{state | tasks: kept, groups: groups}}
+    {:reply, killed_error(left ++ left_watchdogs) || :ok, %{state | tasks: kept, groups: groups}}
   end
 
   @impl true
@@ -183,10 +190,12 @@ defmodule Helyx.Hands do
   # anyone will read. A group that survives makes the result an error.
   defp deliver(ref, result, state) do
     {{task, turn_id, call_id}, tasks} = Map.pop!(state.tasks, ref)
-    {groups, remaining} = Map.pop(state.groups, task.pid, MapSet.new())
-    {left, state} = kill_and_wait(MapSet.to_list(groups), state.wait_ms, state)
+    {groups, remaining} = Map.pop(state.groups, task.pid, %{})
+    {commands, watchdogs} = split_kinds(groups)
+    {left, state} = kill_and_wait(commands, state.wait_ms, state)
+    {left_watchdogs, state} = sweep_watchdogs(watchdogs, state)
 
-    result = killed_error(left) || result
+    result = killed_error(left ++ left_watchdogs) || result
     send(state.session, {:tool_result, turn_id, call_id, scrub(result)})
     %{state | tasks: tasks, groups: remaining}
   end
@@ -212,6 +221,22 @@ defmodule Helyx.Hands do
 
     send(state.session, {:tool_result, turn_id, call.id, {:error, error}})
     state
+  end
+
+  # Splits an id-to-kind map into command and watchdog id lists.
+  defp split_kinds(groups) do
+    {watchdogs, commands} = Enum.split_with(groups, fn {_group, kind} -> kind == :watchdog end)
+    {Enum.map(commands, &elem(&1, 0)), Enum.map(watchdogs, &elem(&1, 0))}
+  end
+
+  # A watchdog is a reaper: it is swept only after every command group is
+  # gone or stuck, because a KILLed watchdog cannot reap its command, and
+  # where PID 1 does not reap orphans the zombie would hold its group, and
+  # the stuck set, forever. It exits by itself once the command is reaped;
+  # the KILL is the fallback for a watchdog that never does.
+  defp sweep_watchdogs(watchdogs, state) do
+    waiting = await_gone(watchdogs, state.wait_ms, state.kill_cmd)
+    kill_and_wait(waiting, state.wait_ms, state)
   end
 
   # KILLs the groups, waits up to `timeout_ms` for every one to be gone, and
