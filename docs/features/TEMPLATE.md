@@ -20,6 +20,16 @@ Every input, buffer, and wait, with its bound. A bound that does not exist yet i
 
 Every numeric limit in this table gets a property test or, at minimum, tests at the limit, one under, one over, and a multibyte case. Every `ponytail:` marker in the implementation names a ticket.
 
+## Ownership
+
+Every external resource the feature touches (OS process, process group, port, file handle, socket, temp file) gets a row. A release cell that is a race is written as "open, ticket #N", the same vocabulary as an unbounded input, never left out (see ADR 0004).
+
+| Resource | Created by | Held by | Released on normal end | Released when the holder crashes | Released on abort |
+| -------- | ---------- | ------- | ---------------------- | -------------------------------- | ----------------- |
+| example: command process group | bash tool launcher | hands | hands kill on delivery | hands kill on delivery of the crash result | hands kill on cancel |
+
+A row whose holder is a Task is a design flag: the spec axis raises it before implementation, because a Task dies with its state and takes the only reference to the resource with it.
+
 ## Out of scope
 
 What this feature deliberately does not do, and which ticket owns it.
