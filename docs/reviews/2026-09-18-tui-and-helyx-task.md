@@ -46,3 +46,19 @@ Clean: truncation bound across empty/only-newlines/interior-blank/multibyte outp
 ## Round 4 — mechanism fix for fold totality
 
 The final review found the same mechanism a third time: key-shape guards let malformed *values* through (`%{text_delta: 123}`, `%{tool_call: :junk}`, `%{steers: %{}, follow_ups: 0}`). Per "two findings on one mechanism stop the patching", the mechanism was fixed: every `apply/2` clause head now matches key and value shape (`is_binary` deltas, `%Message.ToolCall{}` structs, `is_integer` queue counts), `Map.to_list` is gone, and anything malformed falls to the catch-all. The malformed-event test enumerates all reproductions. Verified closed by the same reviewer.
+
+## Round 5 — external reviews of PR #43 (Codex, Greptile)
+
+1. Codex P1: quitting mid-turn leaves shell process groups running after the VM exits (reproduced with a surviving `sleep 60`). **Fixed**: `CodingAgent.run/1` calls `Session.abort/1` — the only path that makes the hands kill the groups and wait — after the TUI returns, on every quit path.
+2. Codex P2 and Greptile P1 (both reviewers, and the fix-round agent reproduced it): the caller of `Helyx.TUI.run/1` is linked to the TUI, so an abnormal exit killed it through the link before the `{:error, reason}` return. **Fixed**: `Process.unlink/1` after the monitor.
+3. Greptile P1, security: model text and tool output reached `Span.content` with no control-character filtering, so ESC/OSC/CSI sequences in a file could manipulate the terminal. **Fixed**: `sanitize/1` at the single render choke point (`styled_lines/3`) — invalid UTF-8 scrubbed, tabs become spaces, other control characters drop. Tested with OSC/CSI/BEL/CR and a raw `0x9B` byte.
+4. Greptile P2: the event catalog said ten events and omitted `queue_update`. **Fixed** — and the catalog also listed `tool_execution_update`, which `Helyx.Event` never had (an earlier record notes it is not emitted). The line now matches the type union exactly: ten events including `queue_update`, turn id nil on the queue drain.
+5. Codex P2, **deferred**: pasted text loses newlines and tabs in the single-line composer. The honest fix is a multiline composer, which renegotiates Enter-to-send. Ticket #44.
+6. Greptile P2, **deferred**: steers on harness turns must abort-and-resend per the feature doc. No harness provider exists yet; the path lands with the `ClaudeCode`/`Codex` provider work.
+
+## Round 6 — fix-round review of round 5
+
+1. A dead session made the new quit-path `Session.abort/1` exit `:noproc` and crash `run/1`. **Fixed**: the abort is wrapped in `try/catch :exit`. The underlying leak — the hands die through the session link without killing their OS groups, so nothing cleans up on a session crash — predates this branch and is ticket #45.
+2. The first fix for the linked-exit finding (trap exits in `TUI.run/1`) swallowed `:EXIT` messages from other links, such as Core, leaving them in the caller's mailbox after the flag restore. **Fixed**: reverted to the reviewer's prescription, monitor plus unlink.
+3. `sanitize/1` raised `ArgumentError` on invalid UTF-8 (bash output is arbitrary bytes; a raw `0x9B` is a one-byte CSI). **Fixed**: `String.replace_invalid/2` runs first, with a test.
+4. The corrected doc line said "Eleven events" and still listed the nonexistent `tool_execution_update`. **Fixed** against the `Helyx.Event` type union. Verified closed by the same reviewer.

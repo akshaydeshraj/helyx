@@ -53,7 +53,7 @@ A harness runs its own loop and its own tools. Helyx starts the program for the 
 
 - Message shape and session file format: see ADR 0001 and the section below.
 - Session files live under `~/.helyx/sessions/<project>/<session>.jsonl`.
-- Ten events: `agent_start`, `agent_end`, `turn_start`, `turn_end`, `message_start`, `message_update`, `message_end`, `tool_execution_start`, `tool_execution_update`, `tool_execution_end`. Each carries the session id, the turn id, and a sequence number.
+- Ten events: `agent_start`, `agent_end`, `turn_start`, `turn_end`, `message_start`, `message_update`, `message_end`, `tool_execution_start`, `tool_execution_end`, `queue_update`. Each carries the session id, the turn id (nil on the queue drain between turns), and a sequence number.
 
 ### Session file
 

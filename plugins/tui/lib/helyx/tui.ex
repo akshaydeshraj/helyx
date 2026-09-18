@@ -39,6 +39,9 @@ defmodule Helyx.TUI do
   def run(opts) do
     with {:ok, pid} <- start_link(opts) do
       ref = Process.monitor(pid)
+      # Unlinked, an abnormal exit reaches the receive as a DOWN instead of
+      # killing the caller through the link before it can return the error.
+      Process.unlink(pid)
 
       receive do
         {:DOWN, ^ref, :process, ^pid, :normal} -> :ok
@@ -213,10 +216,22 @@ defmodule Helyx.TUI do
   # One styled Line per screen row: split on newlines, then chunk to width.
   # ponytail: width counts graphemes, wide CJK glyphs overflow by one column (#40)
   defp styled_lines(text, width, style) do
-    for source_line <- String.split(text, "\n"),
+    for source_line <- text |> sanitize() |> String.split("\n"),
         chunk <- wrap(source_line, width) do
       %Line{spans: [%Span{content: chunk, style: style}]}
     end
+  end
+
+  # Model text and tool output reach the terminal raw through span content,
+  # so an ESC, OSC, or CSI sequence in a file could retitle the terminal or
+  # move the cursor. Tabs become spaces; other control characters drop.
+  defp sanitize(text) do
+    text
+    # Bash output is arbitrary bytes; the /u regex raises on invalid UTF-8,
+    # and a raw 0x9B byte is a one-byte CSI.
+    |> String.replace_invalid("")
+    |> String.replace("\t", "  ")
+    |> String.replace(~r/[\x00-\x08\x0B-\x1F\x7F\x{80}-\x{9F}]/u, "")
   end
 
   defp wrap(line, width) do

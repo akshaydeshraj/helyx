@@ -32,7 +32,18 @@ defmodule CodingAgent do
     with {:ok, _core} <- Helyx.Core.start_link(plugins: @plugins),
          {:ok, session} <-
            Helyx.Session.start(Helyx.Core, model: model, cwd: Keyword.fetch!(opts, :cwd)) do
-      Helyx.TUI.run(session: session, model: model)
+      result = Helyx.TUI.run(session: session, model: model)
+
+      # Quitting mid-turn must not leave shell process groups running after
+      # the VM stops; only abort makes the hands kill them and wait. A
+      # session that died has no turn for abort to reach (ticket #45).
+      try do
+        Helyx.Session.abort(session)
+      catch
+        :exit, _ -> :ok
+      end
+
+      result
     end
   end
 end

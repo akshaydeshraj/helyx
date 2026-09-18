@@ -167,6 +167,29 @@ defmodule Helyx.TUITest do
     assert TUI.transcript_lines(vm, 0) != []
   end
 
+  test "control characters never reach the terminal" do
+    call = %Helyx.Message.ToolCall{id: "c", name: "bash", arguments: %{}}
+    result = Helyx.Message.tool_result(call, {:ok, "\e]0;evil\a\e[2Jcol1\tcol2\r"})
+
+    vm = %ViewModel{
+      ViewModel.new("fake/m")
+      | cells: [Helyx.Message.user("hi\e[31m there"), {:tool, call, result}]
+    }
+
+    texts = for line <- TUI.transcript_lines(vm, 80), span <- line.spans, do: span.content
+
+    assert "› hi[31m there" in texts
+    assert "  ]0;evil[2Jcol1  col2" in texts
+    refute Enum.any?(texts, &String.contains?(&1, "\e"))
+
+    # Bash output is arbitrary bytes: invalid UTF-8 (a raw one-byte CSI)
+    # must render, not crash.
+    broken = Helyx.Message.tool_result(call, {:ok, <<"a", 0x9B, "b">>})
+    vm = %ViewModel{ViewModel.new("fake/m") | cells: [{:tool, call, broken}]}
+    texts = for line <- TUI.transcript_lines(vm, 80), span <- line.spans, do: span.content
+    assert "  ab" in texts
+  end
+
   test "the transcript renders width-bounded lines with tool cells" do
     call = %Helyx.Message.ToolCall{id: "c", name: "bash", arguments: %{"command" => "ls -la"}}
     result = Helyx.Message.tool_result(call, {:ok, "a\nb\nc\nd\ne\nf"})
