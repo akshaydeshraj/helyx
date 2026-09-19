@@ -33,6 +33,13 @@ defmodule Helyx.Session do
   most 32 entries; past the cap the call returns `{:error, :queue_full}`.
   Queues live in the session process only and are not persisted. Every
   change emits a `:queue_update` event.
+
+  An abort does not block the session. The session ends the turn at once and
+  asks the hands to kill the turn's processes, which can take many seconds
+  when a process group is stuck. Until the hands answer, the session answers
+  every client call, but it starts no turn, because the hands cannot take a
+  tool call during their sweep: a prompt, a steer, or a follow-up queues, and
+  one turn starts with the queue when the hands have answered.
   """
 
   use GenServer, restart: :temporary
@@ -85,7 +92,11 @@ defmodule Helyx.Session do
       turn: nil,
       steers: [],
       follow_ups: [],
-      provider_pids: MapSet.new()
+      provider_pids: MapSet.new(),
+      # `{request, callers}` while the hands cancel an aborted turn: the
+      # request of `Helyx.Hands.request_cancel/2` and the abort callers that
+      # wait for its answer.
+      aborting: nil
     ]
   end
 
@@ -177,8 +188,12 @@ defmodule Helyx.Session do
   @spec pid(t()) :: pid() | nil
   def pid(%__MODULE__{id: id, core: core}), do: GenServer.whereis(via(core, id))
 
-  @doc "Sends a prompt. Starts a turn if none is running. The text must be valid UTF-8."
-  @spec prompt(t(), String.t()) :: :ok | {:error, :turn_running | :invalid_utf8}
+  @doc """
+  Sends a prompt. Starts a turn if none is running. The text must be valid
+  UTF-8. While an abort waits for the hands, the prompt queues as a
+  follow-up, and a full queue returns `{:error, :queue_full}`.
+  """
+  @spec prompt(t(), String.t()) :: :ok | {:error, :turn_running | :invalid_utf8 | :queue_full}
   def prompt(%__MODULE__{id: id, core: core}, text) when is_binary(text) do
     if Message.valid_utf8?(text) do
       GenServer.call(via(core, id), {:prompt, text})
@@ -253,8 +268,9 @@ defmodule Helyx.Session do
   Aborts the running turn. Returns after the hands have killed every process
   the turn started, so a prompt sent next starts on a clean working
   directory. Each tool call without a result gets an `aborted` error result,
-  so the transcript keeps complete call and result pairs. With no turn
-  running this is a no-op.
+  so the transcript keeps complete call and result pairs. The events of the
+  abort go out at once, before the hands are done; only this call waits. With
+  no turn running and no abort in progress this is a no-op.
   """
   @spec abort(t()) :: :ok
   def abort(%__MODULE__{id: id, core: core}) do
@@ -292,7 +308,25 @@ defmodule Helyx.Session do
     end
   end
 
+  # An abort waits for the hands. A turn that starts now could send a tool
+  # call to the hands during their sweep, and that call would block the
+  # session, so every message queues until the hands answer.
   @impl true
+  def handle_call({:steer, text}, _from, %State{aborting: {_request, _callers}} = state) do
+    queue_reply(state, :steers, text)
+  end
+
+  def handle_call({op, text}, _from, %State{aborting: {_request, _callers}} = state)
+      when op in [:prompt, :follow_up] do
+    queue_reply(state, :follow_ups, text)
+  end
+
+  # An abort drops the queues, like the abort that started the wait, so no
+  # message sent before it starts a turn.
+  def handle_call(:abort, from, %State{aborting: {request, callers}} = state) do
+    {:noreply, %{drop_queues(state) | aborting: {request, [from | callers]}}}
+  end
+
   def handle_call({:prompt, _text}, _from, %State{turn: %Turn{}} = state) do
     {:reply, {:error, :turn_running}, state}
   end
@@ -327,13 +361,12 @@ defmodule Helyx.Session do
 
   def handle_call(:abort, _from, %State{turn: nil} = state), do: {:reply, :ok, state}
 
-  def handle_call(:abort, _from, %State{turn: %Turn{} = turn} = state) do
+  # The sweep of the hands can take longer than the timeout of a client call
+  # (issue #93), so the session does not wait in a call: the answer of the
+  # hands arrives as a message, and the abort callers get their reply then.
+  def handle_call(:abort, from, %State{turn: %Turn{} = turn} = state) do
     if turn.task, do: Task.shutdown(turn.task, :brutal_kill)
-
-    case Helyx.Hands.cancel(state.hands, turn.id) do
-      :ok -> :ok
-      {:error, reason} -> Logger.warning("abort cleanup failed: " <> reason)
-    end
+    request = Helyx.Hands.request_cancel(state.hands, turn.id)
 
     state =
       state
@@ -343,7 +376,7 @@ defmodule Helyx.Session do
       |> emit(:agent_end, %{stop_reason: :aborted})
       |> close_turn()
 
-    {:reply, :ok, state}
+    {:noreply, %{state | aborting: {request, [from]}}}
   end
 
   @impl true
@@ -411,6 +444,24 @@ defmodule Helyx.Session do
       {:noreply, %{state | provider_pids: MapSet.delete(pids, pid)}}
     else
       {:stop, reason, state}
+    end
+  end
+
+  # The answer of the hands to the cancel request of an abort. The hands are
+  # vital, so a request that fails because they died stops the session, like
+  # their exit signal. Any other message is dropped.
+  def handle_info(message, %State{aborting: {request, callers}} = state) do
+    case Helyx.Hands.cancel_response(message, request) do
+      :no_reply ->
+        {:noreply, state}
+
+      {:reply, result} ->
+        with {:error, reason} <- result, do: Logger.warning("abort cleanup failed: " <> reason)
+        Enum.each(callers, &GenServer.reply(&1, :ok))
+        {:noreply, start_queued(%{state | aborting: nil})}
+
+      {:error, {reason, _hands}} ->
+        {:stop, reason, state}
     end
   end
 

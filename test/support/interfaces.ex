@@ -132,6 +132,8 @@ defmodule Helyx.Test.Provider do
   #   "transcript" every message in the context as "role:text" lines
   #   "abort"      three calls to the slow tool that sleep for a minute;
   #                after the results, echoes them as text
+  #   "stuck"      one call to the register tool: group 4242, a sleep of a
+  #                minute; after the result, echoes the results
   #   "steer"      one slow call; after the result, echoes the user message
   #                texts so far, so tests see which steers reached the call
   @behaviour Helyx.Provider
@@ -263,6 +265,16 @@ defmodule Helyx.Test.Provider do
       {:ok, echo_results(messages)}
     else
       {:ok, slow_calls(for id <- ["1", "2", "3"], do: {id, 60_000}) ++ [done()]}
+    end
+  end
+
+  def stream("stuck", %Helyx.Context{messages: messages}, _opts) do
+    if Enum.any?(messages, &(&1.role == :tool_result)) do
+      {:ok, echo_results(messages)}
+    else
+      arguments = %{"groups" => [4242], "ms" => 60_000}
+      call = %Helyx.Message.ToolCall{id: "1", name: "register", arguments: arguments}
+      {:ok, [{:tool_call, call}, {:done, %{stop_reason: :tool_use, usage: %{}}}]}
     end
   end
 

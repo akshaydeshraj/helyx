@@ -83,6 +83,24 @@ defmodule Helyx.Hands do
   @spec cancel(pid(), String.t()) :: :ok | {:error, String.t()}
   def cancel(hands, turn_id), do: GenServer.call(hands, {:cancel, turn_id}, :infinity)
 
+  @doc """
+  Sends the request of `cancel/2` and returns at once, so the caller stays
+  free during the sweep. The answer arrives as a message; give each message
+  to `cancel_response/2`.
+  """
+  @spec request_cancel(pid(), String.t()) :: :gen_server.request_id()
+  def request_cancel(hands, turn_id), do: :gen_server.send_request(hands, {:cancel, turn_id})
+
+  @doc """
+  Reads a message as the answer to a `request_cancel/2`: `{:reply, result}`
+  with the result of `cancel/2`, `{:error, {reason, hands}}` when the hands
+  died, or `:no_reply` when the message is not the answer.
+  """
+  @spec cancel_response(term(), :gen_server.request_id()) ::
+          {:reply, :ok | {:error, String.t()}} | {:error, {term(), term()}} | :no_reply
+  def cancel_response(message, request),
+    do: :gen_server.check_response(message, request)
+
   @doc false
   def kill_cmd(args), do: System.cmd("kill", args, stderr_to_stdout: true)
 

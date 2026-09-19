@@ -14,7 +14,8 @@ defmodule Helyx.SessionTest do
       Helyx.Test.Tool.Upcase,
       Helyx.Test.Tool.Kill,
       Helyx.Test.Tool.Slow,
-      Helyx.Test.Tool.Binary
+      Helyx.Test.Tool.Binary,
+      Helyx.Test.Tool.Register
     ]
 
     start_supervised!({Helyx.Core, name: core, plugins: plugins})
@@ -266,7 +267,7 @@ defmodule Helyx.SessionTest do
     :ok = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    assert final_text(collect_until(:agent_end)) == "binary,kill,slow,upcase"
+    assert final_text(collect_until(:agent_end)) == "binary,kill,register,slow,upcase"
   end
 
   test "tool calls run on the hands and the loop continues until the provider stops", %{
@@ -1000,6 +1001,141 @@ defmodule Helyx.SessionTest do
       :ok = Session.prompt(session, "hello")
       assert final_text(collect_until(:agent_end)) == "from other"
       assert File.read!(path) == header
+    end
+  end
+
+  describe "client calls during a sweep of the hands (issue #93)" do
+    # The `kill_cmd` seam of the hands reports the group alive, so a sweep
+    # takes its full time: one KILL wait of `@wait_ms`, and before it, in an
+    # abort, 500 ms of TERM grace. With the production wait of 5,000 ms the
+    # sweep is longer than the 5 s timeout of the client calls. The tests use
+    # a shorter wait and measure each call.
+    @wait_ms 500
+
+    # Starts a turn whose tool call registered a group that no KILL removes.
+    defp start_stuck_turn(core) do
+      {:ok, session} = Session.start(core, model: "test/stuck")
+      :ok = Session.subscribe(session)
+
+      hands = :sys.get_state(Session.pid(session)).hands
+      stuck = fn _args -> {"", 0} end
+      :sys.replace_state(hands, &%{&1 | kill_cmd: stuck, wait_ms: @wait_ms})
+
+      :ok = Session.prompt(session, "go")
+      assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
+      {session, hands, await_tool_task(hands, 100)}
+    end
+
+    # The pid of the tool Task, once it has registered its group.
+    defp await_tool_task(_hands, 0), do: flunk("the group was never registered")
+
+    defp await_tool_task(hands, tries) do
+      case Map.keys(:sys.get_state(hands).groups) do
+        [task] ->
+          task
+
+        [] ->
+          Process.sleep(10)
+          await_tool_task(hands, tries - 1)
+      end
+    end
+
+    # Runs the call and returns its result, or the exit, with the time in ms.
+    defp timed(fun) do
+      start = System.monotonic_time(:millisecond)
+
+      result =
+        try do
+          fun.()
+        catch
+          :exit, {reason, _call} -> {:exit, reason}
+        end
+
+      {result, System.monotonic_time(:millisecond) - start}
+    end
+
+    # Makes every client call but abort, and returns the results. No call
+    # exits, and all of them together take less than `budget_ms`.
+    defp timed_calls(session, budget_ms) do
+      calls = [
+        queue_count: fn -> Session.queue_count(session) end,
+        model: fn -> Session.model(session) end,
+        set_model: fn -> Session.set_model(session, "test/stuck") end,
+        steer: fn -> Session.steer(session, "steer") end,
+        follow_up: fn -> Session.follow_up(session, "follow") end,
+        prompt: fn -> Session.prompt(session, "prompt") end
+      ]
+
+      timed = for {name, fun} <- calls, do: {name, timed(fun)}
+      total = Enum.sum(for {_name, {_result, ms}} <- timed, do: ms)
+      assert total < budget_ms, "the calls waited for the sweep: #{inspect(timed)}"
+      for {name, {result, _ms}} <- timed, do: {name, result}
+    end
+
+    @tag :capture_log
+    test "every client call answers during the sweep of an abort", %{core: core} do
+      {session, _hands, _task} = start_stuck_turn(core)
+
+      abort = Task.async(fn -> timed(fn -> Session.abort(session) end) end)
+      # The events of the abort go out at the start of the sweep.
+      assert stop_reason(collect_until(:agent_end)) == :aborted
+
+      results = timed_calls(session, @wait_ms)
+      assert results[:steer] == :ok
+      assert results[:follow_up] == :ok
+      assert results[:prompt] == :ok
+
+      # The abort waits for the sweep, and no turn starts during it: the
+      # hands cannot take a tool call.
+      assert {:ok, abort_ms} = Task.await(abort, 10_000)
+      assert abort_ms >= @wait_ms + 400
+
+      # The messages sent during the sweep start one turn after it, steers
+      # first.
+      events = collect_until(:agent_end)
+      assert user_texts(events) == ["steer", "follow", "prompt"]
+      assert stop_reason(events) == :end_turn
+    end
+
+    @tag :capture_log
+    test "a second abort during the sweep drops the messages sent before it", %{core: core} do
+      {session, _hands, _task} = start_stuck_turn(core)
+
+      abort = Task.async(fn -> Session.abort(session) end)
+      collect_until(:agent_end)
+      :ok = Session.prompt(session, "dropped")
+      assert :ok = Session.abort(session)
+      assert :ok = Task.await(abort, 1_000)
+
+      assert Session.queue_count(session) == %{steers: 0, follow_ups: 0}
+      refute_receive {:helyx_event, %Event{type: :agent_start}}, 100
+    end
+
+    @tag :capture_log
+    test "every client call answers during the sweep of a delivered call", %{core: core} do
+      {session, _hands, task} = start_stuck_turn(core)
+
+      # The Task dies, and the hands sweep its group before the result.
+      Process.exit(task, :kill)
+      results = timed_calls(session, @wait_ms - 200)
+      assert results[:prompt] == {:error, :turn_running}
+
+      events = collect_until(:agent_end)
+      assert [result] = for(%{type: :tool_execution_end, data: %{message: m}} <- events, do: m)
+      assert Helyx.Message.text(result) =~ "could not be killed"
+    end
+
+    @tag :capture_log
+    test "hands that die during the sweep stop the session and the abort call", %{core: core} do
+      {session, hands, _task} = start_stuck_turn(core)
+      ref = Process.monitor(Session.pid(session))
+
+      abort = Task.async(fn -> timed(fn -> Session.abort(session) end) end)
+      collect_until(:agent_end)
+      Process.exit(hands, :kill)
+
+      assert_receive {:DOWN, ^ref, :process, _pid, :killed}, 1_000
+      assert {{:exit, :killed}, _ms} = Task.await(abort, 1_000)
     end
   end
 end
