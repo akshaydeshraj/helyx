@@ -449,11 +449,11 @@ defmodule Helyx.Session do
 
   # The answer of the hands to the cancel request of an abort. The hands are
   # vital, so a request that fails because they died stops the session, like
-  # their exit signal. Any other message is dropped.
+  # their exit signal.
   def handle_info(message, %State{aborting: {request, callers}} = state) do
     case Helyx.Hands.cancel_response(message, request) do
       :no_reply ->
-        {:noreply, state}
+        drop_unknown(message, state)
 
       {:reply, result} ->
         with {:error, reason} <- result, do: Logger.warning("abort cleanup failed: " <> reason)
@@ -464,6 +464,29 @@ defmodule Helyx.Session do
         {:stop, reason, state}
     end
   end
+
+  # The last clause, for every state: a late reply of a call that timed out,
+  # or a stray monitor message.
+  def handle_info(message, %State{} = state), do: drop_unknown(message, state)
+
+  # The one place that drops an unknown message, with one log line.
+  defp drop_unknown(message, state) do
+    Logger.warning("dropped an unknown message: " <> shape(message))
+    {:noreply, state}
+  end
+
+  # The log text for a dropped message. It names the shape and never formats
+  # the message, so its size does not depend on the message: an atom has at
+  # most 255 characters. It reads the first element by index because the size
+  # of the tuple is not known, and the value goes only to the log text.
+  defp shape(message) when is_atom(message), do: "the atom " <> inspect(message)
+
+  defp shape(message)
+       when is_tuple(message) and tuple_size(message) > 0 and is_atom(elem(message, 0)),
+       do: "a tuple of size #{tuple_size(message)} with the tag #{inspect(elem(message, 0))}"
+
+  defp shape(message) when is_tuple(message), do: "a tuple of size #{tuple_size(message)}"
+  defp shape(_message), do: "not an atom and not a tuple"
 
   # The session stops only for a trapped reason; on an untrappable kill the
   # link kills the provider Task, and the hands take the tool Tasks.
