@@ -240,6 +240,28 @@ defmodule Helyx.SessionFileTest do
     assert File.read!(file.path) == before
   end
 
+  test "resume caps an integer over the digit limit in tool call arguments and usage", %{
+    tmp_dir: dir
+  } do
+    call = fn n -> %Message.ToolCall{id: "c1", name: "read", arguments: %{"offset" => [n]}} end
+
+    message = fn n ->
+      %Message{role: :assistant, content: [call.(n)], stop_reason: :tool_use, usage: %{"in" => n}}
+    end
+
+    {:ok, file} = SessionFile.create(dir, "sess1", "/repo", "test/ok")
+    file = SessionFile.append_message(file, message.(10 ** 100))
+    SessionFile.append_message(file, message.(10 ** 100 - 1))
+
+    assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
+
+    assert [["integer of more than 100 digits removed"], [10 ** 100 - 1]] ==
+             for(%Message{content: [block]} <- resumed.messages, do: block.arguments["offset"])
+
+    assert ["integer of more than 100 digits removed", 10 ** 100 - 1] ==
+             for(%Message{usage: usage} <- resumed.messages, do: usage["in"])
+  end
+
   test "a message field with a wrong type is rejected", %{tmp_dir: dir} do
     entry = ~s({"id":"x","type":"message","role":"tool_result","tool_call_id":42,"content":[]})
     {:ok, file} = SessionFile.create(dir, "sess1", "/repo", "test/ok")

@@ -236,7 +236,7 @@ defmodule Helyx.SessionFile do
   defp decode_is_error(value) when is_boolean(value), do: value
 
   defp decode_usage(nil), do: %{}
-  defp decode_usage(value) when is_map(value), do: value
+  defp decode_usage(value) when is_map(value), do: Message.cap_integers(value)
 
   defp decode_block(%{"type" => "text", "text" => text}) when is_binary(text),
     do: %Message.Text{text: text}
@@ -251,7 +251,10 @@ defmodule Helyx.SessionFile do
 
   defp decode_block(%{"type" => "tool_call", "id" => id, "name" => name, "arguments" => args})
        when is_binary(id) and is_binary(name) and is_map(args) do
-    %Message.ToolCall{id: id, name: name, arguments: args}
+    # A file from before #79, or a file that a person changed, can hold an
+    # integer over the digit limit. Each later provider request would pay the
+    # quadratic JSON encode for it.
+    %Message.ToolCall{id: id, name: name, arguments: Message.cap_integers(args)}
   end
 
   defp decode_block(%{"type" => "image", "mime_type" => mime_type, "data" => data})

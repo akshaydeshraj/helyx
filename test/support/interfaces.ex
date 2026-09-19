@@ -191,6 +191,39 @@ defmodule Helyx.Test.Provider do
     end
   end
 
+  # Six calls: an integer of 400,000 digits nested in the arguments, a good
+  # call whose struct has one more key with the large integer, the largest
+  # permitted integer (100 digits), a good call with the id of the first
+  # call, the large integer as a map key, and the large integer in a struct
+  # that JSON encodes. The `:done` map of the last provider call holds the
+  # large integer in its usage and in one more key.
+  def stream("big_int", %Helyx.Context{messages: messages}, _opts) do
+    huge = huge()
+
+    case List.last(messages) do
+      %Helyx.Message{role: :tool_result} ->
+        [text, {:done, done}] = echo_results(messages)
+        done = Map.put(%{done | usage: %{input: huge, output: 3}}, :extra, huge)
+        {:ok, [text, {:done, done}]}
+
+      _ ->
+        call = fn id, args ->
+          {:tool_call, %Helyx.Message.ToolCall{id: id, name: "upcase", arguments: args}}
+        end
+
+        {:ok,
+         [
+           call.("c1", %{"text" => "one", "n" => [%{"deep" => -huge}]}),
+           {:tool_call, Map.put(elem(call.("c2", %{"text" => "two"}), 1), :extra, huge)},
+           call.("c3", %{"text" => "three", "n" => 10 ** 100 - 1}),
+           call.("c1", %{"text" => "four"}),
+           call.("c5", %{"text" => "five", huge => 1}),
+           call.("c6", %{"text" => "six", "d" => %Date{year: huge, month: 1, day: 1}}),
+           {:done, %{stop_reason: :tool_use, usage: %{}}}
+         ]}
+    end
+  end
+
   def stream("bad_call", _context, _opts) do
     {:ok, [{:tool_call, %Helyx.Message.ToolCall{id: "c", name: %{}, arguments: %{}}}]}
   end
@@ -279,6 +312,29 @@ defmodule Helyx.Test.Provider do
     end
   end
 
+  # The large integer in a malformed event, in an error reason of the
+  # stream, and in an error reason of `stream/3`.
+  def stream("wide_int", _context, _opts), do: {:ok, [{:text_delta, "hello", huge()}]}
+  def stream("error_int", _context, _opts), do: {:ok, [{:error, {:oops, huge()}}]}
+  def stream("refuse_int", _context, _opts), do: {:error, {:oops, huge()}}
+
+  # A struct in place of the usage map.
+  def stream("struct_usage", _context, _opts) do
+    {:ok, [{:done, %{stop_reason: :end_turn, usage: %Date{year: huge(), month: 1, day: 1}}}]}
+  end
+
+  # A struct in place of the `:done` map, with the large integer in a field.
+  def stream("struct_done", _context, _opts) do
+    done = %Helyx.Message.ToolCall{id: huge(), name: "x", arguments: %{}}
+    {:ok, [{:text_delta, "hi"}, {:done, Map.merge(done, %{stop_reason: :end_turn, usage: %{}})}]}
+  end
+
+  # A struct in place of the arguments map.
+  def stream("struct_args", _context, _opts) do
+    arguments = %Date{year: huge(), month: 1, day: 1}
+    {:ok, [{:tool_call, %Helyx.Message.ToolCall{id: "c1", name: "upcase", arguments: arguments}}]}
+  end
+
   def stream("wide", _context, _opts), do: {:ok, [{:text_delta, "hello", :extra}]}
 
   def stream("overrun", _context, _opts) do
@@ -316,6 +372,8 @@ defmodule Helyx.Test.Provider do
     results = for %{role: :tool_result} = m <- messages, do: Helyx.Message.text(m)
     [{:text_delta, Enum.join(results, "|")}, done()]
   end
+
+  defp huge, do: String.to_integer(String.duplicate("7", 400_000))
 
   defp done, do: {:done, %{stop_reason: :end_turn, usage: %{}}}
 end

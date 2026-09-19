@@ -127,6 +127,57 @@ defmodule Helyx.Message do
     _ -> false
   end
 
+  # 100 digits is far above every integer a tool can use: a 64-bit value has
+  # at most 20 digits. The JSON encode of an integer is quadratic in its
+  # digits (185 ms for 100,000 digits, 18.7 s for 1,000,000). With this limit
+  # the worst arguments that the 10 MiB limit on tool call bytes permits,
+  # 103,819 integers of 100 digits, encode in about 50 ms (#79).
+  @max_integer_digits 100
+  @integer_limit 10 ** @max_integer_digits
+  @integer_marker "integer of more than #{@max_integer_digits} digits removed"
+
+  @doc """
+  The digit limit of `cap_integers/1`.
+  """
+  @spec max_integer_digits() :: pos_integer()
+  def max_integer_digits, do: @max_integer_digits
+
+  @doc """
+  Replaces every integer of more than #{@max_integer_digits} digits in the
+  value with a short marker string, so `value == cap_integers(value)` tells
+  whether the value held such an integer.
+
+  The walk covers every compound term: maps with their keys (JSON writes an
+  integer key as its digits), lists, tuples, and structs. A struct that holds
+  such an integer in a field becomes the marker as a whole, because a struct
+  with a string in an integer field is not a valid struct; JSON encodes some
+  structs, such as `Date`. A tuple is walked because the error reason of a
+  malformed stream event holds the value, and `inspect/1` makes digit text too.
+
+  Callers apply this before any JSON encode, because the encode time is
+  quadratic in the digits. The walk compares each integer with a constant
+  and never makes digit text, so its time is linear in the size of the value.
+  """
+  @spec cap_integers(term()) :: term()
+  # `@integer_limit` is the first integer over the digit limit.
+  def cap_integers(value) when is_integer(value) and abs(value) >= @integer_limit,
+    do: @integer_marker
+
+  def cap_integers(%_{} = struct) do
+    fields = Map.from_struct(struct)
+    if cap_integers(fields) == fields, do: struct, else: @integer_marker
+  end
+
+  def cap_integers(value) when is_map(value),
+    do: Map.new(value, fn {key, val} -> {cap_integers(key), cap_integers(val)} end)
+
+  def cap_integers(value) when is_tuple(value),
+    do: value |> Tuple.to_list() |> cap_integers() |> List.to_tuple()
+
+  # The head-tail walk never raises on an improper list.
+  def cap_integers([head | tail]), do: [cap_integers(head) | cap_integers(tail)]
+  def cap_integers(value), do: value
+
   @doc """
   Adds a stream delta to a reversed block list, newest first. Consecutive
   deltas of one kind extend the head block. The session and every client
