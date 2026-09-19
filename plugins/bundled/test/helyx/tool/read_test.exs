@@ -124,11 +124,107 @@ defmodule Helyx.Tool.ReadTest do
     assert Helyx.Message.text(run.(%{"path" => "nope.txt", "offset" => 0})) =~ "offset must be"
   end
 
-  test "a large float offset is past the end, not a crash", %{tmp_dir: dir, run: run} do
+  test "an offset after the last line is an error that names the offset and the line count (issue #78)",
+       %{tmp_dir: dir, run: run} do
+    File.write!(Path.join(dir, "a.txt"), "one\ntwo\n")
+
+    for offset <- [3, 3.0, 999_999_999, 1_000_000_000] do
+      result = run.(%{"path" => "a.txt", "offset" => offset})
+      assert result.is_error
+
+      assert Helyx.Message.text(result) ==
+               "offset #{trunc(offset)} is after the last line: a.txt has 2 lines"
+    end
+
+    File.write!(Path.join(dir, "é.txt"), "é\nü")
+
+    assert Helyx.Message.text(run.(%{"path" => "é.txt", "offset" => 3})) ==
+             "offset 3 is after the last line: é.txt has 2 lines"
+
+    File.write!(Path.join(dir, "one.txt"), "one")
+
+    assert Helyx.Message.text(run.(%{"path" => "one.txt", "offset" => 2})) ==
+             "offset 2 is after the last line: one.txt has 1 line"
+  end
+
+  test "the last line is not after the last line, and trailing blank lines are lines (issue #78)",
+       %{tmp_dir: dir, run: run} do
+    File.write!(Path.join(dir, "a.txt"), "one\ntwo\n\n")
+
+    for {offset, text} <- [{2, "two\n"}, {3, ""}] do
+      result = run.(%{"path" => "a.txt", "offset" => offset})
+      refute result.is_error
+      assert Helyx.Message.text(result) == text
+    end
+
+    assert run.(%{"path" => "a.txt", "offset" => 4}).is_error
+  end
+
+  test "the error and the truncation notice count the same lines (issue #78)", %{
+    tmp_dir: dir,
+    run: run
+  } do
+    for ending <- ["", "\n", "\n\n"] do
+      File.write!(Path.join(dir, "long.txt"), Enum.map_join(1..2001, "\n", &"#{&1}") <> ending)
+      [_, total] = Regex.run(~r/ of (\d+)/, Helyx.Message.text(run.(%{"path" => "long.txt"})))
+      total = String.to_integer(total)
+
+      refute run.(%{"path" => "long.txt", "offset" => total}).is_error
+
+      assert Helyx.Message.text(run.(%{"path" => "long.txt", "offset" => total + 1})) =~
+               "long.txt has #{total} lines"
+    end
+  end
+
+  test "an empty file is an empty ok result at line 1 and an error after it (issue #78)", %{
+    tmp_dir: dir,
+    run: run
+  } do
+    File.write!(Path.join(dir, "empty.txt"), "")
+
+    for args <- [%{}, %{"offset" => 1}, %{"offset" => nil}] do
+      result = run.(Map.put(args, "path", "empty.txt"))
+      refute result.is_error
+      assert Helyx.Message.text(result) == ""
+    end
+
+    result = run.(%{"path" => "empty.txt", "offset" => 2})
+    assert result.is_error
+
+    assert Helyx.Message.text(result) ==
+             "offset 2 is after the last line: empty.txt has 0 lines"
+  end
+
+  test "a huge offset is an error of bounded size that does not show the value, not a crash", %{
+    tmp_dir: dir,
+    run: run
+  } do
     File.write!(Path.join(dir, "a.txt"), "one\ntwo")
-    result = run.(%{"path" => "a.txt", "offset" => 1.0e300})
-    refute result.is_error
-    assert Helyx.Message.text(result) == ""
+
+    for offset <- [1.0e300, 1_000_000_001, Integer.pow(10, 5000)] do
+      result = run.(%{"path" => "a.txt", "offset" => offset})
+      assert result.is_error
+
+      assert Helyx.Message.text(result) ==
+               "offset over 1000000000 is after the last line: a.txt has 2 lines"
+    end
+  end
+
+  test "the time of a read does not grow with the digits of the offset (issue #78)", %{
+    tmp_dir: dir,
+    run: run
+  } do
+    File.write!(Path.join(dir, "a.txt"), String.duplicate("\n", 1_000_000))
+
+    # The window code gets no big integer. With one subtraction of 100,000
+    # digits for each line, this read took seconds.
+    {micros, result} =
+      :timer.tc(fn -> run.(%{"path" => "a.txt", "offset" => Integer.pow(10, 100_000)}) end)
+
+    assert Helyx.Message.text(result) ==
+             "offset over 1000000000 is after the last line: a.txt has 1000000 lines"
+
+    assert micros < 2_000_000
   end
 
   test "the tool has no limit argument and ignores a limit key (issue #75)", %{
