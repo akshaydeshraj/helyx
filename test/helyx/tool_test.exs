@@ -273,14 +273,105 @@ defmodule Helyx.ToolTest do
     end
   end
 
-  test "an invalid byte away from the cut edge is kept for the hands to replace" do
+  test "an invalid byte away from the cut edge is kept and does not change the cut (issue #68)" do
+    # The cut lands two bytes inside a "€": only those two bytes go.
     line = "ab" <> <<255>> <> String.duplicate("€", 20_000)
     out = Tool.truncate(line, :head)
-    # Never valid: three bytes less at the edge, as before, and the notice counts them.
-    assert String.starts_with?(out, "ab" <> <<255>> <> "€")
-    assert String.contains?(out, "line 1 cut at 51197 bytes]")
-    assert [shown, _note] = String.split(out, "\n")
-    assert byte_size(shown) == 51_197
+    assert [shown, note] = String.split(out, "\n")
+    assert shown == "ab" <> <<255>> <> String.duplicate("€", 17_065)
+    assert note =~ "line 1 cut at 51198 bytes]"
+  end
+
+  test "a partial character at the far end does not change the cut edge (issue #68)" do
+    # The output of `head -c` or of a killed command ends inside a character.
+    partial = <<0xF0, 0x9F>>
+    kept = String.duplicate("😀", 12_799)
+
+    assert ["[truncated:" <> note, tail] =
+             String.split(Tool.truncate(String.duplicate("😀", 20_000) <> partial, :tail), "\n")
+
+    assert tail == kept <> partial
+    assert note =~ "line 1 cut at 51198 bytes"
+
+    assert [head, "[truncated:" <> note] =
+             String.split(Tool.truncate(partial <> String.duplicate("😀", 20_000), :head), "\n")
+
+    assert head == partial <> kept
+    assert note =~ "line 1 cut at 51198 bytes"
+
+    # A cut between two characters loses nothing.
+    xs = String.duplicate("x", 60_000)
+    assert Tool.truncate(xs <> partial, :tail) =~ "line 1 cut at 51200 bytes"
+    assert Tool.truncate(partial <> xs, :head) =~ "line 1 cut at 51200 bytes"
+  end
+
+  test "an edge with no whole character within three bytes loses three bytes (issue #68)" do
+    xs = String.duplicate("x", 60_000)
+    edge = <<0x80, 0x80, 0x80, 0x80>>
+    fill = String.duplicate("x", 51_196)
+
+    assert ["[truncated:" <> note, tail] =
+             String.split(Tool.truncate(xs <> edge <> fill, :tail), "\n")
+
+    assert tail == <<0x80>> <> fill
+    assert note =~ "line 1 cut at 51197 bytes"
+
+    assert [head, "[truncated:" <> note] =
+             String.split(Tool.truncate(fill <> edge <> xs, :head), "\n")
+
+    assert head == fill <> <<0x80>>
+    assert note =~ "line 1 cut at 51197 bytes"
+  end
+
+  test "invalid bytes at the cut edge go alone when a whole character is next to them (issue #68)" do
+    xs = String.duplicate("x", 60_000)
+
+    for edge <- [<<255>>, <<0x80, 255>>, <<255, 0x80, 255>>] do
+      fill = String.duplicate("€", 17_065) <> String.duplicate("x", 5 - byte_size(edge))
+      assert byte_size(edge <> fill) == 51_200
+      note = "line 1 cut at #{byte_size(fill)} bytes"
+
+      assert ["[truncated:" <> tail_note, ^fill] =
+               String.split(Tool.truncate(xs <> edge <> fill, :tail), "\n")
+
+      assert tail_note =~ note
+
+      assert [^fill, "[truncated:" <> head_note] =
+               String.split(Tool.truncate(fill <> edge <> xs, :head), "\n")
+
+      assert head_note =~ note
+    end
+  end
+
+  test "a tail cut takes continuation bytes that never had a lead byte for a cut character (issue #68)" do
+    xs = String.duplicate("x", 60_000)
+
+    for n <- 1..3 do
+      fill = String.duplicate("x", 51_200 - n)
+      out = Tool.truncate(xs <> :binary.copy(<<0x80>>, n) <> fill, :tail)
+      assert ["[truncated:" <> note, ^fill] = String.split(out, "\n")
+      assert note =~ "line 1 cut at #{51_200 - n} bytes"
+    end
+  end
+
+  test "a prefix that no valid character has goes from a head edge like a part of a character (issue #68)" do
+    xs = String.duplicate("x", 60_000)
+
+    # A lead byte that no character has, a surrogate prefix, an overlong prefix,
+    # a prefix over U+10FFFF, and three bytes of an overlong character.
+    for edge <- [
+          <<0xC0>>,
+          <<0xF5>>,
+          <<0xED, 0xA0>>,
+          <<0xE0, 0x80>>,
+          <<0xF4, 0x90>>,
+          <<0xF0, 0x80, 0x80>>
+        ] do
+      fill = String.duplicate("x", 51_200 - byte_size(edge))
+      out = Tool.truncate(fill <> edge <> xs, :head)
+      assert [^fill, "[truncated:" <> note] = String.split(out, "\n")
+      assert note =~ "line 1 cut at #{byte_size(fill)} bytes"
+    end
   end
 
   test "an input whose last line is exactly the notice is a truncation fixed point" do

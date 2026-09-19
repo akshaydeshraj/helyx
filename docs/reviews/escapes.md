@@ -11,3 +11,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-09-19 | #52 | round 1: 6, round 2: 2, round 3: 2, round 4: 5, round 5: 1, round 6: 1, round 7: 0 | round 1: 0 | none needed; the two-findings rule replaced the marker read with a per-call nonce; older holes became #70 and #71 |
 | 2026-09-19 | #12 | round 1: 17, round 2: 5, round 3: 1, round 4: 5, round 5: 6 (tests and docs) | round 1: 1 rejected, 0 confirmed | the orchestrate skill now requires the invariant sentence to name documented exceptions |
 | 2026-09-19 | #61 | simplify 2, round 1: 4, round 2: 1 (docs) | round 1: 0 | none needed; an older defect found in review became #75 |
+| 2026-09-19 | #68 | r1: 2 simplify, 2 standards, 2 spec test gaps, 1 doc mismatch; r2: 2 spec, 1 failure-path, mechanism replaced; r3: 1 test gap | r1: 0 | none |

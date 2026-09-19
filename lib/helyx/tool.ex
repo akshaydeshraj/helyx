@@ -209,17 +209,27 @@ defmodule Helyx.Tool do
   defp cut(line, :tail),
     do: line |> binary_part(byte_size(line) - @max_bytes, @max_bytes) |> clean_edge(:tail)
 
-  # In text that was valid before the cut, the only invalid bytes are the
-  # part of a character at the cut edge, so removing them loses one
-  # character. Invalid bytes anywhere else mean the text was never valid: it
-  # keeps its bytes for the hands to replace, less three at the edge.
+  # Only the bytes at the cut edge decide what the cut loses, so bytes that
+  # are invalid anywhere else (a partial character at the far end of `head -c`
+  # output) stay for the hands to replace and change nothing here. The cut
+  # loses the fewest bytes that leave a whole character at the edge. When no
+  # loss of at most three bytes does that, the edge was never valid and
+  # loses three.
   defp clean_edge(bin, keep) do
-    clean = String.replace_invalid(bin, "")
-    lost = byte_size(bin) - byte_size(clean)
+    lost =
+      Enum.find(0..@max_partial_bytes, @max_partial_bytes, fn n ->
+        bin |> without_edge(keep, n) |> whole_edge?(keep)
+      end)
 
-    if lost <= @max_partial_bytes and clean == without_edge(bin, keep, lost),
-      do: clean,
-      else: without_edge(bin, keep, @max_partial_bytes)
+    without_edge(bin, keep, lost)
+  end
+
+  defp whole_edge?(bin, :tail), do: match?(<<_::utf8, _::binary>>, bin)
+
+  defp whole_edge?(bin, :head) do
+    Enum.any?(1..(@max_partial_bytes + 1), fn size ->
+      match?(<<_::utf8>>, binary_part(bin, byte_size(bin) - size, size))
+    end)
   end
 
   defp without_edge(bin, :head, n), do: binary_part(bin, 0, byte_size(bin) - n)
