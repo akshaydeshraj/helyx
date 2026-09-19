@@ -54,6 +54,15 @@ defmodule Helyx.Tool.ReadTest do
            )
   end
 
+  test "a cut last line names no offset (issue #61)", %{tmp_dir: dir, run: run} do
+    File.write!(Path.join(dir, "wide.txt"), "a\n" <> String.duplicate("x", 60_000) <> "\n")
+
+    assert String.ends_with?(
+             Helyx.Message.text(run.(%{"path" => "wide.txt", "offset" => 2})),
+             "\n[truncated: showing lines 2-2 of 2, line 2 cut at 51200 bytes]"
+           )
+  end
+
   test "offset reads from a later line", %{tmp_dir: dir, run: run} do
     File.write!(Path.join(dir, "a.txt"), "one\ntwo\nthree")
     assert Helyx.Message.text(run.(%{"path" => "a.txt", "offset" => 2})) == "two\nthree"

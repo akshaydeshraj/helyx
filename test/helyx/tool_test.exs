@@ -72,13 +72,16 @@ defmodule Helyx.ToolTest do
   end
 
   defp notice(out, :head) do
-    assert [_, content, first, last, total, note, offset] =
+    assert [_, content, first, last, total, note | offset] =
              Regex.run(
-               ~r/\A(.*)\n\[truncated: showing lines (\d+)-(\d+) of (\d+)(, line \d+ cut at \d+ bytes)?; read again with offset (\d+)\]\z/s,
+               ~r/\A(.*)\n\[truncated: showing lines (\d+)-(\d+) of (\d+)(, line \d+ cut at \d+ bytes)?(?:; read again with offset (\d+))?\]\z/s,
                out
              )
 
-    assert String.to_integer(offset) == String.to_integer(last) + 1
+    # The offset is there exactly when lines follow the shown ones (issue #61).
+    expected = if last == total, do: [], else: [Integer.to_string(String.to_integer(last) + 1)]
+    assert offset == expected
+
     to_tuple(first, last, total, content, note)
   end
 
@@ -186,13 +189,28 @@ defmodule Helyx.ToolTest do
            )
 
     # One byte over the cap is cut; at the cap is not (see the test below).
-    assert Tool.truncate(String.duplicate("x", 51_201), :head) =~ "line 1 cut at 51200 bytes;"
+    assert Tool.truncate(String.duplicate("x", 51_201), :head) =~ "line 1 cut at 51200 bytes]"
     assert Tool.truncate(String.duplicate("x", 51_201), :tail) =~ "line 1 cut at 51200 bytes]"
 
     # The byte count is what is shown, after the part of a character at the cut edge is removed.
     euro = String.duplicate("€", 20_000)
-    assert Tool.truncate(euro, :head) =~ "line 1 cut at 51198 bytes;"
+    assert Tool.truncate(euro, :head) =~ "line 1 cut at 51198 bytes]"
     assert Tool.truncate(euro, :tail) =~ "line 1 cut at 51198 bytes]"
+  end
+
+  test "a cut last line has no read again clause; a cut line with lines after it keeps it (issue #61)" do
+    big = String.duplicate("x", 60_000)
+    last = "\n[truncated: showing lines 3-3 of 3, line 3 cut at 51200 bytes]"
+
+    assert String.ends_with?(Tool.truncate("a\nb\n" <> big, :head, 3), last)
+    # One trailing newline is a terminator, not a line after the cut one.
+    assert String.ends_with?(Tool.truncate("a\nb\n" <> big <> "\n", :head, 3), last)
+
+    # A blank line after the cut line is a line: offset 4 returns it.
+    assert String.ends_with?(
+             Tool.truncate("a\nb\n" <> big <> "\n\n", :head, 3),
+             "\n[truncated: showing lines 3-3 of 4, line 3 cut at 51200 bytes; read again with offset 4]"
+           )
   end
 
   test "trailing blank lines count toward the limits" do
@@ -219,7 +237,7 @@ defmodule Helyx.ToolTest do
 
     assert [
              cut,
-             "[truncated: showing lines 1-1 of 1, line 1 cut at 51197 bytes; read again with offset 2]"
+             "[truncated: showing lines 1-1 of 1, line 1 cut at 51197 bytes]"
            ] =
              String.split(out, "\n", parts: 2)
 
@@ -260,7 +278,7 @@ defmodule Helyx.ToolTest do
     out = Tool.truncate(line, :head)
     # Never valid: three bytes less at the edge, as before, and the notice counts them.
     assert String.starts_with?(out, "ab" <> <<255>> <> "€")
-    assert String.contains?(out, "line 1 cut at 51197 bytes;")
+    assert String.contains?(out, "line 1 cut at 51197 bytes]")
     assert [shown, _note] = String.split(out, "\n")
     assert byte_size(shown) == 51_197
   end
