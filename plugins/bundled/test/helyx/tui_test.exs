@@ -63,6 +63,13 @@ defmodule Helyx.TUITest do
     state
   end
 
+  defp status_text(state) do
+    {%ExRatatui.Widgets.Paragraph{text: line}, _rect} =
+      state |> TUI.render(%{width: 120, height: 10}) |> List.last()
+
+    Enum.map_join(line.spans, & &1.content)
+  end
+
   # Feeds arriving session events through handle_info until agent_end.
   defp drain(state) do
     receive do
@@ -97,6 +104,45 @@ defmodule Helyx.TUITest do
 
     state = state |> press("x") |> press("enter")
     assert ExRatatui.text_input_get_value(state.input) == "x"
+    assert state.vm.reason == "not sent: the queue is full"
+    assert status_text(state) =~ "not sent: the queue is full"
+
+    # The line does not wrap, so the reason comes before a long model ref.
+    long = %{state | vm: %{state.vm | model: String.duplicate("m", 256)}}
+    assert String.starts_with?(status_text(long), " ✕ not sent: the queue is full ")
+
+    # The release and the repeat of the rejected Enter keep the reason.
+    for kind <- ["release", "repeat"] do
+      {:noreply, kept} = TUI.handle_event(%Key{code: "enter", kind: kind}, state)
+      assert kept.vm.reason == "not sent: the queue is full"
+    end
+
+    # Enter again is a key press and a reject at once: the reason stays set.
+    state = press(state, "enter")
+    assert state.vm.reason == "not sent: the queue is full"
+
+    # The follow-up queue has its own cap.
+    for n <- 1..32, do: :ok = Session.follow_up(state.session, "f#{n}")
+    state = state |> press("left") |> press("enter", ["alt"])
+    assert state.vm.reason == "not sent: the queue is full"
+
+    state = press(state, "y")
+    assert state.vm.reason == nil
+    assert ExRatatui.text_input_get_value(state.input) == "yx"
+    refute status_text(state) =~ "not sent"
+  end
+
+  test "a paste and a modified key clear the reason", %{core: core} do
+    state = mounted(core, "clear", [])
+
+    for event <- [
+          %ExRatatui.Event.Paste{content: "p"},
+          %Key{code: "x", kind: "press", modifiers: ["ctrl"]}
+        ] do
+      rejected = %{state | vm: ViewModel.reject(state.vm, "r")}
+      {:noreply, cleared} = TUI.handle_event(event, rejected)
+      assert cleared.vm.reason == nil
+    end
   end
 
   test "typing edits the composer and ignores command keys", %{core: core} do
@@ -120,14 +166,16 @@ defmodule Helyx.TUITest do
   end
 
   # The callbacks run in the TUI process, so a raise here is its death.
-  test "invalid UTF-8 is rejected with a notice and leaves the composer unchanged", %{core: core} do
+  test "invalid UTF-8 is rejected with a reason and leaves the composer unchanged", %{core: core} do
     state = mounted(core, "bad_bytes", []) |> press("h") |> press("i")
 
     {:noreply, state} = TUI.handle_event(%ExRatatui.Event.Paste{content: "a" <> <<0xFF>>}, state)
     state = press(state, <<0xFF>>)
 
     assert ExRatatui.text_input_get_value(state.input) == "hi"
-    assert [{:notice, "input rejected: not valid UTF-8"}, {:notice, _}] = state.vm.cells
+    assert state.vm.cells == []
+    assert state.vm.reason == "input rejected: not valid UTF-8"
+    assert press(state, "!").vm.reason == nil
   end
 
   test "enter sends the composer and the answer streams into the view model", %{core: core} do
@@ -291,13 +339,6 @@ defmodule Helyx.TUITest do
       assert_receive {:helyx_event, %Event{type: :model_change} = event}, 1_000
       {:noreply, state} = TUI.handle_info({:helyx_event, event}, state)
       state
-    end
-
-    defp status_text(state) do
-      [_transcript, _composer, {%{text: %{spans: [span | _]}}, _area}] =
-        TUI.render(state, %{width: 80, height: 24})
-
-      span.content
     end
 
     defp last_answer(state), do: Helyx.Message.text(List.last(state.vm.cells))

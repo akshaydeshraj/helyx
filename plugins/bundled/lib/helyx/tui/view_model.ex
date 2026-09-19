@@ -14,6 +14,10 @@ defmodule Helyx.TUI.ViewModel do
     * `{:notice, text}` – an aborted or failed turn, or a command the
       client rejected (`notice/2`)
 
+  `reason` is why the client rejected the last input, or nil. It is
+  client-local, like a notice: `reject/2` sets it and `clear_reason/1`
+  clears it on the next key press or paste. A new reject replaces it. No event changes it.
+
   `streaming` is the open assistant message as a reversed block list, newest
   first — the session's convention, shared through `Helyx.Message.add_block/2`
   — or nil when none is streaming.
@@ -25,7 +29,8 @@ defmodule Helyx.TUI.ViewModel do
             cells: [],
             streaming: nil,
             running?: false,
-            queue: %{steers: 0, follow_ups: 0}
+            queue: %{steers: 0, follow_ups: 0},
+            reason: nil
 
   @type cell ::
           Message.t()
@@ -37,7 +42,8 @@ defmodule Helyx.TUI.ViewModel do
           cells: [cell()],
           streaming: [Message.block()] | nil,
           running?: boolean(),
-          queue: %{steers: non_neg_integer(), follow_ups: non_neg_integer()}
+          queue: %{steers: non_neg_integer(), follow_ups: non_neg_integer()},
+          reason: String.t() | nil
         }
 
   @doc "A view model for a fresh session on `model`."
@@ -111,6 +117,14 @@ defmodule Helyx.TUI.ViewModel do
   @doc "Adds a notice from the client itself, such as a rejected command."
   @spec notice(t(), String.t()) :: t()
   def notice(vm, text) when is_binary(text), do: add_cell(vm, {:notice, text})
+
+  @doc "Sets the reason the status bar shows for a rejected input."
+  @spec reject(t(), String.t()) :: t()
+  def reject(vm, reason) when is_binary(reason), do: %{vm | reason: reason}
+
+  @doc "Clears the reason. The TUI calls it on a key press or a paste when a reason is set."
+  @spec clear_reason(t()) :: t()
+  def clear_reason(vm), do: %{vm | reason: nil}
 
   defp stream(vm, delta), do: %{vm | streaming: Message.add_block(vm.streaming || [], delta)}
 

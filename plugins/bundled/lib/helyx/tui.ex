@@ -30,7 +30,9 @@ if Helyx.TUI.Available.available?() do
       * typing fills the composer (`ExRatatui.Widgets.TextInput`: cursor
         movement, Home/End, Delete, Backspace)
       * Enter sends the composer as a steer (a prompt when no turn runs)
-      * Alt+Enter sends it as a follow-up
+      * Alt+Enter sends it as a follow-up. A rejected send (full queue, text
+        that is not valid UTF-8) stays in the composer, and the status bar
+        shows the reason until the next key press or paste
       * `/model provider/model` in the composer switches the model; the next
         turn uses it. A rejected ref shows a notice and stays in the composer
       * Escape aborts the running turn
@@ -132,7 +134,18 @@ if Helyx.TUI.Available.available?() do
 
     def handle_info(_msg, state), do: {:noreply, state}
 
+    # The next key press or paste clears the reason of the last reject, then
+    # runs as usual, so it can set a new reason. The release and the repeat of
+    # a key are not a new press: those of the rejected Enter keep the reason.
     @impl true
+    def handle_event(%Key{kind: "press"} = key, %{vm: %ViewModel{reason: reason}} = state)
+        when is_binary(reason),
+        do: handle_event(key, %{state | vm: ViewModel.clear_reason(state.vm)})
+
+    def handle_event(%Paste{} = paste, %{vm: %ViewModel{reason: reason}} = state)
+        when is_binary(reason),
+        do: handle_event(paste, %{state | vm: ViewModel.clear_reason(state.vm)})
+
     def handle_event(%Key{code: "c", modifiers: ["ctrl"]}, state), do: {:stop, state}
 
     def handle_event(%Key{code: "esc", kind: "press"}, state) do
@@ -180,7 +193,7 @@ if Helyx.TUI.Available.available?() do
         fun.(state.input, text)
         state
       else
-        %{state | vm: ViewModel.notice(state.vm, "input rejected: not valid UTF-8")}
+        %{state | vm: ViewModel.reject(state.vm, "input rejected: not valid UTF-8")}
       end
     end
 
@@ -206,14 +219,21 @@ if Helyx.TUI.Available.available?() do
           Session.steer(state.session, text)
         end
 
-      # A rejected message (full queue, bad UTF-8) stays in the composer.
+      # A rejected message stays in the composer, and the status bar says why.
       case sent do
-        :ok -> ExRatatui.text_input_set_value(state.input, "")
-        {:error, _reason} -> :ok
-      end
+        :ok ->
+          ExRatatui.text_input_set_value(state.input, "")
+          state
 
-      state
+        {:error, reason} ->
+          %{state | vm: ViewModel.reject(state.vm, send_error(reason))}
+      end
     end
+
+    # `edit/3` lets only valid UTF-8 into the composer, so `:invalid_utf8`
+    # has no known source; the clause keeps the match total over the spec.
+    defp send_error(:queue_full), do: "not sent: the queue is full"
+    defp send_error(:invalid_utf8), do: "not sent: not valid UTF-8"
 
     defp switch_model("", state),
       do: %{state | vm: ViewModel.notice(state.vm, "usage: /model provider/model")}
@@ -363,21 +383,21 @@ if Helyx.TUI.Available.available?() do
     defp status_widget(vm) do
       state = if vm.running?, do: "working", else: "idle"
       %{steers: steers, follow_ups: follow_ups} = vm.queue
+      # The reason is a fixed text of this module, never input. It comes
+      # first: the line does not wrap, and a model ref can be 256 bytes.
+      reason = if vm.reason, do: [%Span{content: " ✕ #{vm.reason} ", style: @bad}], else: []
 
-      %Paragraph{
-        text: %Line{
-          spans: [
-            %Span{
-              content: " #{vm.model} · #{state} · queued #{steers}+#{follow_ups} ",
-              style: @bold
-            },
-            %Span{
-              content: " Enter steer · Alt+Enter follow-up · Esc abort · Ctrl+C quit",
-              style: @dim
-            }
-          ]
-        }
+      model = %Span{
+        content: " #{vm.model} · #{state} · queued #{steers}+#{follow_ups} ",
+        style: @bold
       }
+
+      keys = %Span{
+        content: " Enter steer · Alt+Enter follow-up · Esc abort · Ctrl+C quit",
+        style: @dim
+      }
+
+      %Paragraph{text: %Line{spans: reason ++ [model, keys]}}
     end
   end
 end
