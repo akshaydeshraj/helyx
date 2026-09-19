@@ -199,6 +199,22 @@ defmodule Helyx.TUI.ViewModelTest do
     assert fold(model_change: %{}).model == "test/model"
   end
 
+  test "a reject sets the reason, events keep it, and clear_reason/1 removes it" do
+    vm = ViewModel.new("test/model")
+    assert vm.reason == nil
+
+    vm = ViewModel.reject(vm, "not sent: the queue is full")
+    assert vm.reason == "not sent: the queue is full"
+    assert vm.cells == []
+
+    # A session event does not clear the reason; the TUI does, on a key press or a paste.
+    [event] = events([{:queue_update, %{steers: 1, follow_ups: 0}}])
+    kept = ViewModel.apply(vm, event)
+    assert kept.reason == "not sent: the queue is full"
+
+    assert ViewModel.clear_reason(kept).reason == nil
+  end
+
   test "a client notice joins the cells" do
     vm = ViewModel.notice(ViewModel.new("test/model"), "unknown provider: x")
     assert vm.cells == [{:notice, "unknown provider: x"}]
