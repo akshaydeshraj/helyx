@@ -7,15 +7,13 @@ defmodule Helyx.Tool.Bash.WatchdogTest do
   import Helyx.Tool.Bash.OSHelpers
 
   defp open(command, bash \\ nil) do
-    {exe, args} = Helyx.Tool.Bash.launcher(command, File.cwd!(), "nonce")
-    args = if bash, do: List.replace_at(args, 5, bash), else: args
+    {exe, options} = Helyx.Tool.Bash.launcher(command, File.cwd!(), "nonce")
 
-    Port.open({:spawn_executable, exe}, [
-      :binary,
-      :exit_status,
-      :stderr_to_stdout,
-      {:args, args}
-    ])
+    {:args, args} = List.keyfind(options, :args, 0)
+    args = if bash, do: List.replace_at(args, 5, bash), else: args
+    options = List.keyreplace(options, :args, 0, {:args, args})
+
+    Port.open({:spawn_executable, exe}, options)
   end
 
   defp read_marker(port) do

@@ -30,7 +30,9 @@ defmodule Helyx.Tool.Bash do
   # group id before the command runs, or the command never ran. Then it
   # watches: when its stdin ends, because the port closed, it TERMs the
   # group, waits the grace period, KILLs it, and reaps the command before it
-  # exits; when the command ends first, it exits with the command's status
+  # exits (a read that fails gives undef, which is also `== 0`, so a read
+  # error kills the group too); when the command ends first, it exits with
+  # the command's status
   # (128 plus the signal for a signal death). The watchdog ignores TERM in
   # the parent only, after the fork, so the hands can TERM every registered
   # group without cutting the cleanup short; ignored dispositions survive
@@ -65,30 +67,37 @@ defmodule Helyx.Tool.Bash do
   # `<go>` is a second random word, which arrives on stdin as the go-ahead
   # line, after the fork: it is in no argument list and not in the child, so
   # a command that ran cannot write a failure report, and the report counts
-  # wherever it is in the output: perl's own text can come before it (with
-  # `PERL5OPT=-w`, a warning about the `exec`). The command can read the
-  # nonce from the process table, but a start line is only true of a command
-  # that ran.
+  # wherever it is in the output, so text of perl in front of it cannot
+  # hide it. The command can read the nonce from the process table, but a
+  # start line is only true of a command that ran.
   #
-  # Two guards keep the report write alive. `binmode` takes off the `:utf8`
-  # layer that `PERL_UNICODE` can put on the pipe, because a `syswrite` to
-  # such a handle is fatal. The child also makes the reason bytes: with
-  # `PERL_UNICODE=A` perl decodes the path of bash to characters, and a
-  # `syswrite` of wide characters is fatal on any handle. A reason that is
-  # bytes already stays as it is; a second encode would damage it.
+  # The perl environment (#71). Variables of the environment change the
+  # interpreter: `PERL_UNICODE` puts a `:utf8` layer on handles, and a
+  # `sysread` or `syswrite` on such a handle is fatal; `PERL5OPT=-d` starts
+  # the debugger on the watchdog's stdin; `PERL5LIB` can replace the POSIX
+  # module. So the port starts perl without every variable whose name
+  # starts with `PERL` (`launcher/3`), except `PERL_BADLANG`. That one only
+  # stops the locale warning. A user with a locale that the system does not
+  # have sets it to 0, and without it that user gets the warning in front of
+  # every result.
   #
-  # perl code that the user's environment loads into the watchdog (PERL5LIB,
-  # PERL5OPT) can read the nonce; that is the user's own code and out of
-  # scope.
+  # The values are the user's, and the command can be perl. So each value
+  # stays in the environment under the name `HELYX_KEEP_<name>`, which perl
+  # does not read, and the watchdog gives it its name back in `%ENV` before
+  # the fork. `%ENV` does not change an interpreter that runs already. The
+  # prefix `HELYX_KEEP_PERL` is reserved: the watchdog takes every such name
+  # for one of its own. A kept value has a `=` in front, which the watchdog
+  # takes off: the port takes an empty value for "remove", and an empty
+  # `PERL_UNICODE` is not the same as none.
   @watchdog ~S"""
   use POSIX ":sys_wait_h";
   my $nonce = shift @ARGV;
   sub fail { syswrite(STDOUT, "$nonce 0\n$_[0]: $!"); exit 0 }
   my $dir = shift @ARGV;
+  for (keys %ENV) { $ENV{$1} = substr(delete $ENV{$_}, 1) if /^HELYX_KEEP_(PERL.*)/s }
   chdir($dir) or fail("cannot enter the working directory $dir");
   pipe(my $r, my $w) or fail("pipe failed");
   pipe(my $er, my $ew) or fail("report pipe failed");
-  binmode($er); binmode($ew);
   my $child = fork() // fail("fork failed");
   if ($child == 0) {
     close($w); close($er);
@@ -100,9 +109,7 @@ defmodule Helyx.Tool.Bash do
       exec @ARGV;
       die "cannot run $ARGV[0]: $!\n";
     };
-    my $reason = $@;
-    utf8::encode($reason) if utf8::is_utf8($reason);
-    syswrite($ew, $reason);
+    syswrite($ew, $@);
     exit 0;
   }
   $SIG{TERM} = "IGNORE";
@@ -185,16 +192,8 @@ defmodule Helyx.Tool.Bash do
 
   defp run_command(command, cwd) do
     nonce = random_word()
-    {exe, args} = launcher(command, cwd, nonce)
-
-    # No cd option: the watchdog enters `cwd`, so a failure has a signal.
-    port =
-      Port.open({:spawn_executable, exe}, [
-        :binary,
-        :exit_status,
-        :stderr_to_stdout,
-        {:args, args}
-      ])
+    {exe, options} = launcher(command, cwd, nonce)
+    port = Port.open({:spawn_executable, exe}, options)
 
     # The runtime detaches port programs into their own process group, so
     # the port's OS pid is the watchdog's group. Registered as :watchdog:
@@ -220,7 +219,30 @@ defmodule Helyx.Tool.Bash do
   def launcher(command, cwd, nonce) do
     bash = System.find_executable("bash") || "/bin/bash"
     perl = System.find_executable("perl") || "/usr/bin/perl"
-    {perl, ["-e", @watchdog, "--", nonce, cwd, bash, "-c", command]}
+    # ponytail: the VM decodes a name or a value that is not UTF-8 as
+    # Latin-1. Such a `PERL*` value reaches the command with other bytes,
+    # and such a name is not removed. Raw bytes need another transport, if
+    # a user has such a variable (ticket pending).
+    perl_env =
+      for {"PERL" <> _ = name, _value} = variable <- System.get_env(),
+          name != "PERL_BADLANG",
+          do: variable
+
+    unset = for {name, _value} <- perl_env, do: {String.to_charlist(name), false}
+
+    keep =
+      for {name, value} <- perl_env,
+          do: {String.to_charlist("HELYX_KEEP_" <> name), String.to_charlist("=" <> value)}
+
+    # No cd option: the watchdog enters `cwd`, so a failure has a signal.
+    {perl,
+     [
+       :binary,
+       :exit_status,
+       :stderr_to_stdout,
+       {:env, unset ++ keep},
+       {:args, ["-e", @watchdog, "--", nonce, cwd, bash, "-c", command]}
+     ]}
   end
 
   # Takes the marker off the stream. Only a group marker leads to the

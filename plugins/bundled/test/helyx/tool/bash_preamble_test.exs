@@ -21,6 +21,18 @@ defmodule Helyx.Tool.Bash.PreambleTest do
     end)
   end
 
+  # Stands in for the hands: it sends the group registrations to `test`.
+  defp registrations_to(test), do: spawn_link(fn -> forward_registrations(test) end)
+
+  defp forward_registrations(test) do
+    receive do
+      {:"$gen_call", from, {:register_group, group, kind}} ->
+        send(test, {:registered, group, kind})
+        GenServer.reply(from, :ok)
+        forward_registrations(test)
+    end
+  end
+
   test "the not-started marker is found after perl's own warnings (issue #52)", %{tmp_dir: dir} do
     assert {:error, text} = Helyx.Tool.Bash.run(%{"command" => "pwd"}, Path.join(dir, "gone"))
     assert text =~ "did not start"
@@ -43,17 +55,7 @@ defmodule Helyx.Tool.Bash.PreambleTest do
     put_env("LC_MESSAGES", String.duplicate("x", 5000))
     test = self()
 
-    # Stands in for the hands: it takes the group registrations.
-    hands =
-      spawn_link(fn ->
-        receive do
-          {:"$gen_call", from, {:register_group, group, kind}} ->
-            send(test, {:registered, group, kind})
-            GenServer.reply(from, :ok)
-        end
-      end)
-
-    Process.put(:helyx_hands, hands)
+    Process.put(:helyx_hands, registrations_to(test))
     assert {:error, _} = Helyx.Tool.Bash.run(%{"command" => "sleep 30"}, dir)
     assert_received {:registered, watchdog, :watchdog}
     # The watchdog reaps the child it holds before it exits.
@@ -70,22 +72,24 @@ defmodule Helyx.Tool.Bash.PreambleTest do
 
   test "a perl that stops before the watchdog runs is an error, not its exit code",
        %{tmp_dir: dir} do
-    put_env("PERL5OPT", "-MNopeNope")
+    put_first_in_path(dir, "perl", "#!/bin/sh\necho NopeNope\nexit 3\n")
     assert {:error, text} = Helyx.Tool.Bash.run(%{"command" => "pwd"}, dir)
     assert text =~ "did not start"
     assert text =~ "NopeNope"
   end
 
-  # An executable file whose interpreter does not exist: it is found, and
-  # the exec fails.
-  defp put_bad_bash(dir) do
+  defp put_first_in_path(dir, name, content) do
     bin = Path.join(dir, "bin")
     File.mkdir_p!(bin)
-    File.write!(Path.join(bin, "bash"), "#!/nonexistent/interpreter\n")
-    File.chmod!(Path.join(bin, "bash"), 0o755)
+    File.write!(Path.join(bin, name), content)
+    File.chmod!(Path.join(bin, name), 0o755)
     put_env("PATH", bin <> ":" <> System.get_env("PATH"))
-    Path.join(bin, "bash")
+    Path.join(bin, name)
   end
+
+  # An executable file whose interpreter does not exist: it is found, and
+  # the exec fails.
+  defp put_bad_bash(dir), do: put_first_in_path(dir, "bash", "#!/nonexistent/interpreter\n")
 
   test "a bash that cannot be executed is an error, not exit code 127 (issue #70)",
        %{tmp_dir: dir} do
@@ -98,37 +102,115 @@ defmodule Helyx.Tool.Bash.PreambleTest do
     refute text =~ " 0\n"
   end
 
-  test "perl's warning about the exec, in front of the report, is still an error (issue #70)",
-       %{tmp_dir: dir} do
-    bash = put_bad_bash(dir)
-    put_env("PERL5OPT", "-w")
-    assert {:error, text} = Helyx.Tool.Bash.run(%{"command" => "echo ran"}, dir)
-    assert text =~ "Can't exec"
-    assert text =~ "cannot run #{bash}: No such file"
-    refute text =~ " 0\n"
-  end
+  describe "perl variables of the environment (issue #71)" do
+    # The watchdog starts without every variable whose name starts with
+    # `PERL`, and gives them back to the command.
 
-  test "PERL_UNICODE=A and a wide character in the bash path: still an error (issue #70)",
-       %{tmp_dir: dir} do
-    # perl decodes its arguments, so the reason holds a wide character, and
-    # a write of wide characters to the binary report pipe is fatal.
-    bash = put_bad_bash(Path.join(dir, "é☃"))
-    put_env("PERL_UNICODE", "A")
-    assert {:error, text} = Helyx.Tool.Bash.run(%{"command" => "echo ran"}, dir)
-    assert text =~ "did not start: "
-    assert text =~ "cannot run #{bash}: No such file"
-    refute text =~ "Wide character"
-  end
+    test "PERL5OPT=-w does not reach the watchdog: no perl warning about a failed exec",
+         %{tmp_dir: dir} do
+      bash = put_bad_bash(dir)
+      put_env("PERL5OPT", "-w")
+      assert {:error, text} = Helyx.Tool.Bash.run(%{"command" => "echo ran"}, dir)
+      refute text =~ "Can't exec"
+      assert text =~ "cannot run #{bash}: No such file"
+    end
 
-  test "PERL_UNICODE=i: the held child dies and the result is an error, not exit code 255 (issue #70)",
-       %{tmp_dir: dir} do
-    put_env("PERL_UNICODE", "i")
-    ran = Path.join(dir, "ran")
-    assert {:error, text} = Helyx.Tool.Bash.run(%{"command" => "touch #{ran}"}, dir)
-    assert text =~ "did not start"
-    assert text =~ ":utf8 handles"
-    refute text =~ " 0\n"
-    refute File.exists?(ran)
+    test "PERL_UNICODE=A and a wide character in the bash path: the true reason",
+         %{tmp_dir: dir} do
+      bash = put_bad_bash(Path.join(dir, "é☃"))
+      put_env("PERL_UNICODE", "A")
+      assert {:error, text} = Helyx.Tool.Bash.run(%{"command" => "echo ran"}, dir)
+      assert text =~ "cannot run #{bash}: No such file"
+    end
+
+    test "PERL_UNICODE of A, o, D, i, and I: a command runs, and a missing directory gives its reason",
+         %{tmp_dir: dir} do
+      gone = Path.join(dir, "gone é☃")
+
+      for value <- ~w(A o D i I) do
+        put_env("PERL_UNICODE", value)
+
+        assert {:ok, text} = Helyx.Tool.Bash.run(%{"command" => "echo v=$PERL_UNICODE."}, dir)
+        assert text =~ "v=#{value}.\n"
+
+        assert {:error, text} = Helyx.Tool.Bash.run(%{"command" => "pwd"}, gone)
+        assert text =~ "cannot enter the working directory #{gone}: No such file"
+      end
+    end
+
+    test "PERL_UNICODE=I and i: a closed port still kills the group", %{tmp_dir: dir} do
+      for value <- ~w(I i) do
+        put_env("PERL_UNICODE", value)
+        {exe, options} = Helyx.Tool.Bash.launcher("echo ready; sleep 30", dir, "nonce")
+        port = Port.open({:spawn_executable, exe}, options)
+        assert {group, _pre} = Helyx.Tool.Bash.read_marker(port, "nonce", "", "")
+        assert is_integer(group)
+        true = Port.command(port, "go\n")
+        assert_receive {^port, {:data, "nonce 1\n" <> _}}, 2_000
+
+        Port.close(port)
+        assert group_gone_within?(group, 200)
+      end
+    end
+
+    test "PERL5OPT=-d: no debugger in the watchdog, the command runs, and no process stays",
+         %{tmp_dir: dir} do
+      put_env("PERL5OPT", "-d")
+      test = self()
+
+      task =
+        Task.async(fn ->
+          Process.put(:helyx_hands, registrations_to(test))
+          Helyx.Tool.Bash.run(%{"command" => "echo v=$PERL5OPT."}, dir)
+        end)
+
+      assert {:ok, {:ok, text}} = Task.yield(task, 5_000)
+      assert text =~ "v=-d.\n"
+      assert_received {:registered, watchdog, :watchdog}
+      assert_received {:registered, group, :command}
+      assert group_gone_within?(watchdog, 200)
+      assert group_gone_within?(group, 200)
+    end
+
+    test "PERL_BADLANG=0 still stops the locale warning of the watchdog", %{tmp_dir: dir} do
+      # The locale of `setup` makes the warning.
+      put_env("PERL_BADLANG", "0")
+      assert {:ok, text} = Helyx.Tool.Bash.run(%{"command" => "echo v=$PERL_BADLANG."}, dir)
+      refute text =~ "perl: warning"
+      assert text =~ "v=0.\n"
+    end
+
+    test "only the reserved prefix HELYX_KEEP_PERL is taken: HELYX_KEEP_HOME is not touched",
+         %{tmp_dir: dir} do
+      put_env("HELYX_KEEP_HOME", "/nowhere")
+      put_env("HELYX_KEEP_PERL_HELYX_C", "abc")
+      command = ~S(echo "[$HELYX_KEEP_HOME] [$PERL_HELYX_C]"; test "$HOME" != /nowhere)
+      assert {:ok, text} = Helyx.Tool.Bash.run(%{"command" => command}, dir)
+      # The documented cost of the reserved prefix: the name and the first
+      # character of the value are taken off.
+      assert text =~ "[/nowhere] [bc]\n"
+      refute text =~ "Exit code"
+    end
+
+    test "a PERL5LIB with a broken POSIX module does not reach the watchdog", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "POSIX.pm"), "die 'broken POSIX';\n")
+      put_env("PERL5LIB", dir)
+      assert {:ok, text} = Helyx.Tool.Bash.run(%{"command" => "echo v=$PERL5LIB."}, dir)
+      assert text =~ "v=#{dir}.\n"
+      refute text =~ "broken POSIX"
+    end
+
+    test "the command gets each value as it is: `=`, a line break, empty",
+         %{tmp_dir: dir} do
+      put_env("PERL_HELYX_A", "a=b\nc d")
+      put_env("PERL_HELYX_B", "")
+      # Never the whole environment: a failed assertion prints the text.
+      command =
+        ~S(echo "[$PERL_HELYX_A]"; echo "[${PERL_HELYX_B-unset}]"; env | grep -c HELYX_KEEP_)
+
+      assert {:ok, text} = Helyx.Tool.Bash.run(%{"command" => command}, dir)
+      assert text =~ "[a=b\nc d]\n[]\n0\n"
+    end
   end
 
   test "the group marker is found after perl's own warnings", %{tmp_dir: dir} do
