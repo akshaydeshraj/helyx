@@ -37,10 +37,10 @@ This is the second finding on one mechanism, the shape check of the clause. The 
 
 - Simplify, 4 agents: clean. The two optional test cuts of round 1 came again and stay not applied.
 - Standards: no rule broken. 2 optional points, not applied: the single-pass recursion (see Simplify), and the position of one test comment.
-- Spec: clean on the invariant; both reproductions and 7 more shapes do not attach. All 4 acceptance boxes met. Minor: #29 is the composer ticket, not a cell list ticket. The row now also says "a limit on the cell list: ticket pending".
+- Spec: clean on the invariant; both reproductions and 7 more shapes do not attach. All 4 acceptance boxes met. Minor: #29 is the composer ticket, not a cell list ticket. The row now also says that a limit on the cell list is accepted for checkpoint one.
 - Failure-path: no path breaks the invariant. 1 older defect outside the ticket, see below. 1 comment said more than the check does. The comment now says that the content is not checked. This is a comment-only change, so no further round was run.
 
 ## Outside the ticket
 
-- Ticket pending: `Helyx.TUI.transcript_lines/2` raises on a tool cell whose result has malformed content (`content: nil`, a string, or a `Text` with nil text). The raise is in `Message.text/1` and the render, not in the fold, and master has it too. No session path makes such a message: `Message.tool_result/2` always makes a list of `Text` with binary text.
-- Ticket pending: a limit on the TUI cell list. The list, the append, the search, and the render are all linear in the cell count.
+- Accepted by the orchestrator with no ticket: `Helyx.TUI.transcript_lines/2` raises on a tool cell whose result has malformed content (`content: nil`, a string, or a `Text` with nil text). The raise is in `Message.text/1` and the render, not in the fold, and master has it too. No session path makes such a message: `Message.tool_result/2` always makes a list of `Text` with binary text.
+- Accepted by the orchestrator with no ticket: a limit on the TUI cell list. The list, the append, the search, and the render are all linear in the cell count.
