@@ -160,18 +160,29 @@ if Helyx.TUI.Available.available?() do
     # characters and handles its own editing keys.
     def handle_event(%Key{} = key, state) do
       if key.kind in ["press", "repeat"] and key.modifiers -- ["shift"] == [] do
-        ExRatatui.text_input_handle_key(state.input, key.code)
+        {:noreply, edit(state, key.code, &ExRatatui.text_input_handle_key/2)}
+      else
+        {:noreply, state}
       end
-
-      {:noreply, state}
     end
 
-    def handle_event(%Paste{content: content}, state) do
-      ExRatatui.text_input_insert_str(state.input, content)
-      {:noreply, state}
-    end
+    def handle_event(%Paste{content: content}, state),
+      do: {:noreply, edit(state, content, &ExRatatui.text_input_insert_str/2)}
 
     def handle_event(_event, state), do: {:noreply, state}
+
+    # The only path by which event text reaches the widget. The widget raises
+    # `ArgumentError` on text that is not valid UTF-8, and a raise in a
+    # callback kills the TUI process. Reject, do not repair: a silent
+    # replacement would send text the user did not type.
+    defp edit(state, text, fun) do
+      if is_binary(text) and String.valid?(text) do
+        fun.(state.input, text)
+        state
+      else
+        %{state | vm: ViewModel.notice(state.vm, "input rejected: not valid UTF-8")}
+      end
+    end
 
     # `/model` is the only command. The rule is on bytes, not on looks; the
     # feature doc's bounds table holds the rule and its limit. The input

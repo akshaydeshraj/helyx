@@ -119,6 +119,17 @@ defmodule Helyx.TUITest do
     assert ExRatatui.text_input_get_value(state.input) == "a therehi"
   end
 
+  # The callbacks run in the TUI process, so a raise here is its death.
+  test "invalid UTF-8 is rejected with a notice and leaves the composer unchanged", %{core: core} do
+    state = mounted(core, "bad_bytes", []) |> press("h") |> press("i")
+
+    {:noreply, state} = TUI.handle_event(%ExRatatui.Event.Paste{content: "a" <> <<0xFF>>}, state)
+    state = press(state, <<0xFF>>)
+
+    assert ExRatatui.text_input_get_value(state.input) == "hi"
+    assert [{:notice, "input rejected: not valid UTF-8"}, {:notice, _}] = state.vm.cells
+  end
+
   test "enter sends the composer and the answer streams into the view model", %{core: core} do
     state = mounted(core, "answer", [["Hello ", "there."]])
 
