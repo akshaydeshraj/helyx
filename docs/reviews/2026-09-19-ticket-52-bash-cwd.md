@@ -50,7 +50,7 @@ Simplify, 4 agents: 1 comment rewrite applied. Skipped: `Helyx.Id.new/0` for the
 
 - Standards: 0 hard violations, 5 judgement calls, none applied.
 - Spec: 0 new paths. `PERL_UNICODE=S`, `PERL5OPT=-T`, and `PERL5OPT=-t` fail safe. 3 text items, all applied: the "first 4,096 bytes" wording, the comment "no ok result without a command" (false for a failed `exec`, exit status 127, as on master), the wording of the close path.
-- Failure path: the required tests pass. 2 reproduced items, both also on master. (1) A `POSIX.pm` on `PERL5LIB` that reads `@ARGV` writes a marker: the user's own perl code in the user's own environment, stated as out of scope in the bounds table. (2) A `kill -9` of the watchdog between the marker and the go-ahead gives an ok result with `Exit code: 137` for a command that never ran. This and the failed `exec` are one hole, "bash command start after the group marker", stated in the bounds table as open, ticket pending. It is outside #52: the child has no channel to say that the `exec` happened.
+- Failure path: the required tests pass. 2 reproduced items, both also on master. (1) A `POSIX.pm` on `PERL5LIB` that reads `@ARGV` writes a marker: the user's own perl code in the user's own environment, stated as out of scope in the bounds table. (2) A `kill -9` of the watchdog between the marker and the go-ahead gives an ok result with `Exit code: 137` for a command that never ran. This and the failed `exec` are one hole, "bash command start after the group marker", stated in the bounds table as open, ticket #70. It is outside #52: the child has no channel to say that the `exec` happened.
 
 Fix: comments and Markdown only, 6 comment lines in one file, no function changed. Reduced round.
 
@@ -87,7 +87,7 @@ Fix: 3 comment lines in `bash.ex` and one sentence in the bounds row. No functio
 
 - `PERL_UNICODE=I` in the environment (a value that also holds `S` or `O` is safe: the marker write fails first and the result is an error): the watchdog's `sysread(STDIN, ...)` on the closed port fails on a `:utf8` handle, so the watchdog ends and does not kill the group. Reproduced through `launcher/3` and a closed port: the command was alive 1.5 s later. The same perl lines are on master. It breaks the ownership row "command process group" for the owner-death path (ADR 0004); abort still works, because the hands kill the registered group. A `binmode` on the watchdog's handles, or a removal of `PERL_UNICODE` from its own environment with a restore before the `exec`, is the likely fix. Not fixed here; the orchestrator files it.
 
-- "bash command start after the group marker" (above): ticket pending, the orchestrator files it and fills the number into the bounds table.
+- "bash command start after the group marker" (above): ticket #70.
 
 ## Precommit
 
