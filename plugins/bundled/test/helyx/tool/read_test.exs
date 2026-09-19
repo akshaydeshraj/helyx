@@ -87,6 +87,76 @@ defmodule Helyx.Tool.ReadTest do
     assert String.ends_with?(second, "\n5000")
   end
 
+  test "an offset that is not a positive integer is an error result (issue #75)", %{
+    tmp_dir: dir,
+    run: run
+  } do
+    File.write!(Path.join(dir, "a.txt"), "one\ntwo\nthree")
+
+    below = "an integer below 1"
+    fraction = "a number that is not a whole number of 1 or more"
+
+    for {bad, kind} <- [
+          {"2", "a string"},
+          {2.5, fraction},
+          {0, below},
+          {-1, below},
+          {0.0, fraction},
+          {-0.0, fraction},
+          {-2.0, fraction},
+          {true, "a boolean"},
+          {[2], "an array"},
+          {%{"a" => 2}, "an object"},
+          {String.duplicate("😀", 100_000), "a string"},
+          {-(10 ** 100_000), below}
+        ] do
+      result = run.(%{"path" => "a.txt", "offset" => bad})
+      assert result.is_error
+
+      assert Helyx.Message.text(result) ==
+               "offset must be a positive integer (a 1-based line number), got #{kind}"
+
+      assert byte_size(Helyx.Message.text(result)) <= 111
+    end
+  end
+
+  test "a bad offset is an error before the file is read", %{run: run} do
+    assert Helyx.Message.text(run.(%{"path" => "nope.txt", "offset" => 0})) =~ "offset must be"
+  end
+
+  test "a large float offset is past the end, not a crash", %{tmp_dir: dir, run: run} do
+    File.write!(Path.join(dir, "a.txt"), "one\ntwo")
+    result = run.(%{"path" => "a.txt", "offset" => 1.0e300})
+    refute result.is_error
+    assert Helyx.Message.text(result) == ""
+  end
+
+  test "the tool has no limit argument and ignores a limit key (issue #75)", %{
+    tmp_dir: dir,
+    run: run
+  } do
+    File.write!(Path.join(dir, "a.txt"), "one\ntwo")
+
+    for limit <- [1, "x", 0, -1, 1.5, 1.0] do
+      assert Helyx.Message.text(run.(%{"path" => "a.txt", "limit" => limit})) == "one\ntwo"
+    end
+  end
+
+  test "a float offset with no fraction is the integer, and a null offset is line 1", %{
+    tmp_dir: dir,
+    run: run
+  } do
+    File.write!(Path.join(dir, "a.txt"), "one\ntwo\nthree")
+
+    for {offset, text} <- [
+          {2.0, "two\nthree"},
+          {1.0, "one\ntwo\nthree"},
+          {nil, "one\ntwo\nthree"}
+        ] do
+      assert Helyx.Message.text(run.(%{"path" => "a.txt", "offset" => offset})) == text
+    end
+  end
+
   test "a missing file is an error result", %{run: run} do
     result = run.(%{"path" => "nope.txt"})
     assert result.is_error
@@ -117,5 +187,6 @@ defmodule Helyx.Tool.ReadTest do
 
   test "missing arguments are an error result", %{run: run} do
     assert run.(%{}).is_error
+    assert Helyx.Message.text(run.(%{"path" => 1})) == "read needs a path"
   end
 end
