@@ -1,8 +1,8 @@
 defmodule Helyx.Tool.Read do
   @moduledoc """
   Reads a file. Long files keep the head, and the result says which absolute
-  lines it shows and which offset continues the read; `offset` reads from a
-  later line.
+  lines it shows and, when lines follow them, which offset continues the
+  read; `offset` reads from a later line.
   """
 
   @behaviour Helyx.Tool
@@ -14,7 +14,7 @@ defmodule Helyx.Tool.Read do
   def description do
     "Read a file. Returns at most 2000 lines or 50 KB, starting at offset " <>
       "(a 1-based line number, default 1); a truncated result names the " <>
-      "offset that continues the read."
+      "offset that continues the read, when lines follow."
   end
 
   @impl true

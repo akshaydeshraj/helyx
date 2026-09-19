@@ -117,9 +117,10 @@ defmodule Helyx.Tool do
   on whole lines. One trailing newline is a terminator and does not count.
   `:head` keeps the start and `:tail` keeps the end. A truncated result says
   which lines it shows; a truncated `:head` result also names the offset that
-  continues the read. When the line at the kept edge is over the byte
-  cap by itself, it is cut to the cap and is the only line shown; the notice
-  names that line and the bytes kept of it, and no offset reaches the rest.
+  continues the read, unless the cut line is the last line. When the line at
+  the kept edge is over the byte cap by itself, it is cut to the cap and is
+  the only line shown; the notice names that line and the bytes kept of it,
+  and no offset reaches the rest.
   """
   @spec truncate(String.t(), :head | :tail) :: String.t()
   def truncate(text, :head), do: truncate(text, :head, 1)
@@ -141,9 +142,9 @@ defmodule Helyx.Tool do
   @doc """
   Like `truncate/2` with `:head`, starting at line `first`: earlier lines are
   dropped before the caps apply. A truncated result names the absolute line
-  numbers it shows and the offset that continues the read. A window that
-  starts past line 1 is rebuilt from its lines, so it carries no trailing
-  newline.
+  numbers it shows and, when lines follow them, the offset that continues
+  the read. A window that starts past line 1 is rebuilt from its lines, so it
+  carries no trailing newline.
   """
   @spec truncate(String.t(), :head, pos_integer()) :: String.t()
   def truncate(text, :head, first) do
@@ -158,13 +159,18 @@ defmodule Helyx.Tool do
 
       {kept, n, cut_bytes} ->
         last = first + n - 1
+        total = first - 1 + length(shown)
 
         Enum.join(kept, "\n") <>
-          "\n[truncated: showing lines #{first}-#{last} of #{first - 1 + length(shown)}" <>
-          "#{cut_note(cut_bytes, first)}; " <>
-          "read again with offset #{last + 1}]"
+          "\n[truncated: showing lines #{first}-#{last} of #{total}" <>
+          "#{cut_note(cut_bytes, first)}#{offset_note(last, total)}]"
     end
   end
+
+  # Only a cut last line is truncated with no line after it; an offset past
+  # it returns nothing, so the notice names none.
+  defp offset_note(total, total), do: ""
+  defp offset_note(last, _total), do: "; read again with offset #{last + 1}"
 
   # The cut line is always the one at the kept edge: the first line of a
   # head window, the last line of a tail.
