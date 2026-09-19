@@ -17,4 +17,4 @@ Date: 2026-09-19.
 
 ## Next
 
-- A position with an identity: ticket pending.
+- A position with an identity: accepted with no ticket for checkpoint one.

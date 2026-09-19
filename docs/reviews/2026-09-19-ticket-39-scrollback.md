@@ -37,7 +37,7 @@ The fix added functions, so the round was full.
 - Spec: a resize to a larger width left a row number past its cell, and each frame wrapped the cells that the row passed (2.5 ms against 0.3 ms). Fixed: `hold/4` moves the row into the cells that follow.
 - Spec: exception 1 named a failed turn. The session closes the open message first, so only a client notice makes the case. Fixed in the row.
 - Failure-path, reproduced: `settle/1` kept the position when the terminal gave no size, and the screen was empty. Fixed: nil.
-- Failure-path, reproduced: a `/model` notice while the view is in the open message moves the view by the rows of the notice. Accepted as exception 1: the position has no identity. Ticket pending.
+- Failure-path, reproduced: a `/model` notice while the view is in the open message moves the view by the rows of the notice. Accepted as exception 1: the position has no identity. Accepted with no ticket for checkpoint one.
 
 ## Round 3 (full)
 
@@ -62,4 +62,4 @@ The fix of round 4 is Markdown only, so there is no round 5.
 
 ## Outside the ticket
 
-- A scroll position with an identity, so that a cell at the index of the open message does not move the view: ticket pending.
+- A scroll position with an identity, so that a cell at the index of the open message does not move the view: accepted with no ticket for checkpoint one.
