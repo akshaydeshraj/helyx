@@ -17,6 +17,8 @@ defmodule Helyx.TUI.ViewModelTest do
   defp fold(specs),
     do: Enum.reduce(events(specs), ViewModel.new("test/model"), &ViewModel.apply(&2, &1))
 
+  defp tool_end(result), do: {:tool_execution_end, %{message: result}}
+
   defp user(text), do: Message.user(text)
 
   defp assistant(blocks, stop_reason \\ :end_turn) do
@@ -101,12 +103,109 @@ defmodule Helyx.TUI.ViewModelTest do
     assert List.last(finished.cells) == {:tool, call, result}
   end
 
+  # A rejected `/model` command adds a notice while the tool runs (#83).
+  for {name, outcome} <- [{"an ok", {:ok, "lib"}}, {"an error", {:error, "exit 1"}}] do
+    test "#{name} result attaches past a notice added during the tool run" do
+      call = %Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
+      result = Message.tool_result(call, unquote(outcome))
+
+      vm =
+        [{:tool_execution_start, %{tool_call: call}}]
+        |> fold()
+        |> ViewModel.notice("usage: /model provider/model")
+        |> ViewModel.apply(hd(events([tool_end(result)])))
+
+      assert vm.cells == [{:tool, call, result}, {:notice, "usage: /model provider/model"}]
+    end
+  end
+
+  # The session runs tool calls one at a time (start, end, start, end). The
+  # fold does not depend on that order: each open cell gets its own result.
+  test "two open tool cells get their own results, in any order" do
+    c1 = %Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
+    c2 = %Message.ToolCall{id: "c2", name: "read", arguments: %{}}
+    r1 = Message.tool_result(c1, {:ok, "one"})
+    r2 = Message.tool_result(c2, {:error, "two"})
+
+    starts = [
+      {:tool_execution_start, %{tool_call: c1}},
+      {:tool_execution_start, %{tool_call: c2}}
+    ]
+
+    assert fold(starts ++ [tool_end(r1), tool_end(r2)]).cells == [
+             {:tool, c1, r1},
+             {:tool, c2, r2}
+           ]
+
+    assert fold(starts ++ [tool_end(r2), tool_end(r1)]).cells == [
+             {:tool, c1, r1},
+             {:tool, c2, r2}
+           ]
+  end
+
+  test "the session order, one call at a time, attaches each result" do
+    c1 = %Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
+    c2 = %Message.ToolCall{id: "c2", name: "read", arguments: %{}}
+    r1 = Message.tool_result(c1, {:ok, "one"})
+    r2 = Message.tool_result(c2, {:ok, "two"})
+
+    vm =
+      fold([
+        {:tool_execution_start, %{tool_call: c1}},
+        tool_end(r1),
+        {:tool_execution_start, %{tool_call: c2}},
+        tool_end(r2)
+      ])
+
+    assert vm.cells == [{:tool, c1, r1}, {:tool, c2, r2}]
+  end
+
+  test "a result goes to the newest open cell and never replaces a result" do
+    call = %Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
+    first = Message.tool_result(call, {:ok, "first"})
+    second = Message.tool_result(call, {:ok, "second"})
+    start = {:tool_execution_start, %{tool_call: call}}
+
+    # A provider can use the same id again in a later turn.
+    assert fold([start, tool_end(first), start, tool_end(second)]).cells ==
+             [{:tool, call, first}, {:tool, call, second}]
+
+    # A second result for a closed cell changes nothing.
+    assert fold([start, tool_end(first), tool_end(second)]).cells == [{:tool, call, first}]
+
+    # An old cell that stayed open does not take the result of a new call.
+    assert fold([start, start, tool_end(second)]).cells ==
+             [{:tool, call, nil}, {:tool, call, second}]
+  end
+
+  test "only a tool result message with a binary call id attaches" do
+    no_id = %Message.ToolCall{id: nil, name: "bash", arguments: %{}}
+    specs = [{:tool_execution_start, %{tool_call: no_id}}]
+    assert fold(specs ++ [tool_end(user("hi"))]).cells == [{:tool, no_id, nil}]
+
+    assert fold(specs ++ [tool_end(Message.tool_result(no_id, {:ok, "x"}))]).cells == [
+             {:tool, no_id, nil}
+           ]
+
+    call = %Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
+    specs = [{:tool_execution_start, %{tool_call: call}}]
+
+    assert fold(specs ++ [tool_end(%{user("hi") | tool_call_id: "c1"})]).cells == [
+             {:tool, call, nil}
+           ]
+  end
+
   test "a result for an unknown call changes nothing" do
     call = %Message.ToolCall{id: "c9", name: "bash", arguments: %{}}
     result = Message.tool_result(call, {:error, "aborted"})
 
-    vm = fold([{:agent_start, %{}}, {:tool_execution_end, %{message: result}}])
+    vm = fold([{:agent_start, %{}}, tool_end(result)])
     assert vm.cells == []
+
+    # Also with cells, none of them an open tool cell for that id.
+    other = %Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
+    specs = [{:message_end, %{message: user("hi")}}, {:tool_execution_start, %{tool_call: other}}]
+    assert fold(specs ++ [tool_end(result)]).cells == fold(specs).cells
   end
 
   test "an aborted turn closes the stream and shows a notice" do
