@@ -428,7 +428,7 @@ if Helyx.TUI.Available.available?() do
       Enum.map(Enum.reverse([row | rows]), &(&1 |> Enum.reverse() |> Enum.join()))
     end
 
-    # ponytail: a short width rule, not the Unicode tables (ticket pending).
+    # ponytail: a short width rule, not the Unicode tables (ticket #90).
     # ExRatatui has no width function in Elixir, and OTP has no
     # `:string.width/1`. The rule must never count less than ExRatatui draws,
     # because ExRatatui cuts a row at the edge. So it has no rule for an emoji

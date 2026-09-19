@@ -10,7 +10,7 @@ Documented exceptions:
 
 1. A width less than 1 counts as 1.
 2. A glyph wider than the full width gets a row of its own, and ExRatatui cuts it.
-3. The width rule is a short list of ranges, not the Unicode tables. The test has every code point of five ranges in 13 contexts, not every sequence. The rule can count less for a sequence that no test has. Ticket pending: replace the rule with a width function of ExRatatui when it has one.
+3. The width rule is a short list of ranges, not the Unicode tables. The test has every code point of five ranges in 13 contexts, not every sequence. The rule can count less for a sequence that no test has. Ticket #90: replace the rule with a width function of ExRatatui when it has one.
 
 The rule can count more than ExRatatui draws. It has no rule for an emoji sequence, so an emoji with a skin tone modifier, a joiner sequence, or a flag counts each emoji in it. Such a row is shorter than it could be. Nothing is lost.
 
@@ -82,4 +82,4 @@ No code changed after round 5.
 
 ## Outside the ticket
 
-- Ticket pending: a width function in ExRatatui (upstream, or a NIF call that the library adds) would replace the rule in `Helyx.TUI`. Until then an emoji sequence makes its row shorter than the width.
+- Ticket #90: a width function in ExRatatui (upstream, or a NIF call that the library adds) would replace the rule in `Helyx.TUI`. Until then an emoji sequence makes its row shorter than the width.
