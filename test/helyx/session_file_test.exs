@@ -352,6 +352,12 @@ defmodule Helyx.SessionFileTest do
     for bad <- [0, -1, 1.5, nil, 64 * 1024 * 1024 + 1] do
       assert_raise FunctionClauseError, fn -> SessionFile.resume(dir, "/repo", max_bytes: bad) end
     end
+
+    for bad <- [0, -1, 1.5, nil, 257] do
+      assert_raise FunctionClauseError, fn ->
+        SessionFile.resume(dir, "/repo", max_scanned_files: bad)
+      end
+    end
   end
 
   describe "the header scan" do
@@ -387,6 +393,65 @@ defmodule Helyx.SessionFileTest do
 
       assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
       assert resumed.session_id == "sess1"
+    end
+  end
+
+  describe "the file count of the header scan" do
+    # "_repo" has the slug of "/repo", so its sessions share the directory.
+    defp session_at(dir, id, cwd, mtime) do
+      {:ok, file} = SessionFile.create(dir, id, cwd, "test/ok")
+      File.touch!(file.path, mtime)
+      file
+    end
+
+    test "a session older than the newest files is not found", %{tmp_dir: dir} do
+      session_at(dir, "old", "/repo", 1_000)
+      session_at(dir, "b", "_repo", 2_000)
+      session_at(dir, "c", "_repo", 3_000)
+
+      assert {:error, :not_found} = SessionFile.resume(dir, "/repo", max_scanned_files: 2)
+      assert {:ok, resumed} = SessionFile.resume(dir, "/repo", max_scanned_files: 3)
+      assert resumed.session_id == "old"
+    end
+
+    test "the modification time selects the files, then the start time decides",
+         %{tmp_dir: dir} do
+      # The sleeps put the start times of the headers in order.
+      session_at(dir, "first", "/repo", 3_000)
+      Process.sleep(2)
+      session_at(dir, "second", "/repo", 1_000)
+      Process.sleep(2)
+      session_at(dir, "third", "/repo", 2_000)
+
+      assert {:ok, %{session_id: "first"}} =
+               SessionFile.resume(dir, "/repo", max_scanned_files: 1)
+
+      assert {:ok, %{session_id: "third"}} = SessionFile.resume(dir, "/repo")
+    end
+
+    test "a file that is not regular does not count", %{tmp_dir: dir} do
+      file = session_at(dir, "sess1", "/repo", 1_000)
+      {_, 0} = System.cmd("mkfifo", [Path.join(Path.dirname(file.path), "pipe.jsonl")])
+
+      assert {:ok, %{session_id: "sess1"}} =
+               SessionFile.resume(dir, "/repo", max_scanned_files: 1)
+    end
+
+    test "the default limit is 256 files", %{tmp_dir: dir} do
+      session_at(dir, "old", "/repo", 1_000)
+      for n <- 1..255, do: session_at(dir, "s#{n}", "_repo", 2_000 + n)
+      assert {:ok, %{session_id: "old"}} = SessionFile.resume(dir, "/repo")
+
+      session_at(dir, "s256", "_repo", 3_000)
+      assert {:error, :not_found} = SessionFile.resume(dir, "/repo")
+    end
+
+    test "the path breaks a tie of the modification time", %{tmp_dir: dir} do
+      session_at(dir, "a", "/repo", 1_000)
+      session_at(dir, "b", "_repo", 1_000)
+
+      assert {:error, :not_found} = SessionFile.resume(dir, "/repo", max_scanned_files: 1)
+      assert {:ok, %{session_id: "b"}} = SessionFile.resume(dir, "_repo", max_scanned_files: 1)
     end
   end
 

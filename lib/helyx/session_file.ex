@@ -22,9 +22,13 @@ defmodule Helyx.SessionFile do
   # limit. Compaction is out of scope, so a session past it starts anew.
   @max_bytes 64 * 1024 * 1024
 
-  # The scan for the most recent session reads this much of every file in
-  # the project directory. A header holds a cwd and a model ref.
+  # The scan for the most recent session reads this much of a file. A header
+  # holds a cwd and a model ref.
   @max_header_bytes 65_536
+
+  # The scan reads the header of this many files: the ones with the newest
+  # modification time. Nothing deletes session files, so their count grows.
+  @max_scanned_files 256
 
   @enforce_keys [:path]
   defstruct [:path, :leaf]
@@ -93,20 +97,33 @@ defmodule Helyx.SessionFile do
   session file has a header line of at most #{@max_header_bytes} bytes; the
   scan for the most recent session reads no more than that of any file.
 
-  `:max_bytes` lowers the file limit. It exists so that a test reaches the
-  limit with a small file.
+  The scan reads the header of at most #{@max_scanned_files} regular files:
+  the ones with the newest modification time. An append sets that time. A
+  session older than those files is not found: the result is `:not_found`
+  when none of them has the working directory.
+
+  `:max_bytes` lowers the file limit and `:max_scanned_files` lowers the
+  file count. They exist so that a test reaches a limit with small input.
   """
-  @spec resume(Path.t(), String.t(), max_bytes: pos_integer()) ::
-          {:ok, Resumed.t()} | {:error, error()}
+  @spec resume(Path.t(), String.t(),
+          max_bytes: pos_integer(),
+          max_scanned_files: pos_integer()
+        ) :: {:ok, Resumed.t()} | {:error, error()}
   def resume(dir, cwd, opts \\ []) do
     # Outside the rescue below: a bad option is the caller's bug and raises,
     # it is not reported as a bad file.
-    resume_within(dir, cwd, Keyword.get(opts, :max_bytes, @max_bytes))
+    resume_within(
+      dir,
+      cwd,
+      Keyword.get(opts, :max_bytes, @max_bytes),
+      Keyword.get(opts, :max_scanned_files, @max_scanned_files)
+    )
   end
 
-  # The option only lowers the limit, so the read count stays one the OS takes.
-  defp resume_within(dir, cwd, max_bytes) when max_bytes in 1..@max_bytes//1 do
-    with {:ok, path, header} <- most_recent(project_dir(dir, cwd), cwd),
+  # The options only lower the limits, so the read count stays one the OS takes.
+  defp resume_within(dir, cwd, max_bytes, max_files)
+       when max_bytes in 1..@max_bytes//1 and max_files in 1..@max_scanned_files//1 do
+    with {:ok, path, header} <- most_recent(project_dir(dir, cwd), cwd, max_files),
          :ok <- check_version(header),
          {:ok, raw} <- read_up_to(path, max_bytes + 1),
          :ok <- check_size(byte_size(raw), max_bytes),
@@ -277,9 +294,9 @@ defmodule Helyx.SessionFile do
 
   # The most recently started session whose header matches the working
   # directory. Two directories can share a slug, so the header decides.
-  defp most_recent(project_dir, cwd) do
+  defp most_recent(project_dir, cwd, max_files) do
     candidates =
-      for path <- Path.wildcard(Path.join(project_dir, "*.jsonl")),
+      for path <- newest(Path.wildcard(Path.join(project_dir, "*.jsonl")), max_files),
           {:ok, header} <- [read_header(path)],
           header["cwd"] == cwd do
         {header["ts"], path, header}
@@ -289,6 +306,19 @@ defmodule Helyx.SessionFile do
       nil -> {:error, :not_found}
       {_ts, path, header} -> {:ok, path, header}
     end
+  end
+
+  # The `count` regular files with the newest modification time: one stat
+  # per file and no read. The time has a resolution of one second, so the
+  # path breaks a tie, and the same directory always gives the same files.
+  defp newest(paths, count) do
+    stats =
+      for path <- paths,
+          {:ok, %File.Stat{type: :regular, mtime: mtime}} <- [File.stat(path, time: :posix)] do
+        {mtime, path}
+      end
+
+    stats |> Enum.sort(:desc) |> Enum.take(count) |> Enum.map(&elem(&1, 1))
   end
 
   # A header line over the bound is cut, does not decode, and the file is
