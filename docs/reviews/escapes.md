@@ -19,3 +19,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-09-19 | #71 | r1: 8 simplify, 2 docs, 1 defect (any HELYX_KEEP_ name restored); r2: 1 (PERL_BADLANG); r3: 0 | r1: 0 | a worker test printed the machine environment into its transcript: review and worker briefs forbid a print of the environment |
 | 2026-09-19 | #46 | simplify 2; r1: 3 docs, 2 failure-path (long model ref, key repeat); r2: 3 docs; r3: 0 | r1: 0 | none |
 | 2026-09-19 | #62 | simplify 2 test notes; r1: 1 standards wording, 4 spec (tests and docs), 2 failure-path docs | r1: 0 | none |
+| 2026-09-19 | #78 | simplify 2; r1: 6 docs and tests, 1 failure-path (441 MB line count); r2: 2 docs, 1 failure-path (12 s for a 5000-digit offset); r3: 2 docs; r4: 0 | r1: 0 | a usage limit stopped the worker mid-round: the orchestrator resumes a stopped worker with SendMessage and the worker runs again only the agents that did not finish |
