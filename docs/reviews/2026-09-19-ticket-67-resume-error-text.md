@@ -80,3 +80,7 @@ The fix: 5 lines in one code file, two new clauses of a private function, no new
 | 4.4 | failure-path | About 75 inputs and the real task with no terminal; none broke the invariant | None |
 
 No code changed after round 4.
+
+## Codex round 1
+
+One finding, rejected. The argument checks of the task call `Mix.raise` before `CodingAgent.run/1`, so a directory argument that holds a newline prints on two lines without the prefix. The text is the user's own argument, and the ticket covers the errors that a start or a resume returns. The invariant sentence that the orchestrator gave Codex was too wide: it said "a start or a resume that fails" and did not exclude the argument checks.
