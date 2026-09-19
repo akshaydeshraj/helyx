@@ -28,6 +28,8 @@ codex_dir=$(/bin/ls -d "$HOME"/.claude/plugins/cache/openai-codex/codex/*/ | sor
 node "${codex_dir}scripts/codex-companion.mjs" adversarial-review "--wait --base origin/master <the invariant of the change, one sentence>"
 ```
 
+The invariant sentence names every exception that the feature doc already states (for example, the write-failure policy of the session file) and every open hole that has a ticket. A reviewer that does not know a documented exception reports it as a defect.
+
 Judge every finding yourself. Reproduce it or read the code. A reviewer's claim is not a fact.
 
 - **Confirmed:** send it to the worker (SendMessage) with the reproduction. The worker fixes it through `/ship` rules: a code fix gets its rerun round. Then run the Codex review again.

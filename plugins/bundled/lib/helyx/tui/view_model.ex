@@ -11,7 +11,8 @@ defmodule Helyx.TUI.ViewModel do
     * `%Helyx.Message{}` – a completed user or assistant message
     * `{:tool, call, result}` – a tool call; `result` is nil while it runs,
       then the tool result message
-    * `{:notice, text}` – an aborted or failed turn
+    * `{:notice, text}` – an aborted or failed turn, or a command the
+      client rejected (`notice/2`)
 
   `streaming` is the open assistant message as a reversed block list, newest
   first — the session's convention, shared through `Helyx.Message.add_block/2`
@@ -101,7 +102,15 @@ defmodule Helyx.TUI.ViewModel do
     %{vm | queue: %{steers: steers, follow_ups: follow_ups}}
   end
 
+  def apply(vm, %Event{type: :model_change, data: %{model: model}}) when is_binary(model) do
+    %{vm | model: model}
+  end
+
   def apply(vm, %Event{}), do: vm
+
+  @doc "Adds a notice from the client itself, such as a rejected command."
+  @spec notice(t(), String.t()) :: t()
+  def notice(vm, text) when is_binary(text), do: add_cell(vm, {:notice, text})
 
   defp stream(vm, delta), do: %{vm | streaming: Message.add_block(vm.streaming || [], delta)}
 

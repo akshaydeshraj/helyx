@@ -10,6 +10,7 @@ defmodule Helyx.SessionTest do
 
     plugins = [
       Helyx.Test.Provider,
+      Helyx.Test.ProviderOther,
       Helyx.Test.Tool.Upcase,
       Helyx.Test.Tool.Kill,
       Helyx.Test.Tool.Slow,
@@ -745,5 +746,170 @@ defmodule Helyx.SessionTest do
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
     assert final_text(events) =~ "working directory does not exist"
+  end
+
+  describe "set_model/2" do
+    test "the next turn uses the new provider, and a switch back works", %{core: core} do
+      {:ok, session} = Session.start(core, model: "test/ok")
+      :ok = Session.subscribe(session)
+
+      :ok = Session.prompt(session, "one")
+      first = collect_until(:agent_end)
+      assert final_text(first) == "ok"
+
+      assert :ok = Session.set_model(session, "other/any")
+      assert_receive {:helyx_event, %Event{type: :model_change} = change}
+      assert change.data == %{model: "other/any"}
+      assert change.turn_id == nil
+      assert change.seq == List.last(first).seq + 1
+      refute_receive {:helyx_event, _}, 50
+      assert Session.model(session) == "other/any"
+
+      :ok = Session.prompt(session, "two")
+      second = collect_until(:agent_end)
+      assert final_text(second) == "from other"
+      assert Enum.find(second, &(&1.type == :turn_end)).data.message.model == "other/any"
+      assert hd(second).seq == change.seq + 1
+
+      assert :ok = Session.set_model(session, "test/ok")
+      assert_receive {:helyx_event, %Event{type: :model_change}}
+      :ok = Session.prompt(session, "three")
+      assert final_text(collect_until(:agent_end)) == "ok"
+    end
+
+    @tag :tmp_dir
+    test "a rejected ref leaves the model, the file, and the event stream unchanged", %{
+      core: core,
+      tmp_dir: dir
+    } do
+      {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
+      :ok = Session.subscribe(session)
+      [path] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl"))
+      before = File.read!(path)
+
+      assert {:error, {:unknown_provider, "nope"}} = Session.set_model(session, "nope/model")
+      assert {:error, {:invalid_model_ref, "test"}} = Session.set_model(session, "test")
+      assert {:error, {:invalid_model_ref, _}} = Session.set_model(session, <<"test/", 255>>)
+
+      assert Session.model(session) == "test/ok"
+      assert File.read!(path) == before
+      refute_receive {:helyx_event, _}, 50
+    end
+
+    @tag :tmp_dir
+    test "the switch is a model change entry and survives resume", %{core: core, tmp_dir: dir} do
+      {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
+      :ok = Session.set_model(session, "other/any")
+
+      [path] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl"))
+
+      entries =
+        path |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&JSON.decode!/1)
+
+      assert [%{"type" => "session", "id" => id}, %{"type" => "model_change"} = entry] = entries
+      assert %{"model" => "other/any", "parent_id" => ^id} = entry
+
+      stop_session(core, session, &GenServer.stop/1)
+
+      {:ok, resumed} = Session.resume(core, sessions_dir: dir)
+      assert Session.model(resumed) == "other/any"
+      :ok = Session.subscribe(resumed)
+      :ok = Session.prompt(resumed, "hello")
+      assert final_text(collect_until(:agent_end)) == "from other"
+    end
+
+    test "a switch during a turn takes effect on the next turn", %{core: core} do
+      {:ok, session} = Session.start(core, model: "test/steer")
+      :ok = Session.subscribe(session)
+
+      :ok = Session.prompt(session, "hello")
+      assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
+      :ok = Session.set_model(session, "other/any")
+      :ok = Session.follow_up(session, "again")
+      assert_receive {:helyx_event, %Event{type: :model_change, turn_id: nil}}
+
+      # The running turn makes its second provider call on the old model.
+      running = collect_until(:agent_end)
+      assert final_text(running) == "hello"
+      assert Enum.find(running, &(&1.type == :turn_end)).data.message.model == "test/steer"
+      assert final_text(collect_until(:agent_end)) == "from other"
+    end
+
+    @tag :tmp_dir
+    test "a switch to the current model is accepted and recorded like any other", %{
+      core: core,
+      tmp_dir: dir
+    } do
+      {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
+      :ok = Session.subscribe(session)
+
+      assert :ok = Session.set_model(session, "test/ok")
+      assert_receive {:helyx_event, %Event{type: :model_change, data: %{model: "test/ok"}}}
+      refute_receive {:helyx_event, _}, 50
+
+      [path] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl"))
+      lines = path |> File.read!() |> String.split("\n", trim: true)
+      assert [_header, change] = Enum.map(lines, &JSON.decode!/1)
+      assert %{"type" => "model_change", "model" => "test/ok"} = change
+    end
+
+    test "a ref outside the bounds is rejected at start too", %{core: core} do
+      long = "test/" <> String.duplicate("m", 252)
+      assert {:error, {:invalid_model_ref, ^long}} = Session.start(core, model: long)
+      assert {:error, {:invalid_model_ref, "test/a b"}} = Session.start(core, model: "test/a b")
+    end
+
+    @tag :tmp_dir
+    test "a model change entry for the largest ref stays under the stated size", %{
+      core: core,
+      tmp_dir: dir
+    } do
+      {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
+      # 256 bytes, every model byte doubled by the JSON encoding.
+      :ok = Session.set_model(session, "test/" <> String.duplicate("\"", 251))
+
+      [path] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl"))
+      [_header, change] = path |> File.read!() |> String.split("\n", trim: true)
+      assert byte_size(change) <= 660
+    end
+
+    test "a provider id that two plugins share is rejected and the model stays" do
+      core = :"core_#{System.unique_integer([:positive])}"
+      plugins = [Helyx.Test.Provider, Helyx.Test.ProviderTwin, Helyx.Test.ProviderOther]
+      start_supervised!({Helyx.Core, name: core, plugins: plugins})
+
+      {:ok, session} = Session.start(core, model: "other/any")
+      :ok = Session.subscribe(session)
+
+      assert {:error, {:ambiguous_provider, "test"}} = Session.set_model(session, "test/ok")
+      assert Session.model(session) == "other/any"
+      refute_receive {:helyx_event, _}, 50
+    end
+
+    @tag :tmp_dir
+    test "a switch still works when the file cannot be written", %{core: core, tmp_dir: dir} do
+      {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
+      :ok = Session.subscribe(session)
+      [path] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl"))
+      header = File.read!(path)
+      File.rm!(path)
+      File.mkdir!(path)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert :ok = Session.set_model(session, "other/any")
+        end)
+
+      assert log =~ "persistence off"
+      assert_receive {:helyx_event, %Event{type: :model_change, turn_id: nil}}
+      assert Session.model(session) == "other/any"
+
+      # Persistence stays off: with the file back, a turn writes nothing.
+      File.rmdir!(path)
+      File.write!(path, header)
+      :ok = Session.prompt(session, "hello")
+      assert final_text(collect_until(:agent_end)) == "from other"
+      assert File.read!(path) == header
+    end
   end
 end

@@ -40,7 +40,17 @@ Queued steers join the transcript as user messages, in order, before the next pr
 | Event | the TUI subscribes; no bundled handlers |
 | Transport | `Local`: OTP messages in one node |
 
-A model is named by one string, `provider/model`. Core parses it once.
+A model is named by one string, `provider/model`. A session parses it once per start, resume, and switch.
+
+### Model switching
+
+`Helyx.Session.set_model/2` switches the model of a running session. The ref goes through the same parse and the same provider lookup as the `:model` of `Session.start`. A bad ref returns `{:error, {:invalid_model_ref, ref}}`, an unknown prefix returns `{:error, {:unknown_provider, id}}`, a prefix that two plugins share returns `{:error, {:ambiguous_provider, id}}`, and in every case the model, the file, and the event stream stay as they were. An accepted switch does three things inside one session call: it appends a `model_change` entry to the session file, it replaces the session's model ref and provider module, and it emits a `model_change` event with the new ref. A switch to the current model is accepted and recorded like any other.
+
+A turn fixes its model and provider when it starts. A switch during a turn is accepted at once, but every provider call of the running turn, and the `model` of its assistant messages, stay on the old model. The next turn, a queued follow-up too, uses the new one. The switch belongs to no turn, so its event carries a nil turn id, during a turn too.
+
+A `model_change` append that fails on disk is treated like a message append that fails: a warning, persistence off for the session, and the switch still holds in memory.
+
+Both directions between a model provider and a harness provider go through this one path, because the session sees only a provider module. The harness half is tested when the first harness provider exists (#10).
 
 ### Harness turns
 
@@ -84,7 +94,7 @@ A call can register several groups; the hands hold them as a set per Task, and e
 
 - Message shape and session file format: see ADR 0001 and the section below.
 - Session files live under `~/.helyx/sessions/<project>/<session>.jsonl`.
-- Ten events: `agent_start`, `agent_end`, `turn_start`, `turn_end`, `message_start`, `message_update`, `message_end`, `tool_execution_start`, `tool_execution_end`, `queue_update`. Each carries the session id, the turn id (nil on the queue drain between turns), and a sequence number.
+- Eleven events: `agent_start`, `agent_end`, `turn_start`, `turn_end`, `message_start`, `message_update`, `message_end`, `tool_execution_start`, `tool_execution_end`, `queue_update`, `model_change`. Each carries the session id, the turn id (nil on the queue drain between turns and on every `model_change`), and a sequence number.
 
 ### Session file
 
@@ -123,7 +133,10 @@ Bounds:
 | Project directory slug | Last 100 characters of the slugged cwd | Collisions are disambiguated by the header `cwd` |
 | Prompt text | Must be valid UTF-8 | `{:error, :invalid_utf8}` at the client boundary |
 | Steer and follow-up queues | 32 entries each; entry text is human input, size accepted as unbounded (#29) | The session returns `{:error, :queue_full}` |
-| `cwd` and model on create | Must be valid UTF-8 | `{:error, {:create_failed, :invalid_utf8}}` |
+| `cwd` on create | Must be valid UTF-8. `SessionFile.create` checks the model too, but a session rejects a bad model earlier, see the model ref row | `{:error, {:create_failed, :invalid_utf8}}` |
+| Model ref (`--model`, `Session.set_model/2`, the `/model` argument, the model of a resumed file) | Valid UTF-8, at most 256 bytes, `provider/model` with both parts present, no whitespace and no Unicode category C character (control, format, unassigned), so a printed ref carries no terminal control sequence. Characters that show as nothing (U+3164, U+2800, a variation selector) are accepted, so two refs that look the same can differ; the effect is cosmetic | `{:error, {:invalid_model_ref, ref}}`; the error holds the caller's own string, and a TUI notice shows at most the provider id, never the whole ref |
+| `/model` command line in the composer | A line is a command line when it starts with `/model` after any run of Unicode whitespace and category C characters (a pasted BOM, a zero width space). A command line is never sent as a message. The word must end the line or be followed by at least one such character; the rest of the line, trimmed, is the ref. The input widget drops control characters from a paste, so a pasted tab is not a separator. The TUI reads only the head of the line and does not split or measure the rest: the composer is unbounded human input (#29), and the model ref row bounds the argument, size first | No ref, or no separator after the word (`/models`, `/modelfake/x`), shows `usage: /model provider/model`; a ref with whitespace or a category C character inside, or over the size, is an invalid model ref; the text stays in the composer. A prompt cannot start with `/model`. The rule does not cover looks: a line with an invisible character inside the word (`/mo` U+200B `del`), an invisible character outside category C before it (U+3164, U+034F, a variation selector), or a homoglyph is a message and goes to the model as a prompt. No pattern closes that class; accepted, the cost is that of a typo, and no trust boundary is crossed. A category C character after the ref is not trimmed, so such a ref is an invalid model ref |
+| Model change entries per session file | One per accepted switch, human-paced, each at most about 650 bytes (a 256-byte ref of `"` or `\` characters doubles in JSON, plus `id`, `parent_id`, and `ts`); the count is bounded only by the 64 MiB file limit on resume | See the session file row |
 | SSE line from the model gateway | 1 MiB, terminated or not; the buffer overshoots by at most one transport chunk | One `{:error, {:line_over_limit, limit}}` event ends the stream |
 | Tool call bytes per response (argument fragments with a flat charge each, ids, names, entry keys, a flat charge per call) | 10 MiB across all calls, overshooting by at most one line; integer call indexes at most 10,000 | One `{:error, {:tool_call_bytes_over_limit, limit}}` event ends the stream; no partial call is emitted |
 | HTTP error response body | 16 KiB; the accumulator overshoots by at most one transport chunk | The body is cut to valid UTF-8 at the limit and marked `[truncated at the N-byte limit]`; the rest of the response is cancelled |
@@ -145,6 +158,7 @@ Two more holes are open and accepted for checkpoint one. Nothing locks a session
 - ex_ratatui, alternate screen. The TUI is `Helyx.TUI` in `plugins/bundled`, defined only when `ex_ratatui` is loaded (ADR 0005). It implements no Core interface and is not in Core's plugin list: it is a client that subscribes to one session. Local delivery is OTP messages from `Helyx.Session.subscribe/1`; a Transport interface arrives with the first remote client.
 - The view model is a pure fold over events, `Helyx.TUI.ViewModel`, tested with scripted event lists. It grows with the conversation, bounded by the session. The composer is human input; its size is accepted as unbounded, like a queue entry's text (#29). Tool results render at most four content lines each, plus one truncation row naming the hidden line count.
 - Escape aborts. Enter sends a steer during a turn and a prompt when idle. Alt plus Enter queues a follow-up: most terminals cannot tell Shift+Enter from Enter without the kitty keyboard protocol, so Alt is the modifier. The status bar shows the model, the run state, and the queue counts.
+- `/model provider/model` in the composer switches the model through `Session.set_model/2`, idle or during a turn. It is the only command. The rule is on bytes, not on looks: a line that starts with `/model`, after whitespace and category C characters, is never sent as a message, and any other text is a message; see the bounds table for the exact rule and its limit. The status bar changes when the `model_change` event arrives, not when the call returns, so the view model stays a fold over events. A rejected switch adds a notice cell (`ViewModel.notice/2`, client-local like the composer) and keeps the text in the composer.
 - Queued steers are delivered together at the next provider call. On a harness turn, a steer aborts and resends (see Harness turns).
 - The `helyx` Mix task lives in `apps/coding_agent`. `mix helyx [directory] [--model provider/model] [--resume]` starts Core with the bundled plugins, one session in `directory` (default: the current one), and the TUI, and quitting restores the terminal. The session is written under `~/.helyx/sessions`; `--resume` continues the most recent session for the directory with its saved model, so it does not combine with `--model`.
 

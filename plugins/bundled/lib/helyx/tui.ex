@@ -31,6 +31,8 @@ if Helyx.TUI.Available.available?() do
         movement, Home/End, Delete, Backspace)
       * Enter sends the composer as a steer (a prompt when no turn runs)
       * Alt+Enter sends it as a follow-up
+      * `/model provider/model` in the composer switches the model; the next
+        turn uses it. A rejected ref shows a notice and stays in the composer
       * Escape aborts the running turn
       * Ctrl+C quits and restores the terminal
 
@@ -147,20 +149,10 @@ if Helyx.TUI.Available.available?() do
           {:noreply, state}
 
         text ->
-          sent =
-            if "alt" in key.modifiers do
-              Session.follow_up(state.session, text)
-            else
-              Session.steer(state.session, text)
-            end
-
-          # A rejected message (full queue, bad UTF-8) stays in the composer.
-          case sent do
-            :ok -> ExRatatui.text_input_set_value(state.input, "")
-            {:error, _reason} -> :ok
+          case command(text) do
+            {:model, ref} -> {:noreply, switch_model(ref, state)}
+            :message -> {:noreply, send_message(text, key, state)}
           end
-
-          {:noreply, state}
       end
     end
 
@@ -180,6 +172,59 @@ if Helyx.TUI.Available.available?() do
     end
 
     def handle_event(_event, state), do: {:noreply, state}
+
+    # `/model` is the only command. The rule is on bytes, not on looks; the
+    # feature doc's bounds table holds the rule and its limit. The input
+    # widget drops control characters from a paste, so `/model<tab>a/b`
+    # arrives as `/modela/b`: no separator after the word, so the usage
+    # notice. The ref goes to `Helyx.ModelRef` unsplit, which owns its bounds.
+    # The widget holds only valid UTF-8; the `u` flag raises on anything else.
+    defp command(text) do
+      case Regex.run(~r/\A[\s\p{C}]*\/model([\s\p{C}]*)/u, text, return: :index) do
+        nil -> :message
+        [{0, head}, {_, 0}] when head < byte_size(text) -> {:model, ""}
+        [{0, head}, _] -> {:model, String.trim(binary_part(text, head, byte_size(text) - head))}
+      end
+    end
+
+    defp send_message(text, key, state) do
+      sent =
+        if "alt" in key.modifiers do
+          Session.follow_up(state.session, text)
+        else
+          Session.steer(state.session, text)
+        end
+
+      # A rejected message (full queue, bad UTF-8) stays in the composer.
+      case sent do
+        :ok -> ExRatatui.text_input_set_value(state.input, "")
+        {:error, _reason} -> :ok
+      end
+
+      state
+    end
+
+    defp switch_model("", state),
+      do: %{state | vm: ViewModel.notice(state.vm, "usage: /model provider/model")}
+
+    # The status bar follows the session's `:model_change` event, not this
+    # call. A rejected ref stays in the composer, under a notice.
+    defp switch_model(ref, state) do
+      case Session.set_model(state.session, ref) do
+        :ok ->
+          ExRatatui.text_input_set_value(state.input, "")
+          state
+
+        {:error, reason} ->
+          %{state | vm: ViewModel.notice(state.vm, model_error(reason))}
+      end
+    end
+
+    # A notice shows at most the provider id, which the ref bounds cap.
+    defp model_error({:unknown_provider, id}), do: "unknown provider: #{id}"
+    defp model_error({:ambiguous_provider, id}), do: "two providers have the id #{id}"
+
+    defp model_error({:invalid_model_ref, _ref}), do: "invalid model ref: use provider/model"
 
     @impl true
     def render(state, frame) do

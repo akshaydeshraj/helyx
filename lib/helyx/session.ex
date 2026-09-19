@@ -53,8 +53,10 @@ defmodule Helyx.Session do
     # The turn in progress. `partial` is the assistant content so far as a
     # reversed block list, or nil before the first stream event. `calls` are
     # the tool calls still to answer, the head running.
-    @enforce_keys [:id]
-    defstruct [:id, :task, :partial, calls: []]
+    # `model` and `provider` are fixed when the turn starts, so a model switch
+    # during the turn takes effect on the next one.
+    @enforce_keys [:id, :model, :provider]
+    defstruct [:id, :model, :provider, :task, :partial, calls: []]
   end
 
   defmodule State do
@@ -94,8 +96,7 @@ defmodule Helyx.Session do
     # The file is created only after the plugins resolve, which narrows the
     # window for an orphan file from a failed start. A supervisor failure
     # after this point still leaves one; the feature doc records that hole.
-    with {:ok, ref} <- ModelRef.parse(Keyword.fetch!(opts, :model)),
-         {:ok, provider} <- Helyx.Provider.find(core, ref.provider),
+    with {:ok, {ref, provider}} <- resolve_model(core, Keyword.fetch!(opts, :model)),
          {:ok, _tools} <- Helyx.Tool.by_name(core),
          {:ok, file} <- create_file(opts[:sessions_dir], id, cwd, ref) do
       start_child(%State{
@@ -126,8 +127,7 @@ defmodule Helyx.Session do
     cwd = Keyword.get_lazy(opts, :cwd, &File.cwd!/0)
 
     with {:ok, resumed} <- SessionFile.resume(dir, cwd),
-         {:ok, ref} <- ModelRef.parse(resumed.model),
-         {:ok, provider} <- Helyx.Provider.find(core, ref.provider),
+         {:ok, {ref, provider}} <- resolve_model(core, resumed.model),
          {:ok, _tools} <- Helyx.Tool.by_name(core) do
       start_child(%State{
         id: resumed.session_id,
@@ -138,6 +138,15 @@ defmodule Helyx.Session do
         file: resumed.file,
         transcript: resumed.messages
       })
+    end
+  end
+
+  # A model ref string to its parsed ref and its provider plugin, for start,
+  # resume, and a switch alike.
+  defp resolve_model(core, string) do
+    with {:ok, ref} <- ModelRef.parse(string),
+         {:ok, provider} <- Helyx.Provider.find(core, ref.provider) do
+      {:ok, {ref, provider}}
     end
   end
 
@@ -211,6 +220,27 @@ defmodule Helyx.Session do
   end
 
   @doc """
+  Switches the session's model. The ref is parsed and its provider resolved
+  like the `:model` of `start/2`; a bad ref, an unknown provider, or a
+  provider id that two plugins share is an error and the model stays as it
+  was. The switch is written to the session
+  file as a `model_change` entry, so a resume restores it, and goes out as a
+  `:model_change` event. A running turn keeps the model it started with; the
+  next turn uses the new one.
+  """
+  @spec set_model(t(), String.t()) ::
+          :ok
+          | {:error,
+             {:invalid_model_ref, String.t()}
+             | {:unknown_provider, String.t()}
+             | {:ambiguous_provider, String.t()}}
+  def set_model(%__MODULE__{id: id, core: core}, string) when is_binary(string) do
+    with {:ok, {ref, provider}} <- resolve_model(core, string) do
+      GenServer.call(via(core, id), {:set_model, ref, provider})
+    end
+  end
+
+  @doc """
   Aborts the running turn. Returns after the hands have killed every process
   the turn started, so a prompt sent next starts on a clean working
   directory. Each tool call without a result gets an `aborted` error result,
@@ -277,6 +307,13 @@ defmodule Helyx.Session do
 
   def handle_call(:model, _from, %State{model: ref} = state) do
     {:reply, ModelRef.to_string(ref), state}
+  end
+
+  def handle_call({:set_model, %ModelRef{} = ref, provider}, _from, %State{} = state) do
+    model = ModelRef.to_string(ref)
+    file = persist(state.file, &SessionFile.append_model_change(&1, model))
+    state = %{state | model: ref, provider: provider, file: file}
+    {:reply, :ok, do_emit(state, nil, :model_change, %{model: model})}
   end
 
   def handle_call(:abort, _from, %State{turn: nil} = state), do: {:reply, :ok, state}
@@ -375,7 +412,8 @@ defmodule Helyx.Session do
 
   # Starts a turn with one user message per text, in order.
   defp begin_turn(%State{} = state, texts) do
-    state = %{state | turn: %Turn{id: Helyx.Id.new()}}
+    turn = %Turn{id: Helyx.Id.new(), model: state.model, provider: state.provider}
+    state = %{state | turn: turn}
     state = state |> emit(:agent_start, %{}) |> emit(:turn_start, %{})
     start_provider_call(Enum.reduce(texts, state, &append_user(&2, &1)))
   end
@@ -429,8 +467,8 @@ defmodule Helyx.Session do
   defp start_provider_call(%State{turn: %Turn{id: turn_id} = turn} = state) do
     session = self()
     core = state.core
-    provider = state.provider
-    model = state.model.model
+    provider = turn.provider
+    model = turn.model.model
     base = %Context{messages: state.transcript, tools: state.tools}
     opts = [core: core, session_id: state.id, turn_id: turn_id, cwd: state.cwd]
 
@@ -539,18 +577,20 @@ defmodule Helyx.Session do
   # Appends a completed message to the transcript and, when the session has
   # a file, to disk. Streamed partial messages never come through here.
   defp append_message(%State{} = state, %Message{} = message) do
-    %{state | transcript: state.transcript ++ [message], file: persist(state.file, message)}
+    file = persist(state.file, &SessionFile.append_message(&1, message))
+    %{state | transcript: state.transcript ++ [message], file: file}
   end
 
-  defp persist(nil, _message), do: nil
+  defp persist(nil, _append), do: nil
 
-  defp persist(file, message) do
-    SessionFile.append_message(file, message)
+  defp persist(file, append) do
+    append.(file)
   rescue
-    # A disk failure must not take the session down. The turn goes on with
-    # the in-memory transcript; persistence stays off for this session. Only
+    # A disk failure must not take the session down. The turn, or the model
+    # switch, goes on in memory; persistence stays off for this session. Only
     # the disk write is caught: a value the file cannot encode is rejected
-    # at the stream boundary (see consume/3), so an encode error here is a
+    # at the stream boundary (see consume/3), and a model ref by
+    # `ModelRef.parse/1`, so an encode error here is a
     # bug and crashes loudly rather than silently losing the rest of the
     # session.
     error in File.Error ->
@@ -605,12 +645,12 @@ defmodule Helyx.Session do
   end
 
   # The assistant message for the current turn, from the blocks so far.
-  defp assistant_message(%State{turn: %Turn{partial: partial}} = state, fields) do
+  defp assistant_message(%State{turn: %Turn{partial: partial, model: model}}, fields) do
     struct!(
       %Message{
         role: :assistant,
         content: Enum.reverse(partial),
-        model: ModelRef.to_string(state.model)
+        model: ModelRef.to_string(model)
       },
       fields
     )

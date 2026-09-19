@@ -16,6 +16,20 @@ defmodule Helyx.TUI.Test.Tool.Slow do
   end
 end
 
+defmodule Helyx.TUI.Test.Provider.Other do
+  @moduledoc false
+  # A second provider module, so a test can switch away from Fake and back.
+  @behaviour Helyx.Provider
+
+  @impl true
+  def id, do: "other"
+
+  @impl true
+  def stream(_model, _context, _opts) do
+    {:ok, [{:text_delta, "from other"}, {:done, %{stop_reason: :end_turn, usage: %{}}}]}
+  end
+end
+
 defmodule Helyx.TUITest do
   # The app callbacks, driven directly: mount subscribes the caller, key
   # events edit and send the composer, session events fold into the view
@@ -30,7 +44,8 @@ defmodule Helyx.TUITest do
 
   setup do
     core = :"tui_core_#{System.unique_integer([:positive])}"
-    start_supervised!({Helyx.Core, name: core, plugins: [Fake, Helyx.TUI.Test.Tool.Slow]})
+    plugins = [Fake, Helyx.TUI.Test.Provider.Other, Helyx.TUI.Test.Tool.Slow]
+    start_supervised!({Helyx.Core, name: core, plugins: plugins})
     %{core: core}
   end
 
@@ -253,5 +268,166 @@ defmodule Helyx.TUITest do
     assert String.duplicate("s", 30) in texts
     assert String.duplicate("s", 5) in texts
     assert Enum.all?(texts, &(String.length(&1) <= 30))
+  end
+
+  describe "/model" do
+    defp submit(state, text) do
+      {:noreply, state} = TUI.handle_event(%ExRatatui.Event.Paste{content: text}, state)
+      press(state, "enter")
+    end
+
+    defp fold_model_change(state) do
+      assert_receive {:helyx_event, %Event{type: :model_change} = event}, 1_000
+      {:noreply, state} = TUI.handle_info({:helyx_event, event}, state)
+      state
+    end
+
+    defp status_text(state) do
+      [_transcript, _composer, {%{text: %{spans: [span | _]}}, _area}] =
+        TUI.render(state, %{width: 80, height: 24})
+
+      span.content
+    end
+
+    defp last_answer(state), do: Helyx.Message.text(List.last(state.vm.cells))
+
+    test "a valid ref switches provider for the next turn, and back", %{core: core} do
+      state = mounted(core, "switch", [["from fake"]])
+      assert status_text(state) =~ "fake/switch"
+
+      state = state |> submit("/model other/any") |> fold_model_change()
+      assert ExRatatui.text_input_get_value(state.input) == ""
+      assert status_text(state) =~ "other/any"
+      assert Session.model(state.session) == "other/any"
+
+      state = state |> submit("hi") |> drain()
+      assert last_answer(state) == "from other"
+
+      state = state |> submit("  /model \u00A0 fake/switch ") |> fold_model_change()
+      assert status_text(state) =~ "fake/switch"
+      state = state |> submit("hi") |> drain()
+      assert last_answer(state) == "from fake"
+    end
+
+    test "a rejected ref shows a notice and changes nothing", %{core: core} do
+      state = mounted(core, "stay", [])
+
+      for {text, notice} <- [
+            {"/model nope/any", "unknown provider: nope"},
+            {"/model fake", "invalid model ref"},
+            {"/model fake/" <> String.duplicate("m", 252), "invalid model ref"},
+            {"/model", "usage: /model"},
+            {"/model fake/a b", "invalid model ref"},
+            {"/model\u00A0fake/a\u00A0b", "invalid model ref"},
+            {"/model \u00A0 ", "usage: /model"}
+          ] do
+        ExRatatui.text_input_set_value(state.input, "")
+        state = submit(state, text)
+
+        assert {:notice, shown} = List.last(state.vm.cells)
+        assert shown =~ notice
+        # At most the provider id: never the whole ref, whatever its size.
+        assert byte_size(shown) < 80
+        assert ExRatatui.text_input_get_value(state.input) == text
+        assert status_text(state) =~ "fake/stay"
+        assert Session.model(state.session) == "fake/stay"
+      end
+
+      refute_receive {:helyx_event, _}, 50
+    end
+
+    test "a line that starts with /model but has no separator shows usage and is never sent",
+         %{core: core} do
+      state = mounted(core, "plain", [["ok"]])
+
+      # The widget drops a pasted tab, so the third line arrives as "/modelfake/x".
+      for text <- ["/models are fun", "/model-x", "/model\tfake/x"] do
+        ExRatatui.text_input_set_value(state.input, "")
+        state = submit(state, text)
+        assert {:notice, "usage: /model" <> _} = List.last(state.vm.cells)
+        assert ExRatatui.text_input_get_value(state.input) != ""
+      end
+
+      refute_receive {:helyx_event, _}, 50
+
+      # A slash elsewhere, or another first word, is a message.
+      ExRatatui.text_input_set_value(state.input, "")
+      state = state |> submit("see /model") |> drain()
+      assert last_answer(state) == "ok"
+    end
+
+    test "during a turn, with Enter or Alt+Enter, the command is never queued", %{core: core} do
+      call = %Helyx.Message.ToolCall{
+        id: "c",
+        name: "slow",
+        arguments: %{"ms" => 60_000, "text" => "x"}
+      }
+
+      state = mounted(core, "busy", [[call]])
+      state = submit(state, "go")
+      assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
+
+      for {text, model} <- [{"/model other/any", "other/any"}, {"/model fake/busy", "fake/busy"}] do
+        {:noreply, _} = TUI.handle_event(%ExRatatui.Event.Paste{content: text}, state)
+        press(state, "enter", if(model == "other/any", do: ["alt"], else: []))
+        assert_receive {:helyx_event, %Event{type: :model_change, data: %{model: ^model}}}
+        assert ExRatatui.text_input_get_value(state.input) == ""
+      end
+
+      # A rejected command stays in the composer, and nothing joins a queue.
+      {:noreply, _} = TUI.handle_event(%ExRatatui.Event.Paste{content: "/model nope/x"}, state)
+      state = press(state, "enter", ["alt"])
+      assert {:notice, "unknown provider: nope"} = List.last(state.vm.cells)
+      assert ExRatatui.text_input_get_value(state.input) == "/model nope/x"
+      assert Session.queue_count(state.session) == %{steers: 0, follow_ups: 0}
+      refute_receive {:helyx_event, %Event{type: :queue_update}}, 50
+
+      :ok = Session.abort(state.session)
+    end
+
+    test "the rule is on bytes: a line that only looks like the command is a message", %{
+      core: core
+    } do
+      # The stated limit of the rule (feature doc, bounds table): an invisible
+      # character inside the word, one outside category C before it, and a
+      # homoglyph each make a message.
+      lines = ["/mo\u200Bdel other/any", "\u3164/model other/any", "/mo\u0434el other/any"]
+      state = mounted(core, "looks", Enum.map(lines, fn _ -> ["ok"] end))
+
+      for text <- lines do
+        ExRatatui.text_input_set_value(state.input, "")
+        state = state |> submit(text) |> drain()
+        assert last_answer(state) == "ok"
+        assert Session.model(state.session) == "fake/looks"
+      end
+    end
+
+    test "invisible characters around the command word do not hide it", %{core: core} do
+      state = mounted(core, "bom", [])
+
+      for text <- [
+            "\uFEFF/model other/any",
+            "/model\u200Bother/any",
+            "\u2060 /model\u180E other/any"
+          ] do
+        :ok = Session.set_model(state.session, "fake/bom")
+        assert_receive {:helyx_event, %Event{type: :model_change}}
+        ExRatatui.text_input_set_value(state.input, "")
+        submit(state, text)
+        assert_receive {:helyx_event, %Event{type: :model_change, data: %{model: "other/any"}}}
+        assert ExRatatui.text_input_get_value(state.input) == ""
+      end
+
+      # Inside the ref, or after it, such a character is the ref's problem:
+      # it is not trimmed, so the ref is rejected, and nothing is sent.
+      for text <- ["/model fake/a\u200Bb", "/model fake/ab\u200B"] do
+        ExRatatui.text_input_set_value(state.input, "")
+        state = submit(state, text)
+        assert {:notice, "invalid model ref" <> _} = List.last(state.vm.cells)
+        assert ExRatatui.text_input_get_value(state.input) == text
+      end
+
+      refute_receive {:helyx_event, _}, 50
+    end
   end
 end
