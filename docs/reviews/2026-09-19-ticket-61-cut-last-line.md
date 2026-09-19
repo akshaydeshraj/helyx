@@ -37,5 +37,5 @@ bounds sensor skipped: TYPESAFE_API_KEY is not set
 
 - Spec: 1 finding, docs. The first sentence of the "tool result text" row still gave the rule without the condition. Fixed in `docs/features/coding-agent.md`. This change is Markdown only, so it needs no more rounds.
 - Failure path: 2 reproduced findings, both older than this ticket and outside its acceptance criteria. Not applied; reported to the orchestrator.
-  - When every line after the shown lines is blank, the named offset returns `""`. Example: 2000 lines, then one blank line. The blank lines are lines by the rule of `truncate/2` ("trailing blank lines count toward the limits"), so the empty read is the true content. If this must change, it needs a decision about how blank lines count. Ticket pending.
-  - `Helyx.Tool.Read` ignores an `offset` that is not an integer (`2001.0`, `"2001"`) and reads from line 1 without an error. Ticket pending.
+  - When every line after the shown lines is blank, the named offset returns `""`. Example: 2000 lines, then one blank line. The blank lines are lines by the rule of `truncate/2` ("trailing blank lines count toward the limits"), so the empty read is the true content. If this must change, it needs a decision about how blank lines count. The orchestrator accepted this: the empty read is the true content of the file, so no ticket.
+  - `Helyx.Tool.Read` ignores an `offset` that is not an integer (`2001.0`, `"2001"`) and reads from line 1 without an error. Ticket #75.
