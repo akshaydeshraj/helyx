@@ -92,6 +92,6 @@ bounds sensor skipped: TYPESAFE_API_KEY is not set
 
 - Spec: 0 findings. One optional test row, `-0.0`. Added.
 - Failure path: 0 findings in the diff. 1 older defect outside the ticket.
-  - The session encodes the arguments of every tool call to JSON for the session file (`lib/helyx/session_file.ex`, `JSON.encode!`). The cost is quadratic in the digits of a large integer: 161 ms for 100,000 digits, 2,483 ms for 400,000 digits. `Helyx.Tool.Read.run/2` takes 3 microseconds for the same value. Any tool with any integer argument has this cost. Not applied. The doc row says `ticket pending`, and the worker reported it to the orchestrator.
+  - The session encodes the arguments of every tool call to JSON for the session file (`lib/helyx/session_file.ex`, `JSON.encode!`). The cost is quadratic in the digits of a large integer: 161 ms for 100,000 digits, 2,483 ms for 400,000 digits. `Helyx.Tool.Read.run/2` takes 3 microseconds for the same value. Any tool with any integer argument has this cost. Not applied. The orchestrator filed #78 for the empty result and #79 for the slow integer, and accepted the missing `limit`.
 
 The changes after round 4 were one test row and Markdown, so no more rounds were necessary.
