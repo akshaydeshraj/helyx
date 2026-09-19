@@ -46,11 +46,13 @@ defmodule Mix.Tasks.Helyx do
       CodingAgent.run(
         model: Keyword.get(opts, :model, @default_model),
         cwd: cwd,
-        resume: Keyword.get(opts, :resume, false)
+        resume: Keyword.get(opts, :resume, false),
+        # Application env so that a test points the task at its own directory.
+        sessions_dir: Application.get_env(:coding_agent, :sessions_dir)
       )
 
     with {:error, reason} <- result do
-      Mix.raise("could not start the agent: #{inspect(reason)}")
+      Mix.raise("could not start the agent: #{CodingAgent.error_text(reason)}")
     end
   end
 end

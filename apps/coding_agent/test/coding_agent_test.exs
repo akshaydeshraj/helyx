@@ -78,6 +78,27 @@ defmodule CodingAgentTest do
              CodingAgent.start_session(core: core, cwd: dir, sessions_dir: dir, resume: true)
   end
 
+  test "error_text turns the remaining shapes into text" do
+    assert CodingAgent.error_text(:not_regular) =~ "not a regular file"
+    assert CodingAgent.error_text(:eacces) == "permission denied"
+    assert CodingAgent.error_text(:queue_full) == ":queue_full"
+    assert CodingAgent.error_text({:repair_failed, "x"}) =~ ~s(session file: "x")
+
+    assert CodingAgent.error_text({:create_failed, :enospc}) =~
+             "create the session file: no space"
+
+    assert CodingAgent.error_text({:tool_unavailable, "bash", "perl not found"}) ==
+             "the bash tool is not available: perl not found"
+
+    assert CodingAgent.error_text({:ambiguous_provider, "x"}) =~ ~s(two providers have the id "x")
+    assert CodingAgent.error_text({:too_large, "a\nb\e[2J"}) == "a b?[2J"
+    assert CodingAgent.error_text({:invalid_file, <<"a", 0xFF, 0, "b">>}) =~ "damaged: a??b"
+    refute CodingAgent.error_text({:repair_failed, %{__struct__: MapSet, map: 1}}) =~ "\n"
+    assert CodingAgent.error_text({:create_failed, :invalid_utf8}) =~ "file: the directory or"
+    assert CodingAgent.error_text({:terminal_init_failed, "no tty"}) =~ "did not start: no tty"
+    assert CodingAgent.error_text({:some, "other"}) == ~s({:some, "other"})
+  end
+
   defp collect_until(type, acc \\ []) do
     receive do
       {:helyx_event, %Event{type: ^type} = event} -> Enum.reverse([event | acc])
