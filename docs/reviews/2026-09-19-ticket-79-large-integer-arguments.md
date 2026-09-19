@@ -8,12 +8,12 @@ Entry points: three. The provider Task in `start_provider_call/1` and `consume/3
 
 Documented exceptions:
 
-- An integer of more than about 1,262,611 digits (4,194,304 bits) is over the integer size limit of the BEAM. `JSON.decode/1` in the provider raises `SystemLimitError`. The provider Task exits and the turn fails in 5 ms with no tool result. The session accepts the next prompt. A clean error is a change in the provider, ticket pending.
+- An integer of more than about 1,262,611 digits (4,194,304 bits) is over the integer size limit of the BEAM. `JSON.decode/1` in the provider raises `SystemLimitError`. The provider Task exits and the turn fails in 5 ms with no tool result. The session accepts the next prompt. A clean error is a change in the provider, accepted with no ticket.
 - The time of the JSON decode in the provider is before the check. It is bounded by the limit above: 197 ms at most.
 - A second call of the same assistant message that is equal to a rejected call after the replacement (same id, same name, same capped arguments) is also not run. A call with the same id and other arguments runs.
 - A struct that holds such an integer becomes the marker string as a whole.
-- A provider that raises or exits with such an integer in the reason: the crash report of the Task makes the digit text before the session gets the `:DOWN` message (3,062 ms for 400,000 digits in round 3). The session caps the reason that it puts in the events, but the turn is slow and the log holds the digits. Providers are compiled into the node. Ticket pending.
-- A session file that a person changed can hold a large integer in a field that is not arguments or usage. `SessionFile.resume/2` then makes digit text in its error: 3,035 ms for 400,000 digits as the entry `type` (`inspect/1`), 18.8 s for 1,000,000 digits as the `content` (`Exception.message/1`). This is older than #79 and is not a value from a provider. Ticket pending.
+- A provider that raises or exits with such an integer in the reason: the crash report of the Task makes the digit text before the session gets the `:DOWN` message (3,062 ms for 400,000 digits in round 3). The session caps the reason that it puts in the events, but the turn is slow and the log holds the digits. Providers are compiled into the node. Accepted with no ticket.
+- A session file that a person changed can hold a large integer in a field that is not arguments or usage. `SessionFile.resume/2` then makes digit text in its error: 3,035 ms for 400,000 digits as the entry `type` (`inspect/1`), 18.8 s for 1,000,000 digits as the `content` (`Exception.message/1`). This is older than #79 and is not a value from a provider. Accepted with no ticket.
 - A float is not changed. Its encode is short at any size of the source text.
 - The `usage` map of a `:done` event gets the same replacement in `consume/3` (round 1). No tool result exists for it, so the turn goes on with the marker string where a token count was. The usage stays a plain map, and no code in `lib`, `plugins/bundled/lib`, or `apps` does arithmetic on it.
 
@@ -156,7 +156,7 @@ Bounds sensor: `bounds sensor skipped: TYPESAFE_API_KEY is not set`.
   - A struct in place of the usage map, `usage: %Date{year: huge}`: the guard `is_map/1` accepts a struct, the function made it a string, and `map_size/1` in `SessionFile.encode_message/1` raised `BadMapError`. The session and the hands died with no `agent_end`.
   - A struct in place of the arguments map: the turn was correct, but the file held a string as `arguments`, and `Session.resume` rejected the file.
   - Fixed: the two guards in `consume/3` have `not is_struct(...)`. Arguments or a usage that are a struct are a malformed stream event. `cap_integers/1` returns a map for a plain map, so the type that the session file needs holds. The session test has both cases and a second prompt.
-- Failure path, outside the ticket: `SessionFile.resume/2` with a session file line whose `type` is an integer of 400,000 digits takes 3,035 ms, because `check_entries/1` calls `inspect/1` on it, and the error holds the digits. The value is not from a provider and is not tool call arguments. It is older than this ticket. Ticket pending.
+- Failure path, outside the ticket: `SessionFile.resume/2` with a session file line whose `type` is an integer of 400,000 digits takes 3,035 ms, because `check_entries/1` calls `inspect/1` on it, and the error holds the digits. The value is not from a provider and is not tool call arguments. It is older than this ticket. Accepted with no ticket.
 - Probed with no defect: prompts, steers, the model ref, and tool results accept only binaries. A resume with 400,000 digits in `usage` takes 38 ms.
 
 The fix is 3 changed lines of code in one file, with no new function. The guards change which events `consume/3` accepts, so this is in doubt. Round 5 is a full round.
@@ -194,7 +194,7 @@ Bounds sensor: `bounds sensor skipped: TYPESAFE_API_KEY is not set`.
 - Failure path: 0 findings on the invariant.
   - Held: the struct `:done` payload, struct error reasons, a call id or name of a wrong type, a 3-tuple tool call event, a bad stop reason with the integer, a stream with no terminal after a rejected call, a rejected call as the only call, as the last call, and between two good calls with its id, the reset of `rejected` for the next provider call, and an abort with the session suspended while the terminal and the abort were in its mailbox.
   - A resume of a file with 1,000,000 digits in the arguments or the usage takes about 125 ms.
-  - Outside the ticket: a file that a person changed, with 1,000,000 digits as the `content` of a message, makes `SessionFile.resume/2` take 18.8 s, because `Exception.message/1` formats the digits. It is older than this ticket. Ticket pending, with the `type` case of round 4.
+  - Outside the ticket: a file that a person changed, with 1,000,000 digits as the `content` of a message, makes `SessionFile.resume/2` take 18.8 s, because `Exception.message/1` formats the digits. It is older than this ticket. Accepted with no ticket, with the `type` case of round 4.
 
 The changes after round 6 are Markdown and comments in a test support file. No code changed, so no more rounds are necessary.
 
