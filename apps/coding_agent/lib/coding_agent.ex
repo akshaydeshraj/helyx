@@ -47,6 +47,67 @@ defmodule CodingAgent do
     end
   end
 
+  @doc """
+  Returns one sentence on one line that tells the user about an error from
+  `run/1`. It has a clause for every shape of `t:Helyx.SessionFile.error/0`,
+  for the model ref and provider errors, and for a tool that is not
+  available. The `:too_large` text is a sentence already and passes
+  unchanged. An error with no clause prints through `inspect/1`. Every result
+  gets one clean pass: a whitespace run becomes one space, and a control
+  character or a byte that is not UTF-8 becomes `?`.
+  """
+  @spec error_text(term()) :: String.t()
+  def error_text(reason) do
+    reason
+    |> sentence()
+    |> String.replace_invalid("?")
+    |> String.split()
+    |> Enum.join(" ")
+    |> String.replace(~r/\p{C}/u, "?")
+  end
+
+  defp sentence(:not_found),
+    do: "no saved session for this directory; start one without --resume"
+
+  defp sentence(:not_regular), do: "the session file is not a regular file"
+  defp sentence({:too_large, text}) when is_binary(text), do: text
+
+  # The text can be an exception message, and some of those have many lines.
+  defp sentence({:invalid_file, text}) when is_binary(text),
+    do: "the session file is damaged: " <> text
+
+  defp sentence({:unknown_version, version}),
+    do: "the session file has version #{inspect(version)}, which this build cannot read"
+
+  defp sentence({:repair_failed, reason}),
+    do: "could not repair the session file: " <> sentence(reason)
+
+  defp sentence({:create_failed, reason}),
+    do: "could not create the session file: " <> sentence(reason)
+
+  # The ref stays out, as in the TUI notice: only a valid ref has a bound.
+  defp sentence({:invalid_model_ref, _ref}), do: "the model ref is not valid; use provider/model"
+  defp sentence({:unknown_provider, id}), do: "no provider has the id #{inspect(id)}"
+  defp sentence({:ambiguous_provider, id}), do: "two providers have the id #{inspect(id)}"
+
+  defp sentence({:tool_unavailable, name, reason}) when is_binary(name) and is_binary(reason),
+    do: "the #{name} tool is not available: #{reason}"
+
+  defp sentence({:terminal_init_failed, text}) when is_binary(text),
+    do: "the terminal did not start: " <> text
+
+  defp sentence(:invalid_utf8), do: "the directory or the model ref is not UTF-8"
+
+  # A POSIX code gets its system text. Any other atom is not one.
+  defp sentence(reason) when is_atom(reason) do
+    case :file.format_error(reason) do
+      ~c"unknown POSIX error" ++ _ -> inspect(reason)
+      text -> to_string(text)
+    end
+  end
+
+  defp sentence(reason), do: inspect(reason)
+
   # A session that dies right after starting must reach the task's
   # `{:error, reason}` surface, not exit the VM with a raw dump.
   defp fetch_model(session) do
@@ -63,7 +124,7 @@ defmodule CodingAgent do
   def start_session(opts) do
     core = Keyword.get(opts, :core, Helyx.Core)
     cwd = Keyword.fetch!(opts, :cwd)
-    dir = Keyword.get_lazy(opts, :sessions_dir, fn -> Path.expand("~/.helyx/sessions") end)
+    dir = opts[:sessions_dir] || Path.expand("~/.helyx/sessions")
 
     if opts[:resume] do
       Helyx.Session.resume(core, sessions_dir: dir, cwd: cwd)
