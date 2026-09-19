@@ -434,6 +434,201 @@ defmodule Helyx.TUITest do
     assert Enum.all?(texts, &(String.length(&1) <= 30))
   end
 
+  describe "scrollback" do
+    # A 20 by 9 terminal: the transcript has 5 rows. Each message is one row
+    # and one empty row. `resize/2` gives the terminal a new size.
+    defp size, do: Process.get(:terminal_size, {20, 9})
+
+    defp resize(state, size) do
+      Process.put(:terminal_size, size)
+      {:noreply, state} = TUI.handle_event(%ExRatatui.Event.Resize{}, state)
+      state
+    end
+
+    defp fold(state, type, data) do
+      event = %Event{type: type, session_id: "s", turn_id: "t", seq: 0, data: data}
+      {:noreply, state} = TUI.handle_info({:helyx_event, event}, state)
+      state
+    end
+
+    defp scroll_state(core, count) do
+      :ok = Fake.script(core, "scroll", [["ok"]])
+      {:ok, session} = Session.start(core, model: "fake/scroll")
+
+      {:ok, state} =
+        TUI.mount(session: session, model: "fake/scroll", terminal_size_fn: &size/0)
+
+      Enum.reduce(1..count//1, state, &say(&2, "m#{&1}"))
+    end
+
+    defp say(state, text), do: fold(state, :message_end, %{message: Helyx.Message.user(text)})
+
+    defp screen(state) do
+      {width, height} = size()
+      [{%Paragraph{text: lines}, _rect} | _] = TUI.render(state, %{width: width, height: height})
+      for line <- lines, span <- line.spans, do: span.content
+    end
+
+    test "PgUp and PgDn move one screen, new output does not move the view", %{core: core} do
+      state = scroll_state(core, 10)
+      assert screen(state) == ["› m9", "› m10"]
+      refute status_text(state) =~ "scrolled"
+
+      state = press(state, "page_up")
+      assert screen(state) == ["› m6", "› m7", "› m8"]
+      assert status_text(state) =~ "scrolled"
+
+      state = say(state, "new")
+      assert screen(state) == ["› m6", "› m7", "› m8"]
+
+      state = press(state, "page_down")
+      assert screen(state) == ["› m9", "› m10"]
+      assert status_text(state) =~ "scrolled"
+
+      state = press(state, "page_down")
+      assert screen(state) == ["› m10", "› new"]
+      refute status_text(state) =~ "scrolled"
+    end
+
+    test "the offset stops at the first row, and the same count of PgDn returns", %{core: core} do
+      state = scroll_state(core, 6)
+      up = Enum.reduce(1..50, state, fn _, acc -> press(acc, "page_up") end)
+      assert screen(up) == ["› m1", "› m2", "› m3"]
+
+      down = up |> press("page_down") |> press("page_down")
+      assert down.scroll == nil
+      assert screen(down) == ["› m5", "› m6"]
+    end
+
+    test "a transcript that fits the screen does not scroll", %{core: core} do
+      state = core |> scroll_state(2) |> press("page_up")
+      assert state.scroll == nil
+      assert press(state, "page_down").scroll == nil
+    end
+
+    test "a position holds only when the rows to the end are more than one screen", %{core: core} do
+      # 5 rows are one screen: a message of two rows, one of one row, and an
+      # empty row after each. 4 rows and 5 rows do not scroll, 6 rows do.
+      five = core |> scroll_state(0) |> say(String.duplicate("a", 30)) |> say("b")
+      assert press(five, "page_up").scroll == nil
+      assert press(scroll_state(core, 2), "page_up").scroll == nil
+      assert press(scroll_state(core, 3), "page_up").scroll == {0, 0}
+    end
+
+    test "after a resize the row of the position is a row of its cell", %{core: core} do
+      state = core |> scroll_state(0) |> say(String.duplicate("word ", 200))
+      state = Enum.reduce(1..30, state, &say(&2, "m#{&1}"))
+      state = Enum.reduce(1..13, state, fn _, acc -> press(acc, "page_up") end)
+      assert {0, row} = state.scroll
+      assert row > 20
+
+      # At width 200 the first cell has 6 rows and the empty row.
+      wide = resize(state, {200, 9})
+      assert {index, row} = wide.scroll
+      assert index > 0 and row < 2
+      assert length(screen(wide)) in 2..3
+    end
+
+    test "an event at a moment with no terminal size returns to the newest output", %{core: core} do
+      state = core |> scroll_state(10) |> press("page_up")
+      Process.put(:terminal_size, {:error, :no_tty})
+      assert say(state, "new").scroll == nil
+    end
+
+    test "Ctrl+End and a sent prompt return to the newest output", %{core: core} do
+      state = core |> scroll_state(10) |> press("page_up")
+      assert press(state, "end", ["ctrl"]).scroll == nil
+
+      sent = state |> press("h") |> press("enter")
+      assert sent.scroll == nil
+      assert drain(sent).scroll == nil
+    end
+
+    test "with no terminal size the scroll keys return to the newest output", %{core: core} do
+      state = scroll_state(core, 10)
+      scrolled = press(state, "page_up")
+      Process.put(:terminal_size, {:error, :no_tty})
+      assert press(state, "page_up").scroll == nil
+      assert press(scrolled, "page_up").scroll == nil
+      assert press(scrolled, "page_down").scroll == nil
+    end
+
+    test "a notice while the view is in the open message keeps the row in its cell", %{core: core} do
+      text = Enum.map_join(1..40, "\n", &"line#{&1}")
+
+      state =
+        core
+        |> scroll_state(1)
+        |> fold(:message_start, %{message: %Helyx.Message{role: :assistant, content: []}})
+        |> fold(:message_update, %{text_delta: text})
+        |> press("page_up")
+        |> press("page_up")
+
+      assert {1, row} = state.scroll
+      {:noreply, state} = TUI.handle_event(%ExRatatui.Event.Paste{content: "/model"}, state)
+      # The usage notice has three rows at width 20 and takes index 1.
+      assert press(state, "enter").scroll == {2, row - 3}
+    end
+
+    test "one screen is the height minus 4 rows, and 1 row at that height or less", %{core: core} do
+      for {height, rows} <- [{6, 2}, {5, 1}, {4, 1}, {3, 1}, {0, 1}] do
+        Process.put(:terminal_size, {20, 9})
+        state = scroll_state(core, 10)
+        Process.put(:terminal_size, {20, height})
+        # Row 19 is the empty row after m10, and row 18 is m10.
+        assert press(state, "page_up").scroll == {div(20 - 2 * rows, 2), rem(20 - 2 * rows, 2)}
+      end
+    end
+
+    test "the view moves by rows in a cell of wide glyphs, and no row is past the width",
+         %{core: core} do
+      # 60 glyphs of two columns at width 20: 6 rows, then the empty row.
+      state = core |> scroll_state(0) |> say(String.duplicate("語", 59)) |> say("end")
+      up = press(state, "page_up")
+      assert up.scroll == {0, 0}
+
+      assert screen(up) ==
+               ["› " <> String.duplicate("語", 9)] ++ List.duplicate(String.duplicate("語", 10), 4)
+
+      down = press(up, "page_down")
+      assert down.scroll == nil
+      glyphs = String.duplicate("語", 10)
+      assert screen(down) == [glyphs, glyphs, "› end"]
+    end
+
+    test "a failed turn while the view is in the open message returns to the newest output",
+         %{core: core} do
+      text = Enum.map_join(1..40, "\n", &"line#{&1}")
+
+      state =
+        core
+        |> scroll_state(1)
+        |> fold(:message_start, %{message: %Helyx.Message{role: :assistant, content: []}})
+        |> fold(:message_update, %{text_delta: text})
+        |> press("page_up")
+        |> press("page_up")
+
+      assert {1, _row} = state.scroll
+      assert screen(state) == Enum.map(27..31, &"line#{&1}")
+
+      for data <- [%{stop_reason: :aborted}, %{stop_reason: :error, error: :boom}] do
+        ended = fold(state, :agent_end, data)
+        assert ended.scroll == nil
+        assert "› m1" in screen(ended)
+        refute status_text(ended) =~ "scrolled"
+      end
+    end
+
+    test "a wider terminal never leaves the screen empty", %{core: core} do
+      state = core |> scroll_state(0) |> say(String.duplicate("word ", 60)) |> press("page_up")
+      assert {0, _row} = state.scroll
+
+      wide = resize(state, {200, 9})
+      assert wide.scroll == nil
+      assert screen(wide) != []
+    end
+  end
+
   describe "/model" do
     defp submit(state, text) do
       {:noreply, state} = TUI.handle_event(%ExRatatui.Event.Paste{content: text}, state)
