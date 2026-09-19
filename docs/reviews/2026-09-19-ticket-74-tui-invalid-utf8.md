@@ -9,7 +9,7 @@ Documented exceptions:
 - `text_input_set_value/2` does not go through `edit/3`. It gets only the literal `""`.
 - The status bar reason field of #46 does not exist. The reject shows as a notice cell.
 - The count of notice cells from rejected events has no limit. Accepted: no known source sends such text.
-- The invariant covers text only. A `%Key{}` with `modifiers: nil` raises in the generic key clause (`key.modifiers -- ["shift"]`). This is older than #74, and ExRatatui always gives a list. Ticket pending.
+- The invariant covers text only. A `%Key{}` with `modifiers: nil` raises in the generic key clause (`key.modifiers -- ["shift"]`). This is older than #74, and ExRatatui always gives a list. Accepted with no ticket.
 
 Probe before the change: `text_input_insert_str/2` and `text_input_handle_key/2` both raise `ArgumentError` on `<<0xFF>>`. The ticket names only the first.
 
@@ -40,6 +40,10 @@ bounds sensor skipped: TYPESAFE_API_KEY is not set
   - Applied: the doc row now says that each rejected event adds one cell and that the count has no limit.
 - Failure path: 34 throwaway cases, 0 defects in the change.
   - Held: a lone surrogate, an overlong form, a truncated sequence, U+110000, `nil`, an integer, a charlist, a list, an atom. Accepted as valid: U+10FFFF, a ZWJ emoji, a BOM, `""`, 10 MB of multibyte text, NUL.
-  - Outside the change: `modifiers: nil` raises. See the exceptions. Ticket pending.
+  - Outside the change: `modifiers: nil` raises. See the exceptions. Accepted with no ticket.
 
 The fixes of this round changed only Markdown, so no rerun round was necessary.
+
+## Codex round 1
+
+One finding, not confirmed against this ticket. A notice cell that arrives during a tool run hides the tool result, because `ViewModel.attach_result/2` looks only at the last cell. The defect is older than #74: on master, a rejected `/model` command during a tool run does the same. It is ticket #83. The 48 probes of the UTF-8 guard held.
