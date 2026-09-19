@@ -4,3 +4,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 
 | Date | Ticket | Ship findings per round | Codex findings per round | System change |
 |---|---|---|---|---|
+| 2026-09-19 | #38 | simplify 2, round 1: 11, round 2: 0 | round 1: 0 | none needed |

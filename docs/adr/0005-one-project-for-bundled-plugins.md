@@ -1,0 +1,40 @@
+# One Mix project holds all bundled plugins
+
+Until ticket #38 every bundled plugin was its own Mix project under `plugins/<name>`: nine projects, each with a lock file, a `precommit` alias, a dependency list, and a Dialyzer PLT. With the root and the coding agent app that made eleven projects. Root `mix precommit` built eleven PLTs, a dependency change meant a fetch in every project, and a new plugin started as a copy of project boilerplate. No product used the isolation that this cost gave: the one product depends on all nine.
+
+## Decision
+
+One Mix project, `plugins/bundled`, app `:helyx_plugins`, holds all bundled plugins and depends on the root by path. This reverses "one Mix project per plugin".
+
+The layout follows scikit-learn. Core holds the interfaces. The bundled project holds the default implementations that ship with Helyx. A product depends on `:helyx_plugins` and registers the modules it wants; selection stays by module, through registration, as before. Contrib and external plugins stay separate packages under their own module root (`Acme.Provider.Bedrock`).
+
+Module names and registration entries do not change. `Helyx.Provider.Fake` stays a normal module, not `only: :test`, because the coding agent app and other plugins' tests use it.
+
+### The optional-dependency rule
+
+A heavy or native dependency of one bundled plugin is declared `optional: true` in the bundled project, and the modules that need it are defined only when it is loaded: a `Code.ensure_loaded?/1` guard around the `defmodule`. A product that wants such a plugin adds the dependency to its own deps. `ex_ratatui` (a Rust NIF) is the first case: `Helyx.TUI` exists only when `ExRatatui.App` is loaded, and the coding agent app lists `ex_ratatui`. `Helyx.TUI.ViewModel` needs nothing from `ex_ratatui`, so it has no guard.
+
+The guard alone is not enough. Mix does not treat a module that appears later as a reason to recompile, and it reaches a stale source only through a module that the source defines; a guarded file that defined no module is never compiled again. So the guarded file also defines a small module that always exists (`Helyx.TUI.Available`) with `__mix_recompile__?/0`, which Mix asks on every compile. Both parts are necessary. Measured on 2026-09-18 with Elixir 1.19.5, on a product that adds the optional dependency after its first build and then removes it:
+
+- The guarded file defines no module: the add leaves a build without `Helyx.TUI`. A hook in a module in a different file does not help.
+- The always-present module with no hook, in a toy project: the remove leaves the stale guarded module in the build.
+- Both parts: add, remove, and add again each give the correct build.
+
+A small, pure Elixir dependency is a normal dependency. `req` is the first case. `plug` stays `only: :test`.
+
+## Considered options
+
+- Keep one project per plugin. Rejected: the cost above, with no product that uses the isolation.
+- Two projects, for example providers and tools. Rejected for now: split later only if a real product needs it.
+- Move the bundled plugins into the root project. Rejected: Core stays small, and the root would gain `req` and `ex_ratatui`.
+
+## Consequences
+
+- Eleven Mix projects become three: root, `plugins/bundled`, `apps/coding_agent`. Three lock files, three PLTs.
+- A new bundled plugin is a directory of modules and tests in `plugins/bundled`, not a project.
+- Given up: per-plugin dependency isolation. A product that wants only the read tool still fetches and compiles `req` and every other normal dependency of the bundled project. The optional-dependency rule bounds this for heavy deps only.
+- Given up: a compile-time check that one plugin does not call another. All bundled modules now share one project, so only review can find such a call.
+- A guarded module that is absent is a run-time error, not a compile-time error. A call to it is an `UndefinedFunctionError`, and Core rejects it in a plugin list with `{:error, {:not_a_plugin, module}}`. The fix is the product's dep list.
+- When `__mix_recompile__?/0` answers true, Mix touches `lib/helyx/tui.ex` to force the compile, and the next Mix command prints a note that it reset the file's mtime. Content does not change.
+- Application env keys follow the app: the OpenAI provider's test seam moved from `:req_options` of `:helyx_provider_openai` to `:openai_req_options` of `:helyx_plugins`. All bundled plugins share that app, so a key names its plugin.
+- The per-plugin test helpers merged into one `test_helper.exs`.
