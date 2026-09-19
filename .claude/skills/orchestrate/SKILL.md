@@ -19,6 +19,15 @@ At most two workers at one time. Parallel precommit runs slow each other down mo
 
 One worker per ticket, as an Agent with `isolation: "worktree"` on branch `ticket/<n>-<slug>` from `origin/master`. Its brief: run `/implement <n>`, which ends in `/ship`; commit on the branch; do not push, open a PR, or merge; report the invariant of the change, the review counts per round, and anything it could not decide. A worker that cannot decide something stops and reports. It does not guess.
 
+Every brief also says:
+
+- Check that each item the ticket names (argument, function, option) exists before you build on it.
+- Never print the machine environment (`System.get_env/0`, `env`, `printenv`) in a test, an assertion message, or a review probe. Put this rule in every review brief.
+- Report a wider scope before the next review round when a fix passes 100 code lines.
+- A bound that the docs state must also hold in the render path, not only at the entry points.
+
+A worker that stopped before its final report (a usage limit, a wait for its own agents) is resumed with SendMessage. Do not start a second worker for the ticket.
+
 ## 3. Codex review
 
 In the worker's worktree, in the foreground:
@@ -28,7 +37,7 @@ codex_dir=$(/bin/ls -d "$HOME"/.claude/plugins/cache/openai-codex/codex/*/ | sor
 node "${codex_dir}scripts/codex-companion.mjs" adversarial-review "--wait --base origin/master <the invariant of the change, one sentence>"
 ```
 
-The invariant sentence names every exception that the feature doc already states (for example, the write-failure policy of the session file) and every open hole that has a ticket. A reviewer that does not know a documented exception reports it as a defect.
+The invariant sentence names the entry points it covers, every accepted hole, every exception that the feature doc already states (for example, the write-failure policy of the session file) and every open hole that has a ticket. A reviewer that does not know a documented exception reports it as a defect.
 
 Judge every finding yourself. Reproduce it or read the code. A reviewer's claim is not a fact.
 
@@ -56,7 +65,8 @@ Serial, one ticket at a time:
 2. Precommit into the log, as `AGENTS.md` says. It must pass after the rebase, not before it. The same failure twice: park.
 3. Push. `gh pr create` with a body that contains `Closes #<n>`. No attribution lines.
 4. `gh pr merge --merge --delete-branch`. Confirm the issue closed; close it with a pointer to the PR when it did not.
-5. Remove the worktree. Recompute the frontier. Rebase the other live branch before its own gate.
+5. Run each step only when the step before it passed (`&&`, not `;`): a failed `gh pr create` must not reach the cleanup. Before the push, `grep -rn "icket pending"` over the docs and the code must find no open item.
+6. Remove the worktree. Recompute the frontier. Rebase the other live branch before its own gate.
 
 ## Park
 
