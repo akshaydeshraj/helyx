@@ -63,7 +63,7 @@ Round 2 changed no code after the simplify step; the changes after the review ar
 ## Outside the ticket
 
 - `PERL_UNICODE=I`: ticket #71 (above). A note for #71: `binmode` on the go-ahead pipe and on the watchdog's standard handles is the likely fix, and it also makes `PERL_UNICODE=i` run the command in place of the error that #70 gives.
-- `PERL5OPT=-d`, older than #70, ticket pending: the perl debugger takes the watchdog's stdin, no marker comes, and `read_marker/4` waits without a limit. When the calling process died, the watchdog and its child stayed alive; the child had not called `setpgrp`. No command ran. Found by the round 2 spec agent; the bounds row names it.
+- `PERL5OPT=-d`, older than #70, ticket #71: the perl debugger takes the watchdog's stdin, no marker comes, and `read_marker/4` waits without a limit. When the calling process died, the watchdog and its child stayed alive; the child had not called `setpgrp`. No command ran. Found by the round 2 spec agent; the bounds row names it.
 - The round 1 failure-path reproduction left a watchdog and a stopped child alive (the defect it reported). They were killed by pid after round 2.
 
 ## Precommit
