@@ -8,7 +8,7 @@ defmodule Helyx.SessionFile do
   `"session"`, and carries the format version, the working directory, and
   the model. Only completed messages are appended, never streamed partials.
 
-  `resume/2` picks the most recently started session for a working
+  `resume/3` picks the most recently started session for a working
   directory, repairs a torn last line by truncating to the end of the last
   line that parses, and restores the transcript as written. Answering open
   tool calls is the session's job, not the file's.
@@ -18,13 +18,21 @@ defmodule Helyx.SessionFile do
 
   @version 1
 
+  # A resume loads the file whole into the calling process, so the file has a
+  # limit. Compaction is out of scope, so a session past it starts anew.
+  @max_bytes 64 * 1024 * 1024
+
+  # The scan for the most recent session reads this much of every file in
+  # the project directory. A header holds a cwd and a model ref.
+  @max_header_bytes 65_536
+
   @enforce_keys [:path]
   defstruct [:path, :leaf]
 
   @type t :: %__MODULE__{path: Path.t(), leaf: String.t() | nil}
 
   defmodule Resumed do
-    @moduledoc "What `resume/2` restores: the file, the session id, the model, and the transcript."
+    @moduledoc "What `resume/3` restores: the file, the session id, the model, and the transcript."
     @enforce_keys [:file, :session_id, :model, :messages]
     defstruct [:file, :session_id, :model, :messages]
 
@@ -42,6 +50,8 @@ defmodule Helyx.SessionFile do
           | File.posix()
           | {:unknown_version, term()}
           | {:invalid_file, String.t()}
+          | {:too_large, String.t()}
+          | :not_regular
           | {:repair_failed, File.posix()}
           | {:create_failed, File.posix() | :invalid_utf8}
 
@@ -76,19 +86,38 @@ defmodule Helyx.SessionFile do
 
   Returns the file handle, the session id, the current model, and the
   transcript in file order.
+
+  A file over the limit of #{@max_bytes} bytes is rejected as
+  `{:too_large, text}` and is not mutated. The read itself stops one byte
+  past the limit, so a file that grows during the call is rejected too. A
+  session file has a header line of at most #{@max_header_bytes} bytes; the
+  scan for the most recent session reads no more than that of any file.
+
+  `:max_bytes` lowers the file limit. It exists so that a test reaches the
+  limit with a small file.
   """
-  @spec resume(Path.t(), String.t()) :: {:ok, Resumed.t()} | {:error, error()}
-  def resume(dir, cwd) do
+  @spec resume(Path.t(), String.t(), max_bytes: pos_integer()) ::
+          {:ok, Resumed.t()} | {:error, error()}
+  def resume(dir, cwd, opts \\ []) do
+    # Outside the rescue below: a bad option is the caller's bug and raises,
+    # it is not reported as a bad file.
+    resume_within(dir, cwd, Keyword.get(opts, :max_bytes, @max_bytes))
+  end
+
+  # The option only lowers the limit, so the read count stays one the OS takes.
+  defp resume_within(dir, cwd, max_bytes) when max_bytes in 1..@max_bytes//1 do
     with {:ok, path, header} <- most_recent(project_dir(dir, cwd), cwd),
          :ok <- check_version(header),
-         {:ok, raw} <- File.read(path),
-         {entries, kept, rest} = parse(raw),
+         {:ok, raw} <- read_up_to(path, max_bytes + 1),
+         :ok <- check_size(byte_size(raw), max_bytes),
+         {entries, kept_bytes, tail} = parse(raw, [], 0),
+         :ok <- check_size(repaired_size(kept_bytes, tail), max_bytes),
          :ok <- check_entries(entries),
          model = current_model(header, entries),
          messages = for(%{"type" => "message"} = entry <- entries, do: decode_message(entry)),
          # The repair write comes last, after every check passed, so a
          # file this function rejects is never mutated.
-         :ok <- repair(path, kept, rest) do
+         :ok <- repair(path, kept_bytes, tail) do
       {:ok,
        %Resumed{
          file: %__MODULE__{path: path, leaf: List.last(entries)["id"]},
@@ -151,7 +180,7 @@ defmodule Helyx.SessionFile do
   end
 
   # A field value this format does not know misses its decode clause; the
-  # rescue in resume/2 turns that into a rejected file.
+  # rescue in resume/3 turns that into a rejected file.
   defp decode_message(entry) do
     %Message{
       role: decode_role(entry["role"]),
@@ -262,10 +291,11 @@ defmodule Helyx.SessionFile do
     end
   end
 
-  # The fun form of File.open closes the handle on every path.
+  # A header line over the bound is cut, does not decode, and the file is
+  # not a session.
   defp read_header(path) do
-    with {:ok, line} when is_binary(line) <-
-           File.open(path, [:read, :binary], &IO.binread(&1, :line)),
+    with {:ok, head} <- read_up_to(path, @max_header_bytes),
+         [line | _] = String.split(head, "\n", parts: 2),
          {:ok, %{"type" => "session"} = header} <- JSON.decode(line) do
       {:ok, header}
     else
@@ -273,41 +303,80 @@ defmodule Helyx.SessionFile do
     end
   end
 
-  # Splits the file into the leading run of lines that parse as entries
-  # and the remainder, for `repair/3` to judge.
-  defp parse(raw) do
-    lines = String.split(raw, "\n")
-
-    entries =
-      lines
-      |> Stream.map(&JSON.decode/1)
-      |> Enum.take_while(&match?({:ok, %{"type" => _}}, &1))
-      |> Enum.map(&elem(&1, 1))
-
-    {kept, rest} = Enum.split(lines, length(entries))
-    {entries, kept, rest}
+  # At most `bytes` from the start of a regular file. A pipe or a device
+  # would block the open or never end. The fun form of File.open closes the
+  # handle on every path.
+  defp read_up_to(path, bytes) do
+    with {:ok, %File.Stat{type: :regular}} <- File.stat(path),
+         {:ok, data} when is_binary(data) <-
+           File.open(path, [:read, :binary], &IO.binread(&1, bytes)) do
+      {:ok, data}
+    else
+      {:ok, %File.Stat{}} -> {:error, :not_regular}
+      {:ok, :eof} -> {:ok, ""}
+      {:ok, {:error, _reason} = error} -> error
+      {:error, _reason} = error -> error
+    end
   end
 
-  # A clean file is the entries plus one "" chunk from the final newline. A
-  # torn append is a prefix of `entry\n`, so it can only be one trailing
-  # chunk with no newline: an entry that survived whole gets its newline
+  # The newline that the repair gives back to a whole last entry counts, or
+  # the repair would make a file that the next resume rejects.
+  defp repaired_size(kept_bytes, :no_newline), do: kept_bytes + 1
+  defp repaired_size(kept_bytes, _tail), do: kept_bytes
+
+  defp check_size(size, max_bytes) when size <= max_bytes, do: :ok
+
+  defp check_size(_size, max_bytes) do
+    {:error,
+     {:too_large, "the session file is over the #{max_bytes}-byte limit; start a new session"}}
+  end
+
+  # Walks the leading run of lines that parse as entries, one line at a
+  # time, and stops at the first that does not, so a file of many short
+  # lines never becomes a list of all its lines. Returns the entries, the
+  # byte size of the kept lines with their newlines, and what follows them,
+  # for `repair/3` to judge.
+  defp parse("", entries, kept_bytes), do: {Enum.reverse(entries), kept_bytes, :clean}
+
+  defp parse(raw, entries, kept_bytes) do
+    {line, rest} =
+      case :binary.split(raw, "\n") do
+        [line, rest] -> {line, rest}
+        [line] -> {line, :eof}
+      end
+
+    case {JSON.decode(line), rest} do
+      {{:ok, %{"type" => _} = entry}, :eof} ->
+        {Enum.reverse([entry | entries]), kept_bytes + byte_size(line), :no_newline}
+
+      {{:ok, %{"type" => _} = entry}, rest} ->
+        parse(rest, [entry | entries], kept_bytes + byte_size(line) + 1)
+
+      {_bad, :eof} ->
+        {Enum.reverse(entries), kept_bytes, :torn}
+
+      {_bad, _rest} ->
+        {Enum.reverse(entries), kept_bytes, {:bad_line, length(entries) + 1}}
+    end
+  end
+
+  # A torn append is a prefix of `entry\n`, so it can only be the last
+  # line, with no newline: an entry that survived whole gets its newline
   # back, a partial one is truncated away in place. An append and an
   # in-place truncate cannot lose the kept entries the way a full rewrite
   # could if it crashed mid-write. A bad line mid-file never comes from a
   # torn append, and truncating there would delete good entries after it,
   # so it is a malformed file. A repair that cannot write is an environment
   # failure, not a malformed file.
-  defp repair(_path, _kept, [""]), do: :ok
+  defp repair(_path, _kept_bytes, :clean), do: :ok
 
-  defp repair(path, _kept, []), do: repaired(File.write(path, "\n", [:append]))
+  defp repair(path, _kept_bytes, :no_newline),
+    do: repaired(File.write(path, "\n", [:append]))
 
-  defp repair(path, kept, [_torn]) do
-    # Every kept line plus its newline.
-    repaired(truncate(path, IO.iodata_length(kept) + length(kept)))
-  end
+  defp repair(path, kept_bytes, :torn), do: repaired(truncate(path, kept_bytes))
 
-  defp repair(_path, kept, _rest),
-    do: {:error, {:invalid_file, "unparsable line #{length(kept) + 1}"}}
+  defp repair(_path, _kept_bytes, {:bad_line, number}),
+    do: {:error, {:invalid_file, "unparsable line #{number}"}}
 
   defp repaired(:ok), do: :ok
   defp repaired({:error, reason}), do: {:error, {:repair_failed, reason}}
