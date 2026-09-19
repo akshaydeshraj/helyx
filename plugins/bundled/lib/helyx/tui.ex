@@ -426,8 +426,21 @@ if Helyx.TUI.Available.available?() do
       end
     end
 
+    # The row skip stays in the first cell: a row past that cell shows its last
+    # row. A frame can come before the check of a new width, and a skip over
+    # all rows would wrap every cell that the old row number passes.
     defp rows_from(items, {index, row}, width) do
-      items |> Enum.drop(index) |> Stream.flat_map(&item_lines(&1, width)) |> Stream.drop(row)
+      case Enum.drop(items, index) do
+        [] ->
+          []
+
+        [first | rest] ->
+          lines = item_lines(first, width)
+
+          lines
+          |> Enum.drop(min(row, length(lines) - 1))
+          |> Stream.concat(Stream.flat_map(rest, &item_lines(&1, width)))
+      end
     end
 
     @doc false

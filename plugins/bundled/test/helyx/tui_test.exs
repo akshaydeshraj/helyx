@@ -529,6 +529,30 @@ defmodule Helyx.TUITest do
       assert length(screen(wide)) in 2..3
     end
 
+    test "a frame before the Resize event wraps only the cells on the screen", %{core: core} do
+      state = core |> scroll_state(0) |> say(String.duplicate("a", 8_000))
+      state = Enum.reduce(1..100, state, &say(&2, "m#{&1}"))
+      state = Enum.reduce(1..61, state, fn _, acc -> press(acc, "page_up") end)
+      assert {0, row} = state.scroll
+      assert row > 200
+
+      # The width changes, a typing key comes, and a frame is drawn. No check
+      # of the position ran: the old row is far past the 41 rows of the cell.
+      Process.put(:terminal_size, {200, 9})
+      state = press(state, "x")
+      assert {0, ^row} = state.scroll
+
+      wrap = {TUI, :item_lines, 2}
+      :erlang.trace_pattern(wrap, true, [:local, :call_count])
+      rows = screen(state)
+      {:call_count, wraps} = :erlang.trace_info(wrap, :call_count)
+      :erlang.trace_pattern(wrap, false, [:local, :call_count])
+
+      # The last row of the first cell is its empty row, then the next cells.
+      assert wraps <= 5
+      assert rows == ["› m1", "› m2"]
+    end
+
     test "an event at a moment with no terminal size returns to the newest output", %{core: core} do
       state = core |> scroll_state(10) |> press("page_up")
       Process.put(:terminal_size, {:error, :no_tty})

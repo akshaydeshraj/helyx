@@ -60,6 +60,17 @@ The fix removed `screen/1` and added `on_screen/2`, so the round was full.
 
 The fix of round 4 is Markdown only, so there is no round 5.
 
+## Codex round 1
+
+One confirmed finding: `rows_from/3` ran `Stream.drop(row)` after the `flat_map` of the cells. A row number past its cell made a frame wrap the next cells to use up the offset. The reproduction: an 80,000-character first message, 1,000 short messages, 401 PgUp at 20 by 9 to `{0, 3992}`, a new size of 200 by 9, a typing key, and a render before the `Resize` event. Result: 1,001 `item_lines/2` calls and no row on the screen.
+
+The invariant: a frame wraps only the first cell of the view and the cells that fill the screen, whatever the stored row number is. Fixed: the row skip applies only to the first cell, and a row past that cell shows its last row. The check across cells stays at the state entry points, in `hold/4`. One test, "a frame before the Resize event wraps only the cells on the screen", counts the `item_lines/2` calls with `:erlang.trace_pattern/3`: 101 before the fix, 3 after it. Exception 2 of the bounds row has the new text.
+
+The fix: 14 lines added and 1 removed in one code file, no new function, no change of arity or spec. Round type: reduced (spec and failure-path). Bounds sensor: `bounds sensor skipped: TYPESAFE_API_KEY is not set`.
+
+- Failure-path: no finding. The reproduction gave 3 wraps. 11 positions crossed with 7 frame sizes, an empty cell list, an index past the end, a one-row cell, width 0, and the open message as the first cell gave no extra wrap and no raise.
+- Spec: no wrong claim. Two gaps in the row, both in the window before the `Resize` event: a scroll key pays the one-time cost of the check (852 to 857 cells in the probe), and a PgUp moves from the corrected position, so it can show rows below the old ones. Both are now in exception 2. Markdown only, so no more rounds.
+
 ## Outside the ticket
 
 - A scroll position with an identity, so that a cell at the index of the open message does not move the view: accepted with no ticket for checkpoint one.
