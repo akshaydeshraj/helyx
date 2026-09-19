@@ -56,4 +56,4 @@ The fix: 9 lines added and 3 removed in `lib/helyx/session.ex`, one code file, n
 
 ## Defects outside the ticket
 
-- An unknown message to an idle session stops it with a `FunctionClauseError`, because `handle_info/2` of `Helyx.Session` has no last clause for all states. Master has the same behaviour. While `aborting` is set, the new clause drops such a message. Ticket pending.
+- An unknown message to an idle session stops it with a `FunctionClauseError`, because `handle_info/2` of `Helyx.Session` has no last clause for all states. Master has the same behaviour. While `aborting` is set, the new clause drops such a message. Ticket #95.
