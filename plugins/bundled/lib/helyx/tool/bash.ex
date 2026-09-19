@@ -36,10 +36,30 @@ defmodule Helyx.Tool.Bash do
   # group without cutting the cleanup short; ignored dispositions survive
   # exec, so the child must not inherit one. The 50 ms select tick is the
   # poll for both stdin and the child.
+  #
+  # The watchdog enters the working directory itself, before the fork. The
+  # port's cd option has no failure signal: the emulator's child exits with
+  # status 2, which a real command can also do. A chdir, pipe, or fork that
+  # fails writes the marker with `0`, which is never a group id, then the
+  # reason, and no command exists.
+  #
+  # A marker line is "<nonce> <number>". The nonce is random for each call
+  # and reaches the watchdog in its arguments only. The command is held
+  # until the go-ahead, so no command output can come before the marker.
+  # perl's own startup output can, because stderr is merged: a bad locale
+  # warning prints environment values, which can hold any line. It cannot
+  # hold the nonce, so no text can pass for a marker; `read_marker/4` reads
+  # past the rest. perl code that the user's environment loads into the
+  # watchdog (PERL5LIB, PERL5OPT) can read the nonce; that is the user's own
+  # code and out of scope.
   @watchdog ~S"""
   use POSIX ":sys_wait_h";
-  pipe(my $r, my $w) or exit 91;
-  my $child = fork() // exit 91;
+  my $nonce = shift @ARGV;
+  sub fail { syswrite(STDOUT, "$nonce 0\n$_[0]: $!"); exit 0 }
+  my $dir = shift @ARGV;
+  chdir($dir) or fail("cannot enter the working directory $dir");
+  pipe(my $r, my $w) or fail("pipe failed");
+  my $child = fork() // fail("fork failed");
   if ($child == 0) {
     close($w);
     setpgrp(0, 0);
@@ -50,7 +70,7 @@ defmodule Helyx.Tool.Bash do
   }
   $SIG{TERM} = "IGNORE";
   close($r);
-  syswrite(STDOUT, "$child\n");
+  syswrite(STDOUT, "$nonce $child\n");
   if (defined(readline(STDIN))) { syswrite($w, "g"); close($w) }
   else { close($w); kill("KILL", -$child); waitpid($child, 0); exit 0 }
   while (1) {
@@ -103,11 +123,10 @@ defmodule Helyx.Tool.Bash do
     end
   end
 
-  # Port arguments and the cd option are NUL-terminated C strings: a string
-  # with a NUL would be cut there silently and the result would report
-  # success for something that did not run as given. JSON strings can carry
-  # an escaped NUL, so the model can send one. Every string that reaches the
-  # port is checked here.
+  # Port arguments are NUL-terminated C strings: a string with a NUL would
+  # be cut there silently and the result would report success for something
+  # that did not run as given. JSON strings can carry an escaped NUL, so the
+  # model can send one. Every string that reaches the port is checked here.
   @impl true
   def run(%{"command" => command}, cwd) when is_binary(command) do
     cond do
@@ -125,14 +144,15 @@ defmodule Helyx.Tool.Bash do
   def run(_args, _cwd), do: {:error, "bash needs a command"}
 
   defp run_command(command, cwd) do
-    {exe, args} = launcher(command)
+    nonce = Base.encode16(:crypto.strong_rand_bytes(8))
+    {exe, args} = launcher(command, cwd, nonce)
 
+    # No cd option: the watchdog enters `cwd`, so a failure has a signal.
     port =
       Port.open({:spawn_executable, exe}, [
         :binary,
         :exit_status,
         :stderr_to_stdout,
-        {:cd, cwd},
         {:args, args}
       ])
 
@@ -146,31 +166,42 @@ defmodule Helyx.Tool.Bash do
       nil -> :ok
     end
 
-    {output, dropped?, status} = consume(port)
+    case consume(port, nonce) do
+      {:not_started, reason} ->
+        {:error, "the command did not start: " <> Helyx.Tool.truncate(reason, :tail)}
 
-    {:ok, render(output, dropped?, status)}
+      {output, dropped?, status} ->
+        {:ok, render(output, dropped?, status)}
+    end
   end
 
   @doc false
   # Public for the watchdog's direct tests.
-  def launcher(command) do
+  def launcher(command, cwd, nonce) do
     bash = System.find_executable("bash") || "/bin/bash"
     perl = System.find_executable("perl") || "/usr/bin/perl"
-    {perl, ["-e", @watchdog, "--", bash, "-c", command]}
+    {perl, ["-e", @watchdog, "--", nonce, cwd, bash, "-c", command]}
   end
 
-  # Takes the group marker off the stream, registers the group, sends the
-  # go-ahead, then collects the output. The stream can end inside the marker
-  # read when the watchdog dies at once.
-  defp consume(port) do
-    {group, next} = read_marker(port, "")
+  # Takes the marker off the stream. Only a group marker leads to the
+  # go-ahead, after the group is registered: a command never runs without
+  # its group in the hands, and there is no ok result without a group marker.
+  # With no marker, the closed port is the watchdog's signal to kill the
+  # child it holds, if it got that far.
+  defp consume(port, nonce) do
+    case read_marker(port, nonce, "", "") do
+      {:not_started, acc} ->
+        {reason, _dropped?, _status} = collect(port, acc, false)
+        {:not_started, reason}
 
-    if group, do: Helyx.Tool.register_group(group)
-    if match?({:more, _}, next), do: go_ahead(port)
+      {:no_marker, text} ->
+        close(port)
+        {:not_started, "the watchdog gave no marker: " <> text}
 
-    case next do
-      {:more, acc} -> collect(port, acc, false)
-      {:exit, acc, status} -> {acc, false, status}
+      {group, acc} ->
+        Helyx.Tool.register_group(group)
+        go_ahead(port)
+        collect(port, acc, false)
     end
   end
 
@@ -178,6 +209,13 @@ defmodule Helyx.Tool.Bash do
   # exit status is still in the mailbox for the collect.
   defp go_ahead(port) do
     Port.command(port, "\n")
+  rescue
+    ArgumentError -> false
+  end
+
+  # The same for a close: after an exit the port is already closed.
+  defp close(port) do
+    Port.close(port)
   rescue
     ArgumentError -> false
   end
@@ -231,35 +269,54 @@ defmodule Helyx.Tool.Bash do
 
   defp drop_continuation(bin, _n), do: bin
 
-  # The watchdog writes "<pgid>\n" as the first stdout bytes, before the
-  # command runs, so the marker exists however fast the command exited and
-  # command output can never precede it. Reads the marker off the stream and
-  # returns the group and the leftover output, or the exit if the stream
-  # ended first. A stream that starts with anything else is kept as output.
-  defp read_marker(port, acc) do
+  # The marker line must end within this many bytes of the stream. Lines
+  # that perl itself may write before it take the room; a locale warning is
+  # about 400 bytes.
+  @max_preamble_bytes 4096
+
+  # Finds the marker line (see the watchdog). Lines that are not a marker
+  # are read past, within `@max_preamble_bytes`, and kept in front of the
+  # output. The marker exists however fast the command exited, because the
+  # watchdog writes it before the command may run. Returns the group
+  # (or `:not_started`, see the watchdog) and the output so far. A stream
+  # that ends, or reaches the limit, with no marker is `:no_marker` with its
+  # text: perl did not get as far as the watchdog, or wrote too much. Only
+  # a line that ends within the limit counts, marker or not, so which
+  # marker is found, if any, does not depend on how the stream is cut into
+  # messages. The `:no_marker` text is what had arrived by then.
+  @doc false
+  # Public for the direct test of the preamble limit.
+  def read_marker(port, nonce, pre, acc) do
     case String.split(acc, "\n", parts: 2) do
-      [line, rest] ->
-        case parse_group(line) do
-          nil -> {nil, {:more, acc}}
-          group -> {group, {:more, rest}}
+      [line, rest] when byte_size(pre) + byte_size(line) < @max_preamble_bytes ->
+        case parse_marker(line, nonce) do
+          nil -> read_marker(port, nonce, pre <> line <> "\n", rest)
+          marker -> {marker, pre <> rest}
         end
 
-      [_] when byte_size(acc) < 32 ->
+      [_] when byte_size(pre) + byte_size(acc) < @max_preamble_bytes ->
         receive do
-          {^port, {:data, data}} -> read_marker(port, acc <> data)
-          {^port, {:exit_status, status}} -> {nil, {:exit, acc, status}}
+          {^port, {:data, data}} -> read_marker(port, nonce, pre, acc <> data)
+          {^port, {:exit_status, _status}} -> {:no_marker, pre <> acc}
         end
 
-      [_] ->
-        {nil, {:more, acc}}
+      _ ->
+        {:no_marker, pre <> acc}
     end
   end
 
   # `kill -- -1` would signal every process the user may signal, so nothing
-  # below 2 is ever accepted as a group.
-  defp parse_group(line) do
-    case Integer.parse(line) do
-      {group, ""} when group > 1 -> group
+  # below 2 is ever accepted as a group. 0 is the watchdog's word for a
+  # command it could not start.
+  defp parse_marker(line, nonce) do
+    with [^nonce, number] <- String.split(line, " "),
+         {number, ""} <- Integer.parse(number) do
+      case number do
+        0 -> :not_started
+        group when group > 1 -> group
+        _ -> nil
+      end
+    else
       _ -> nil
     end
   end
