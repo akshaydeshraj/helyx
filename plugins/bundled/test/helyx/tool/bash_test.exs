@@ -161,6 +161,40 @@ defmodule Helyx.Tool.BashTest do
     assert {:ok, "0\nnope\n"} = Helyx.Tool.Bash.run(%{"command" => "echo 0; echo nope"}, dir)
   end
 
+  test "a real exit 127, 137, or 255 is an ok result (issue #70)", %{tmp_dir: dir} do
+    for {command, status} <- [{"exit 127", 127}, {"kill -KILL $$", 137}, {"exit 255", 255}] do
+      assert {:ok, text} = Helyx.Tool.Bash.run(%{"command" => command}, dir)
+      assert text == "(no output)\nExit code: #{status}"
+    end
+  end
+
+  test "a watchdog killed before the go-ahead is an error, not exit code 137 (issue #70)",
+       %{tmp_dir: dir} do
+    # Stands in for the hands. The tool gives the go-ahead only after the
+    # reply to the command group, so the kill lands before it.
+    hands =
+      spawn_link(fn ->
+        watchdog =
+          receive do
+            {:"$gen_call", from, {:register_group, watchdog, :watchdog}} ->
+              GenServer.reply(from, :ok)
+              watchdog
+          end
+
+        receive do
+          {:"$gen_call", from, {:register_group, _group, :command}} ->
+            {_, 0} = System.cmd("kill", ["-KILL", "#{watchdog}"])
+            GenServer.reply(from, :ok)
+        end
+      end)
+
+    Process.put(:helyx_hands, hands)
+    ran = Path.join(dir, "ran")
+    assert {:error, text} = Helyx.Tool.Bash.run(%{"command" => "touch #{ran}"}, dir)
+    assert text =~ "did not start"
+    refute File.exists?(ran)
+  end
+
   describe "the preamble limit of the marker read (issue #52)" do
     # A ref stands for the port. Only a buffer that ends inside a line under
     # the limit waits for a message.
