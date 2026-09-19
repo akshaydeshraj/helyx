@@ -194,24 +194,28 @@ defmodule Helyx.Tool do
     if count == length(lines), do: :all, else: {Enum.reverse(acc), count, nil}
   end
 
-  # A UTF-8 character is at most 4 bytes, so a cut lands at most 3 bytes
-  # inside one.
-  @max_cut_retreat 3
+  # A UTF-8 character is at most 4 bytes, so a cut leaves at most 3 bytes of
+  # one at the cut edge.
+  @max_partial_bytes 3
 
-  defp cut(line, :head), do: line |> binary_part(0, @max_bytes) |> on_boundary(:head)
+  defp cut(line, :head), do: line |> binary_part(0, @max_bytes) |> clean_edge(:head)
 
   defp cut(line, :tail),
-    do: line |> binary_part(byte_size(line) - @max_bytes, @max_bytes) |> on_boundary(:tail)
+    do: line |> binary_part(byte_size(line) - @max_bytes, @max_bytes) |> clean_edge(:tail)
 
-  # Drops bytes from the cut edge to land on a character boundary. Text that
-  # was not valid UTF-8 to begin with loses at most three bytes.
-  defp on_boundary(bin, keep, retreat \\ @max_cut_retreat)
-  defp on_boundary(bin, _keep, 0), do: bin
+  # In text that was valid before the cut, the only invalid bytes are the
+  # part of a character at the cut edge, so removing them loses one
+  # character. Invalid bytes anywhere else mean the text was never valid: it
+  # keeps its bytes for the hands to replace, less three at the edge.
+  defp clean_edge(bin, keep) do
+    clean = String.replace_invalid(bin, "")
+    lost = byte_size(bin) - byte_size(clean)
 
-  defp on_boundary(bin, keep, retreat) do
-    if String.valid?(bin), do: bin, else: on_boundary(drop_edge(bin, keep), keep, retreat - 1)
+    if lost <= @max_partial_bytes and clean == without_edge(bin, keep, lost),
+      do: clean,
+      else: without_edge(bin, keep, @max_partial_bytes)
   end
 
-  defp drop_edge(bin, :head), do: binary_part(bin, 0, byte_size(bin) - 1)
-  defp drop_edge(bin, :tail), do: binary_part(bin, 1, byte_size(bin) - 1)
+  defp without_edge(bin, :head, n), do: binary_part(bin, 0, byte_size(bin) - n)
+  defp without_edge(bin, :tail, n), do: binary_part(bin, n, byte_size(bin) - n)
 end

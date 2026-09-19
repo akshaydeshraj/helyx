@@ -210,9 +210,26 @@ defmodule Helyx.Tool.Bash do
     end
   end
 
+  # A character has at most three continuation bytes (`10xxxxxx`).
+  @max_continuation_bytes 3
+
   # Cuts at twice the cap so the copy is amortised, not once per chunk.
-  defp keep_tail(acc) when byte_size(acc) <= 2 * @keep_bytes, do: {acc, false}
-  defp keep_tail(acc), do: {binary_part(acc, byte_size(acc) - @keep_bytes, @keep_bytes), true}
+  # The cut can land inside a character; the rest of that character is
+  # dropped, so the kept tail starts on a character boundary. Only the start
+  # is cleaned: the end of `acc` can hold a character the next chunk completes.
+  @doc false
+  # Public for the direct test of the cut.
+  def keep_tail(acc) when byte_size(acc) <= 2 * @keep_bytes, do: {acc, false}
+
+  def keep_tail(acc) do
+    tail = binary_part(acc, byte_size(acc) - @keep_bytes, @keep_bytes)
+    {drop_continuation(tail, @max_continuation_bytes), true}
+  end
+
+  defp drop_continuation(<<2::2, _::6, rest::binary>>, n) when n > 0,
+    do: drop_continuation(rest, n - 1)
+
+  defp drop_continuation(bin, _n), do: bin
 
   # The watchdog writes "<pgid>\n" as the first stdout bytes, before the
   # command runs, so the marker exists however fast the command exited and
