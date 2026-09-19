@@ -108,7 +108,8 @@ defmodule Helyx.Tool.ReadTest do
           {[2], "an array"},
           {%{"a" => 2}, "an object"},
           {String.duplicate("😀", 100_000), "a string"},
-          {-(10 ** 100_000), below}
+          # The largest integer that the session gives to a tool (#79).
+          {-(10 ** 100 - 1), below}
         ] do
       result = run.(%{"path" => "a.txt", "offset" => bad})
       assert result.is_error
@@ -201,7 +202,8 @@ defmodule Helyx.Tool.ReadTest do
   } do
     File.write!(Path.join(dir, "a.txt"), "one\ntwo")
 
-    for offset <- [1.0e300, 1_000_000_001, Integer.pow(10, 5000)] do
+    # 100 digits: the largest integer that the session gives to a tool (#79).
+    for offset <- [1.0e300, 1_000_000_001, 10 ** 100 - 1] do
       result = run.(%{"path" => "a.txt", "offset" => offset})
       assert result.is_error
 
@@ -217,12 +219,29 @@ defmodule Helyx.Tool.ReadTest do
     File.write!(Path.join(dir, "a.txt"), String.duplicate("\n", 1_000_000))
 
     # The window code gets no big integer. With one subtraction of 100,000
-    # digits for each line, this read took seconds.
-    {micros, result} =
-      :timer.tc(fn -> run.(%{"path" => "a.txt", "offset" => Integer.pow(10, 100_000)}) end)
+    # digits for each line, this read took seconds. Since #79 the session
+    # gives a tool at most 100 digits, so this is the largest offset.
+    {micros, result} = :timer.tc(fn -> run.(%{"path" => "a.txt", "offset" => 10 ** 100 - 1}) end)
 
     assert Helyx.Message.text(result) ==
              "offset over 1000000000 is after the last line: a.txt has 1000000 lines"
+
+    assert micros < 2_000_000
+  end
+
+  test "an offset of more than 100 digits never reaches the tool (issue #79)", %{
+    tmp_dir: dir,
+    run: run
+  } do
+    File.write!(Path.join(dir, "a.txt"), "one\ntwo")
+
+    {micros, result} =
+      :timer.tc(fn -> run.(%{"path" => "a.txt", "offset" => Integer.pow(10, 100_000)}) end)
+
+    assert result.is_error
+
+    assert Helyx.Message.text(result) ==
+             "tool call not run: an integer in the arguments has more than 100 digits"
 
     assert micros < 2_000_000
   end

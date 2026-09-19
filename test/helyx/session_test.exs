@@ -34,6 +34,9 @@ defmodule Helyx.SessionTest do
     end
   end
 
+  defp turn_end_usage(events),
+    do: Enum.find(events, &(&1.type == :turn_end)).data.message.usage
+
   defp stop_reason(events), do: List.last(events).data.stop_reason
 
   # Stops the session and waits until Registry frees its name, so a resume
@@ -170,7 +173,12 @@ defmodule Helyx.SessionTest do
   end
 
   test "a malformed stream event fails the turn and the session lives", %{core: core} do
-    for {model, event} <- [garbage: {:text_delta, 42}, wide: {:text_delta, "hello", :extra}] do
+    # The reason of `wide_int` holds the marker, not the 400,000 digits (#79).
+    for {model, event} <- [
+          garbage: {:text_delta, 42},
+          wide: {:text_delta, "hello", :extra},
+          wide_int: {:text_delta, "hello", "integer of more than 100 digits removed"}
+        ] do
       {:ok, session} = Session.start(core, model: "test/#{model}")
       :ok = Session.subscribe(session)
 
@@ -189,6 +197,47 @@ defmodule Helyx.SessionTest do
 
     :ok = Session.prompt(session, "hello")
     assert {:error, :turn_running} = Session.prompt(session, "again")
+    assert stop_reason(collect_until(:agent_end)) == :end_turn
+  end
+
+  test "an error reason from a provider holds no integer over the digit limit", %{core: core} do
+    for model <- ["error_int", "refuse_int"] do
+      {:ok, session} = Session.start(core, model: "test/#{model}")
+      :ok = Session.subscribe(session)
+
+      :ok = Session.prompt(session, "hello")
+      error = List.last(collect_until(:agent_end)).data.error
+      assert error == {:oops, "integer of more than 100 digits removed"}
+    end
+  end
+
+  test "arguments or a usage that are a struct fail the turn and the session lives",
+       %{core: core} do
+    for model <- ["struct_usage", "struct_args"] do
+      {:ok, session} = Session.start(core, model: "test/#{model}")
+      :ok = Session.subscribe(session)
+
+      :ok = Session.prompt(session, "hello")
+      events = collect_until(:agent_end)
+      assert {:bad_stream_event, _} = List.last(events).data.error
+      refute Enum.any?(events, &(:erlang.external_size(&1) > 10_000))
+
+      :ok = Session.prompt(session, "again")
+      assert stop_reason(collect_until(:agent_end)) == :error
+    end
+  end
+
+  test "a done payload that is a struct with the large integer ends the turn", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/struct_done")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:agent_end)
+    assert final_text(events) == "hi"
+    assert stop_reason(events) == :end_turn
+    refute Enum.any?(events, &(:erlang.external_size(&1) > 10_000))
+
+    :ok = Session.prompt(session, "again")
     assert stop_reason(collect_until(:agent_end)) == :end_turn
   end
 
@@ -242,6 +291,47 @@ defmodule Helyx.SessionTest do
     assert %Helyx.Message{role: :tool_result, tool_name: "upcase", is_error: false} = by_id["c1"]
     assert %Helyx.Message{role: :tool_result, tool_name: "nope", is_error: true} = by_id["c2"]
     assert Helyx.Message.text(by_id["c1"]) == "HI"
+  end
+
+  test "a tool call with an integer over the digit limit gets an error result and never runs",
+       %{core: core} do
+    dir = Path.join(System.tmp_dir!(), "helyx_big_int_#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf!(dir) end)
+    {:ok, session} = Session.start(core, model: "test/big_int", sessions_dir: dir)
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    # One encode of the 400,000 digits takes seconds. collect_until/1 waits
+    # at most 1 s for each event, so a slow encode fails the test.
+    events = collect_until(:agent_end)
+
+    rejected = "tool call not run: an integer in the arguments has more than 100 digits"
+    # The fourth call has the id of the first call and good arguments: it runs.
+    assert final_text(events) == "#{rejected}|TWO|THREE|FOUR|#{rejected}|#{rejected}"
+
+    marker = "integer of more than 100 digits removed"
+    assert %{input: ^marker, output: 3} = turn_end_usage(events)
+
+    [first, _, third, _, fifth, sixth] =
+      for %{type: :tool_execution_start, data: %{tool_call: call}} <- events, do: call
+
+    assert first.arguments == %{
+             "text" => "one",
+             "n" => [%{"deep" => marker}]
+           }
+
+    assert third.arguments["n"] == 10 ** 100 - 1
+    assert fifth.arguments == %{"text" => "five", marker => 1}
+    assert sixth.arguments == %{"text" => "six", "d" => marker}
+
+    [result | _] = for %{type: :tool_execution_end, data: %{message: m}} <- events, do: m
+    assert %Helyx.Message{tool_call_id: "c1", is_error: true} = result
+
+    # No event, and thus no later encode, holds the large integer.
+    refute Enum.any?(events, &(:erlang.external_size(&1) > 10_000))
+    [path] = Path.wildcard(Path.join(dir, "**/*.jsonl"))
+    assert File.stat!(path).size < 10_000
+    assert Enum.map(events, & &1.seq) == Enum.to_list(1..length(events))
   end
 
   test "tool calls run one at a time, in call order", %{core: core} do

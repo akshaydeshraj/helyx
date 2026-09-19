@@ -43,6 +43,9 @@ defmodule Helyx.Session do
 
   @queue_limit 32
 
+  @rejected_call_text "tool call not run: an integer in the arguments has more than " <>
+                        "#{Message.max_integer_digits()} digits"
+
   @enforce_keys [:id, :core]
   defstruct [:id, :core]
 
@@ -52,11 +55,17 @@ defmodule Helyx.Session do
     @moduledoc false
     # The turn in progress. `partial` is the assistant content so far as a
     # reversed block list, or nil before the first stream event. `calls` are
-    # the tool calls still to answer, the head running.
+    # the tool calls still to answer, the head running. `rejected` are the
+    # tool calls of the current assistant message that get an error result
+    # and never run, because their arguments held an integer over the digit
+    # limit (see `Helyx.Message.cap_integers/1`). They are compared by value,
+    # because a provider can repeat a call id: a call that is equal to a
+    # rejected call after the cap is also rejected. One turn has many provider
+    # calls, so each provider call starts with an empty list.
     # `model` and `provider` are fixed when the turn starts, so a model switch
     # during the turn takes effect on the next one.
     @enforce_keys [:id, :model, :provider]
-    defstruct [:id, :model, :provider, :task, :partial, calls: []]
+    defstruct [:id, :model, :provider, :task, :partial, calls: [], rejected: []]
   end
 
   defmodule State do
@@ -346,6 +355,12 @@ defmodule Helyx.Session do
      |> emit(:message_update, Map.new([event]))}
   end
 
+  # Arrives before the stream event of the call it names (see consume/3).
+  def handle_info({:rejected_call, turn_id, call}, %State{turn: %Turn{id: turn_id}} = state) do
+    %State{turn: turn} = state
+    {:noreply, %{state | turn: %{turn | rejected: [call | turn.rejected]}}}
+  end
+
   # The Task's reply is the terminal stream event. Its :DOWN follows and is
   # flushed here, so a :DOWN only reaches the session when the Task crashed.
   def handle_info({ref, terminal}, %State{turn: %Turn{task: %Task{ref: ref}}} = state) do
@@ -357,7 +372,7 @@ defmodule Helyx.Session do
         {:DOWN, ref, :process, _pid, reason},
         %State{turn: %Turn{task: %Task{ref: ref}}} = state
       ) do
-    {:noreply, fail_turn({:task_exit, reason}, state)}
+    {:noreply, fail_turn({:task_exit, Message.cap_integers(reason)}, state)}
   end
 
   def handle_info(
@@ -378,6 +393,7 @@ defmodule Helyx.Session do
   # A message for a turn, or a call, that is no longer current.
   def handle_info({:tool_result, _turn_id, _call_id, _result}, state), do: {:noreply, state}
   def handle_info({:stream_event, _turn_id, _event}, state), do: {:noreply, state}
+  def handle_info({:rejected_call, _turn_id, _call}, state), do: {:noreply, state}
 
   # The hands are linked and vital: their death takes the session with it.
   def handle_info({:EXIT, pid, reason}, %State{hands: pid} = state) do
@@ -481,21 +497,30 @@ defmodule Helyx.Session do
         context = Helyx.ModelContext.build(core, base, opts)
         context = Helyx.Compaction.compact(core, context, opts)
 
-        case provider.stream(model, context, opts) do
-          {:ok, stream} -> consume(stream, session, turn_id)
-          {:error, reason} -> {:error, reason}
-        end
+        result =
+          case provider.stream(model, context, opts) do
+            {:ok, stream} -> consume(stream, session, turn_id)
+            {:error, reason} -> {:error, reason}
+          end
+
+        # Every terminal leaves the Task through this cap, so no error reason
+        # and no malformed event in one brings an integer over the digit
+        # limit to the session (see `Helyx.Message.cap_integers/1`). A raise
+        # or an exit is not a terminal: the `:DOWN` handler caps its reason.
+        Message.cap_integers(result)
       end)
 
     %{
       state
-      | turn: %{turn | task: task},
+      | turn: %{turn | task: task, rejected: []},
         provider_pids: MapSet.put(state.provider_pids, task.pid)
     }
   end
 
   # Forwards well-formed stream events to the session and returns the first
-  # terminal event. A malformed event is a terminal error. A delta or a
+  # terminal event. A malformed event is a terminal error. Arguments or a
+  # usage that are a struct are malformed: `cap_integers/1` can turn a struct
+  # into a string, and the session file needs a plain map. A delta or a
   # tool call that is not valid UTF-8 is malformed: transcript text is
   # valid from the moment it exists, so the file and the providers never
   # see raw bytes.
@@ -505,17 +530,34 @@ defmodule Helyx.Session do
       when kind in [:text_delta, :thinking_delta] and is_binary(payload) ->
         forward(Message.valid_utf8?(payload), event, session, turn_id, acc)
 
-      {:tool_call, %Message.ToolCall{id: id, name: name, arguments: args}} = event, acc
-      when is_binary(id) and is_binary(name) and is_map(args) ->
-        forward(Message.encodable?([id, name, args]), event, session, turn_id, acc)
+      {:tool_call, %Message.ToolCall{id: id, name: name, arguments: args}}, acc
+      when is_binary(id) and is_binary(name) and is_non_struct_map(args) ->
+        # The one place where tool call arguments enter the session from a
+        # provider (on resume, SessionFile applies the same function). An
+        # integer over the digit limit is replaced here, before the first
+        # JSON encode, which is quadratic in the digits (#79). The
+        # transcript, the events, the session file, the tool, and the next
+        # provider request thus never hold it.
+        capped = Message.cap_integers(args)
+        # A new struct: the pattern also matches a call with one more key.
+        call = %Message.ToolCall{id: id, name: name, arguments: capped}
+        if capped != args, do: send(session, {:rejected_call, turn_id, call})
+        forward(Message.encodable?([id, name, capped]), {:tool_call, call}, session, turn_id, acc)
 
       # The file format owns the closed stop reason set (see SessionFile) and
       # holds only JSON. A terminal whose stop reason is outside the set, or
       # whose usage the file cannot encode, fails the turn here, before the
       # message exists, instead of raising in persist and silently turning
       # persistence off for the rest of the session.
-      {:done, %{stop_reason: reason, usage: usage}} = terminal, _acc
-      when reason in [:end_turn, :tool_use, :max_tokens] and is_map(usage) ->
+      {:done, %{stop_reason: reason, usage: usage}}, _acc
+      when reason in [:end_turn, :tool_use, :max_tokens] and is_non_struct_map(usage) ->
+        # The usage gets the same encodes as the arguments, so the same cap.
+        usage = Message.cap_integers(usage)
+        # A new plain map: the pattern also matches a struct and a map with
+        # more keys, and `end_turn/2` needs this shape after the cap at the
+        # Task exit.
+        terminal = {:done, %{stop_reason: reason, usage: usage}}
+
         {:halt,
          if(Message.encodable?(usage),
            do: terminal,
@@ -563,7 +605,14 @@ defmodule Helyx.Session do
   defp end_turn(:stream_ended, state), do: fail_turn(:stream_ended, state)
 
   defp run_tool(call, %State{turn: turn} = state) do
-    :ok = Helyx.Hands.run(state.hands, turn.id, call)
+    if call in turn.rejected do
+      # The result takes the path of a result from the hands, so the events
+      # and the order of the calls stay the same.
+      send(self(), {:tool_result, turn.id, call.id, {:error, @rejected_call_text}})
+    else
+      :ok = Helyx.Hands.run(state.hands, turn.id, call)
+    end
+
     emit(state, :tool_execution_start, %{tool_call: call})
   end
 
