@@ -3,23 +3,38 @@ defmodule Helyx.ModelRef do
   The string that names a model for a session, in the form `provider/model`.
 
   The prefix selects the provider plugin. The rest is passed to the provider
-  unchanged. Core parses it once; everything after that works with the struct.
+  unchanged. A session parses it once per start, resume, and switch;
+  everything after that works with the struct.
+
+  A ref is user input: the `--model` option, the `/model` command, a saved
+  session file. It is valid UTF-8 of at most 256 bytes, with no whitespace
+  and no control, format, or unassigned characters (Unicode category C), so
+  a printed ref cannot carry a terminal control sequence. Characters that
+  show as nothing, a Hangul filler for example, are accepted: two refs that
+  look the same can differ.
   """
+
+  @max_bytes 256
 
   @enforce_keys [:provider, :model]
   defstruct [:provider, :model]
 
   @type t :: %__MODULE__{provider: String.t(), model: String.t()}
 
-  @doc "Splits `provider/model` at the first slash. Both parts must be present."
+  @doc """
+  Splits `provider/model` at the first slash. Both parts must be present, and
+  the string must be within the bounds in the module doc.
+  """
   @spec parse(String.t()) :: {:ok, t()} | {:error, {:invalid_model_ref, String.t()}}
   def parse(string) when is_binary(string) do
-    case String.split(string, "/", parts: 2) do
-      [provider, model] when provider != "" and model != "" ->
-        {:ok, %__MODULE__{provider: provider, model: model}}
-
-      _ ->
-        {:error, {:invalid_model_ref, string}}
+    with true <- byte_size(string) <= @max_bytes,
+         true <- Helyx.Message.valid_utf8?(string),
+         false <- String.match?(string, ~r/[\s\p{C}]/u),
+         [provider, model] when provider != "" and model != "" <-
+           String.split(string, "/", parts: 2) do
+      {:ok, %__MODULE__{provider: provider, model: model}}
+    else
+      _ -> {:error, {:invalid_model_ref, string}}
     end
   end
 

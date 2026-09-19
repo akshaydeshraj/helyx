@@ -191,4 +191,16 @@ defmodule Helyx.TUI.ViewModelTest do
 
     assert vm.streaming == nil
   end
+
+  test "a model change updates the model; a malformed one changes nothing" do
+    vm = fold(model_change: %{model: "other/model"})
+    assert vm.model == "other/model"
+    assert fold(model_change: %{model: 42}).model == "test/model"
+    assert fold(model_change: %{}).model == "test/model"
+  end
+
+  test "a client notice joins the cells" do
+    vm = ViewModel.notice(ViewModel.new("test/model"), "unknown provider: x")
+    assert vm.cells == [{:notice, "unknown provider: x"}]
+  end
 end

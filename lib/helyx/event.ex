@@ -27,6 +27,8 @@ defmodule Helyx.Event do
     * `:queue_update` – `%{steers: non_neg_integer, follow_ups: non_neg_integer}`,
       emitted whenever the session's message queues change; the drain at a
       normal turn end goes out between turns, with a nil turn id
+    * `:model_change` – `%{model: String.t()}`, the new `provider/model` ref;
+      the switch belongs to no turn, so the turn id is always nil
   """
 
   @enforce_keys [:type, :session_id, :turn_id, :seq, :data]
@@ -43,6 +45,7 @@ defmodule Helyx.Event do
           | :tool_execution_start
           | :tool_execution_end
           | :queue_update
+          | :model_change
 
   @type t :: %__MODULE__{
           type: type(),

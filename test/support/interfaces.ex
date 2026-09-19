@@ -87,6 +87,21 @@ defmodule Helyx.Test.ProviderTwin do
   def stream(_model, _context, _opts), do: {:ok, []}
 end
 
+defmodule Helyx.Test.ProviderOther do
+  @moduledoc false
+  # A second provider with its own id, so a test can switch between two
+  # provider modules. Every model answers "from other".
+  @behaviour Helyx.Provider
+
+  @impl true
+  def id, do: "other"
+
+  @impl true
+  def stream(_model, _context, _opts) do
+    {:ok, [{:text_delta, "from other"}, {:done, %{stop_reason: :end_turn, usage: %{}}}]}
+  end
+end
+
 defmodule Helyx.Test.Provider do
   @moduledoc false
   # A provider whose model name selects a stream shape, so session tests can
