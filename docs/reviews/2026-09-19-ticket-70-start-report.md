@@ -96,7 +96,7 @@ The changes after this review are Markdown only. No further round.
 ## Outside the ticket
 
 - `PERL_UNICODE=I`: ticket #71 (above). A note for #71: `binmode` on the go-ahead pipe and on the watchdog's standard handles is the likely fix, and it also makes `PERL_UNICODE=i` run the command in place of the error that #70 gives.
-- `sub fail`, from #52, ticket pending: the marker write of a failed `chdir`, `pipe`, or `fork` does not make its reason bytes. With `PERL_UNICODE=A` and a working directory with a wide character the result is still an error, but the text is `the watchdog gave no marker: Wide character in syswrite`. With a character from U+0080 to U+00FF the text holds an invalid byte, which the hands replace.
+- `sub fail`, from #52, ticket #71: the marker write of a failed `chdir`, `pipe`, or `fork` does not make its reason bytes. With `PERL_UNICODE=A` and a working directory with a wide character the result is still an error, but the text is `the watchdog gave no marker: Wide character in syswrite`. With a character from U+0080 to U+00FF the text holds an invalid byte, which the hands replace.
 - `PERL5OPT=-d`, older than #70, ticket #71: the perl debugger takes the watchdog's stdin, no marker comes, and `read_marker/4` waits without a limit. When the calling process died, the watchdog and its child stayed alive; the child had not called `setpgrp`. No command ran. Found by the round 2 spec agent; the bounds row names it.
 - The round 1 failure-path reproduction left a watchdog and a stopped child alive (the defect it reported). They were killed by pid after round 2.
 
