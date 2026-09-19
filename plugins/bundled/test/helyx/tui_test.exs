@@ -37,6 +37,9 @@ defmodule Helyx.TUITest do
   use ExUnit.Case, async: true
 
   alias ExRatatui.Event.Key
+  alias ExRatatui.Layout.Rect
+  alias ExRatatui.Text.{Line, Span}
+  alias ExRatatui.Widgets.Paragraph
   alias Helyx.{Event, Session}
   alias Helyx.Provider.Fake
   alias Helyx.TUI
@@ -271,17 +274,119 @@ defmodule Helyx.TUITest do
     refute "  5" in texts.("1\n2\n3\n4\n5")
   end
 
-  test "wrapping counts graphemes and survives width zero" do
-    vm = %ViewModel{
-      ViewModel.new("fake/m")
-      | cells: [Helyx.Message.user(String.duplicate("é", 7))]
-    }
+  describe "wrapping by display width" do
+    defp wrapped(text, width) do
+      message = %Helyx.Message{role: :assistant, content: [%Helyx.Message.Text{text: text}]}
+      vm = %ViewModel{ViewModel.new("fake/m") | cells: [message]}
+      for line <- TUI.transcript_lines(vm, width), span <- line.spans, do: span.content
+    end
 
-    texts = for line <- TUI.transcript_lines(vm, 5), span <- line.spans, do: span.content
-    assert ("› " <> String.duplicate("é", 3)) in texts
-    assert String.duplicate("é", 4) in texts
+    test "a narrow grapheme is one column, also with a combining mark" do
+      assert wrapped(String.duplicate("a", 7), 5) == ["aaaaa", "aa"]
 
-    assert TUI.transcript_lines(vm, 0) != []
+      assert wrapped(String.duplicate("e\u0301", 7), 5) == [
+               String.duplicate("e\u0301", 5),
+               String.duplicate("e\u0301", 2)
+             ]
+    end
+
+    test "a CJK glyph is two columns, so no line goes past the width" do
+      assert wrapped("日本語日本", 5) == ["日本", "語日", "本"]
+      assert wrapped("a日本語", 5) == ["a日本", "語"]
+      assert wrapped("한글ｆ", 4) == ["한글", "ｆ"]
+    end
+
+    test "an emoji, also one that a selector makes wide, is two columns" do
+      for glyph <- ["\u2764\uFE0F", "✅", "👍"] do
+        assert wrapped(String.duplicate(glyph, 3), 5) == [String.duplicate(glyph, 2), glyph]
+      end
+    end
+
+    # ExRatatui draws each of these as two columns. The rule has no table of
+    # the emoji sequences, so it counts each emoji in the grapheme.
+    test "an emoji with a modifier, a joiner, or a flag is never split and never past the width" do
+      thumb = "👍🏽"
+      family = "👨\u200D👩\u200D👧"
+      flag = "🇮🇳"
+
+      for glyph <- [thumb, family, flag] do
+        assert wrapped(String.duplicate(glyph, 3), 5) == [glyph, glyph, glyph]
+      end
+
+      assert wrapped(String.duplicate(thumb, 3), 8) == [thumb <> thumb, thumb]
+    end
+
+    test "a zero-width grapheme takes no column and stays on its line" do
+      assert wrapped("abcde\u200B", 5) == ["abcde\u200B"]
+    end
+
+    test "a wide glyph at width one, and width zero, still give one glyph per line" do
+      assert wrapped("日本", 1) == ["日", "本"]
+      assert wrapped("ab", 0) == ["a", "b"]
+    end
+
+    test "an empty line is one empty row" do
+      assert wrapped("", 5) == [""]
+      assert wrapped("", 0) == [""]
+    end
+
+    # The width rule can count more columns than ExRatatui draws, never less.
+    # Each line is a start, one code point, an end, and twelve "z", at width
+    # 12, so the rule fills the first row to the edge with "z". When the rule
+    # counts the grapheme too narrow, ExRatatui cuts a "z" from that row. The
+    # starts and ends make the code point part of a grapheme of each kind:
+    # after a letter, a wide glyph, a Devanagari letter, a modifier base, an
+    # emoji that is no modifier base, a flag half, and a joiner, and before a
+    # skin tone, a selector, and a joiner sequence.
+    test "no grapheme is wider on screen than the width rule counts" do
+      # U+20000 to U+3FFFD is one range of the rule: its two ends stand for it.
+      # The last range is the emoji tags.
+      ranges = [0x20..0x7E, 0xA0..0xD7FF, 0xE000..0x20FFF, 0x3F000..0x3FFFD, 0xE0000..0xE0FFF]
+      code_points = Enum.concat(ranges)
+      starts = ["a", "日", "क", "👍", "⚡", "🟠", "🇮", "👨\u200D", "\u2620\uFE0F\u200D"]
+      ends = ["🏽", "\uFE0F", "\u200D👧"]
+      contexts = [{"", ""}] ++ Enum.map(starts, &{&1, ""}) ++ Enum.map(ends, &{"", &1})
+
+      for {first, last} <- contexts, chunk <- Enum.chunk_every(code_points, 4096) do
+        rows =
+          Enum.map(
+            chunk,
+            &hd(wrapped(<<first::binary, &1::utf8, last::binary, "zzzzzzzzzzzz">>, 12))
+          )
+
+        drawn = rows |> draw(12) |> String.split("\n")
+
+        for {code, row, drawn_row} <- Enum.zip([chunk, rows, drawn]) do
+          assert count_z(drawn_row) == count_z(row),
+                 "#{inspect(first)}, U+#{Integer.to_string(code, 16)}, #{inspect(last)}"
+        end
+      end
+    end
+
+    # By code point: a prepended mark joins the next "z" into one grapheme.
+    defp count_z(row), do: Enum.count(String.to_charlist(row), &(&1 == ?z))
+
+    defp draw(rows, width) do
+      height = length(rows)
+      terminal = ExRatatui.init_test_terminal(width, height)
+      lines = Enum.map(rows, &%Line{spans: [%Span{content: &1}]})
+      area = %Rect{x: 0, y: 0, width: width, height: height}
+      :ok = ExRatatui.draw(terminal, [{%Paragraph{text: lines}, area}])
+      ExRatatui.get_buffer_content(terminal)
+    end
+
+    # ExRatatui cuts a row at the edge of its area. A row that the width rule
+    # counts too narrow loses a glyph here.
+    test "the terminal library draws every wrapped row in full" do
+      text = "a日本語ｆ한글👍🏽❤\uFE0F✅🇮🇳👨\u200D👩\u200D👧e\u0301⚡zक्षिस्त्रीநிกำｶﾞ🟠〈䷀z"
+
+      # From 4: the widest glyph of the text is a Devanagari cluster of 4 columns.
+      for width <- 4..11 do
+        rows = Enum.reject(wrapped(text, width), &(&1 == ""))
+        drawn = rows |> draw(width) |> String.replace(" ", "")
+        assert drawn == Enum.join(rows, "\n"), "width #{width}"
+      end
+    end
   end
 
   test "control characters never reach the terminal" do
