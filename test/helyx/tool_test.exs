@@ -189,7 +189,7 @@ defmodule Helyx.ToolTest do
     assert Tool.truncate(String.duplicate("x", 51_201), :head) =~ "line 1 cut at 51200 bytes;"
     assert Tool.truncate(String.duplicate("x", 51_201), :tail) =~ "line 1 cut at 51200 bytes]"
 
-    # The byte count is what is shown, after the retreat to a character boundary.
+    # The byte count is what is shown, after the part of a character at the cut edge is removed.
     euro = String.duplicate("€", 20_000)
     assert Tool.truncate(euro, :head) =~ "line 1 cut at 51198 bytes;"
     assert Tool.truncate(euro, :tail) =~ "line 1 cut at 51198 bytes]"
@@ -214,7 +214,7 @@ defmodule Helyx.ToolTest do
     end
   end
 
-  test "a cut on text that was never valid gives up after three byte retreats" do
+  test "a cut on text that was never valid loses three bytes at the cut edge" do
     out = Tool.truncate(:binary.copy(<<255>>, 60_000), :head)
 
     assert [
@@ -230,6 +230,39 @@ defmodule Helyx.ToolTest do
     replaced = String.replace_invalid(out)
     assert String.valid?(replaced)
     assert byte_size(replaced) <= 3 * byte_size(out)
+  end
+
+  test "a cut inside a character loses only that character (issue #51)" do
+    # The cut lands 1, 2, and 3 bytes inside a 4-byte character, and on its edge.
+    for pad <- 0..3 do
+      shown = String.duplicate("😀", div(51_200 - pad, 4))
+      rest = String.duplicate("😀", 1000)
+      note = "line 1 cut at #{byte_size(shown) + pad} bytes"
+
+      x = String.duplicate("x", pad)
+
+      assert [head, "[truncated:" <> head_note] =
+               String.split(Tool.truncate(x <> shown <> rest, :head), "\n")
+
+      assert head == x <> shown
+      assert head_note =~ note
+
+      assert ["[truncated:" <> tail_note, tail] =
+               String.split(Tool.truncate(rest <> shown <> x, :tail), "\n")
+
+      assert tail == shown <> x
+      assert tail_note =~ note
+    end
+  end
+
+  test "an invalid byte away from the cut edge is kept for the hands to replace" do
+    line = "ab" <> <<255>> <> String.duplicate("€", 20_000)
+    out = Tool.truncate(line, :head)
+    # Never valid: three bytes less at the edge, as before, and the notice counts them.
+    assert String.starts_with?(out, "ab" <> <<255>> <> "€")
+    assert String.contains?(out, "line 1 cut at 51197 bytes;")
+    assert [shown, _note] = String.split(out, "\n")
+    assert byte_size(shown) == 51_197
   end
 
   test "an input whose last line is exactly the notice is a truncation fixed point" do

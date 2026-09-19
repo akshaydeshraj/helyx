@@ -59,6 +59,36 @@ defmodule Helyx.Tool.BashTest do
     assert String.starts_with?(text, "[truncated: showing lines 1001-3000 of 3000]\n1001\n")
   end
 
+  test "the kept tail starts on a character boundary (issue #51)" do
+    keep = 4 * Helyx.Tool.max_bytes()
+
+    # The cut lands 0 to 3 bytes inside a 4-byte character.
+    for pad <- 0..3 do
+      acc = String.duplicate("😀", div(2 * keep, 4) + 1) <> String.duplicate("x", pad)
+      {tail, true} = Helyx.Tool.Bash.keep_tail(acc)
+      assert String.valid?(tail)
+      assert byte_size(tail) >= keep - 3
+      assert String.ends_with?(acc, tail)
+    end
+
+    # A character that the next chunk completes is not touched.
+    <<first, _::binary>> = "€"
+    acc = String.duplicate("x", 2 * keep + 1) <> <<first>>
+    {tail, true} = Helyx.Tool.Bash.keep_tail(acc)
+    assert byte_size(tail) == keep
+
+    # Output that was never valid loses at most three bytes at the start.
+    {tail, true} = Helyx.Tool.Bash.keep_tail(:binary.copy(<<0x80>>, 2 * keep + 1))
+    assert byte_size(tail) == keep - 3
+
+    # One byte under twice the cap and at it, nothing is cut; one byte over is.
+    under = String.duplicate("x", 2 * keep - 1)
+    assert Helyx.Tool.Bash.keep_tail(under) == {under, false}
+    at = String.duplicate("x", 2 * keep)
+    assert Helyx.Tool.Bash.keep_tail(at) == {at, false}
+    assert {<<_::binary-size(keep)>>, true} = Helyx.Tool.Bash.keep_tail(at <> "x")
+  end
+
   test "output beyond the buffer is dropped while the command runs", %{run: run} do
     text = Helyx.Message.text(run.(%{"command" => "seq 1 200000"}))
 
