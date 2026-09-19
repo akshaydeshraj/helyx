@@ -222,7 +222,7 @@ defmodule Helyx.Tool.Bash do
     # ponytail: the VM decodes a name or a value that is not UTF-8 as
     # Latin-1. Such a `PERL*` value reaches the command with other bytes,
     # and such a name is not removed. Raw bytes need another transport, if
-    # a user has such a variable (ticket pending).
+    # a user has such a variable.
     perl_env =
       for {"PERL" <> _ = name, _value} = variable <- System.get_env(),
           name != "PERL_BADLANG",
