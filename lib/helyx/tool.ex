@@ -117,7 +117,9 @@ defmodule Helyx.Tool do
   on whole lines. One trailing newline is a terminator and does not count.
   `:head` keeps the start and `:tail` keeps the end. A truncated result says
   which lines it shows; a truncated `:head` result also names the offset that
-  continues the read.
+  continues the read. When the line at the kept edge is over the byte
+  cap by itself, it is cut to the cap and is the only line shown; the notice
+  names that line and the bytes kept of it, and no offset reaches the rest.
   """
   @spec truncate(String.t(), :head | :tail) :: String.t()
   def truncate(text, :head), do: truncate(text, :head, 1)
@@ -130,8 +132,8 @@ defmodule Helyx.Tool do
       :all ->
         text
 
-      {kept, n} ->
-        "[truncated: showing lines #{total - n + 1}-#{total} of #{total}]\n" <>
+      {kept, n, cut_bytes} ->
+        "[truncated: showing lines #{total - n + 1}-#{total} of #{total}#{cut_note(cut_bytes, total)}]\n" <>
           Enum.join(Enum.reverse(kept), "\n")
     end
   end
@@ -154,23 +156,31 @@ defmodule Helyx.Tool do
       :all ->
         Enum.join(shown, "\n")
 
-      {kept, n} ->
+      {kept, n, cut_bytes} ->
         last = first + n - 1
 
         Enum.join(kept, "\n") <>
-          "\n[truncated: showing lines #{first}-#{last} of #{first - 1 + length(shown)}; " <>
+          "\n[truncated: showing lines #{first}-#{last} of #{first - 1 + length(shown)}" <>
+          "#{cut_note(cut_bytes, first)}; " <>
           "read again with offset #{last + 1}]"
     end
   end
+
+  # The cut line is always the one at the kept edge: the first line of a
+  # head window, the last line of a tail.
+  defp cut_note(nil, _line_number), do: ""
+  defp cut_note(bytes, line_number), do: ", line #{line_number} cut at #{bytes} bytes"
 
   # One trailing newline ends the last line; more are blank lines that count.
   defp lines(text), do: text |> String.replace_suffix("\n", "") |> String.split("\n")
 
   # Returns `:all` when every line fits, else the lines within the limits in
-  # the given order and their count. A first line over the byte limit is cut
-  # to the limit on a character boundary, from the end kept.
+  # the given order, their count, and `nil`. A first line over the byte limit
+  # is cut to the limit on a character boundary, from the end kept; the third
+  # element is then the bytes shown of it.
   defp take_within_limits([first | _], keep) when byte_size(first) > @max_bytes do
-    {[cut(first, keep)], 1}
+    shown = cut(first, keep)
+    {[shown], 1, byte_size(shown)}
   end
 
   defp take_within_limits(lines, _keep) do
@@ -181,7 +191,7 @@ defmodule Helyx.Tool do
           else: {:halt, {count, bytes, acc}}
       end)
 
-    if count == length(lines), do: :all, else: {Enum.reverse(acc), count}
+    if count == length(lines), do: :all, else: {Enum.reverse(acc), count, nil}
   end
 
   # A UTF-8 character is at most 4 bytes, so a cut lands at most 3 bytes
