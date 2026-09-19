@@ -36,6 +36,10 @@ if Helyx.TUI.Available.available?() do
       * `/model provider/model` in the composer switches the model; the next
         turn uses it. A rejected ref shows a notice and stays in the composer
       * Escape aborts the running turn
+      * PgUp and PgDn scroll the transcript by one screen. While the view is
+        scrolled, new output does not move it, and the status bar says so.
+        Ctrl+End, a PgDn at the end, or a sent prompt returns to the newest
+        output
       * Ctrl+C quits and restores the terminal
 
     Start it with `run/1`, which blocks until the user quits:
@@ -45,7 +49,7 @@ if Helyx.TUI.Available.available?() do
 
     use ExRatatui.App
 
-    alias ExRatatui.Event.{Key, Paste}
+    alias ExRatatui.Event.{Key, Paste, Resize}
     alias ExRatatui.Layout
     alias ExRatatui.Layout.Rect
     alias ExRatatui.Style
@@ -58,6 +62,10 @@ if Helyx.TUI.Available.available?() do
     @bold %Style{modifiers: [:bold]}
     @tool %Style{fg: :cyan}
     @bad %Style{fg: :red}
+
+    # The rows under the transcript. One screen of scroll is the rest.
+    @composer_rows 3
+    @status_rows 1
 
     # East Asian Wide and Fullwidth blocks, the emoji blocks, and other ranges
     # that ExRatatui draws as two columns.
@@ -101,7 +109,13 @@ if Helyx.TUI.Available.available?() do
                     0x2795..0x2797
                   ])
 
-    @doc "Starts the TUI for a session and blocks until the user quits."
+    @doc """
+    Starts the TUI for a session and blocks until the user quits.
+
+    The options are `:session`, `:model`, and those of `ExRatatui.App`. The
+    scroll keys read the terminal size through `:terminal_size_fn`, the option
+    of `ExRatatui.Server`; the default is `ExRatatui.terminal_size/0`.
+    """
     @spec run(keyword()) :: :ok | {:error, term()}
     def run(opts) do
       # A failed init (dead session, no terminal) exits the linked caller
@@ -159,13 +173,18 @@ if Helyx.TUI.Available.available?() do
        %{
          session: session,
          vm: ViewModel.new(Keyword.fetch!(opts, :model)),
-         input: ExRatatui.text_input_new()
+         input: ExRatatui.text_input_new(),
+         # nil follows the newest output. `{cell, row}` is the first row on
+         # the screen: a cell index and a row in that cell.
+         scroll: nil,
+         # The size seam of `ExRatatui.Server`, so a test sets the size.
+         terminal_size_fn: Keyword.get(opts, :terminal_size_fn, &ExRatatui.terminal_size/0)
        }}
     end
 
     @impl true
     def handle_info({:helyx_event, event}, state) do
-      {:noreply, %{state | vm: ViewModel.apply(state.vm, event)}}
+      {:noreply, settle(%{state | vm: ViewModel.apply(state.vm, event)})}
     end
 
     # A dead session leaves nothing to render; exiting surfaces the reason
@@ -198,6 +217,16 @@ if Helyx.TUI.Available.available?() do
       {:noreply, state}
     end
 
+    def handle_event(%Key{code: code, kind: kind, modifiers: []}, state)
+        when code in ["page_up", "page_down"] and kind in ["press", "repeat"] do
+      {:noreply, on_screen(state, &scroll(state, code, &1, &2))}
+    end
+
+    def handle_event(%Resize{}, state), do: {:noreply, settle(state)}
+
+    def handle_event(%Key{code: "end", kind: "press", modifiers: ["ctrl"]}, state),
+      do: {:noreply, %{state | scroll: nil}}
+
     def handle_event(%Key{code: "enter", kind: "press"} = key, state) do
       case ExRatatui.text_input_get_value(state.input) do
         "" ->
@@ -205,7 +234,8 @@ if Helyx.TUI.Available.available?() do
 
         text ->
           case command(text) do
-            {:model, ref} -> {:noreply, switch_model(ref, state)}
+            # A notice is a new cell, so the position gets its check.
+            {:model, ref} -> {:noreply, settle(switch_model(ref, state))}
             :message -> {:noreply, send_message(text, key, state)}
           end
       end
@@ -265,7 +295,7 @@ if Helyx.TUI.Available.available?() do
       case sent do
         :ok ->
           ExRatatui.text_input_set_value(state.input, "")
-          state
+          %{state | scroll: nil}
 
         {:error, reason} ->
           %{state | vm: ViewModel.reject(state.vm, send_error(reason))}
@@ -304,37 +334,127 @@ if Helyx.TUI.Available.available?() do
       area = %Rect{x: 0, y: 0, width: frame.width, height: frame.height}
 
       [transcript, composer, status] =
-        Layout.split(area, :vertical, [{:min, 0}, {:length, 3}, {:length, 1}])
+        Layout.split(area, :vertical, [
+          {:min, 0},
+          {:length, @composer_rows},
+          {:length, @status_rows}
+        ])
 
       [
-        {transcript_widget(state.vm, transcript), transcript},
+        {transcript_widget(state.vm, state.scroll, transcript), transcript},
         {composer_widget(state.input), composer},
-        {status_widget(state.vm), status}
+        {status_widget(state.vm, state.scroll), status}
       ]
     end
 
     # Transcript
 
-    # The newest lines win: everything is rendered to width-bounded lines and
-    # the last rows that fit are shown.
-    # ponytail: no scrollback, add a scroll offset when reading history matters (#39)
-    defp transcript_widget(vm, %Rect{width: width, height: height}) do
-      # Every cell yields at least one line, so the last `height` cells
-      # always fill the screen; older ones would be wrapped and dropped.
-      vm = %{vm | cells: Enum.take(vm.cells, -height)}
-      %Paragraph{text: Enum.take(transcript_lines(vm, width), -height)}
+    # A scrolled view starts at a cell and a row in it. The cells before the
+    # open message only grow in number, so new output does not move the view.
+    # No line cache: no operation wraps all cells. A frame wraps the cells it
+    # shows, and a key or `settle/1` wraps the cells it passes, a small count
+    # of screens. The feature doc has the measured costs and the exceptions.
+    # With no position the view follows the newest output: the first row is
+    # one screen above the end.
+    defp transcript_widget(vm, scroll, %Rect{width: width, height: height}) do
+      items = items(vm)
+      top = scroll || bottom(items, width, height)
+      %Paragraph{text: items |> rows_from(top, width) |> Enum.take(height)}
+    end
+
+    defp bottom(items, width, height),
+      do: back(Enum.reverse(items), {length(items), 0}, height, width)
+
+    # Sets the position from the width and the rows of the transcript. The
+    # only reader of the terminal size. With no size there is no screen to
+    # check a position against, so the view follows the newest output.
+    defp on_screen(state, position) do
+      case state.terminal_size_fn.() do
+        {width, height} when is_integer(width) and is_integer(height) ->
+          rows = max(height - @composer_rows - @status_rows, 1)
+          %{state | scroll: position.(width, rows)}
+
+        {:error, _reason} ->
+          %{state | scroll: nil}
+      end
+    end
+
+    # Applies `hold/4` after a change that no scroll key makes: a session
+    # event, a client notice, or a new size.
+    defp settle(%{scroll: nil} = state), do: state
+
+    defp settle(state),
+      do: on_screen(state, &hold(items(state.vm), state.scroll, &1, &2))
+
+    # The one rule for a position: its row is in its cell, and the rows from
+    # it to the end are more than one screen. If not, the row moves into the
+    # cells that follow, or the result is nil. A new cell can take the index
+    # of the open message, and a wider screen makes a cell shorter. Every
+    # position in the state comes from here or is nil.
+    defp hold(items, {index, row}, width, height) do
+      top = items |> Enum.drop(index) |> forward({index, row}, width)
+      if length(items |> rows_from(top, width) |> Enum.take(height + 1)) > height, do: top
+    end
+
+    # One screen up or down from the first row on the screen.
+    defp scroll(%{scroll: nil}, "page_down", _width, _height), do: nil
+
+    defp scroll(%{vm: vm, scroll: {index, row}}, "page_down", width, height),
+      do: hold(items(vm), {index, row + height}, width, height)
+
+    defp scroll(%{vm: vm, scroll: scroll}, "page_up", width, height) do
+      items = items(vm)
+      {index, row} = scroll || bottom(items, width, height)
+      top = items |> Enum.take(index) |> Enum.reverse() |> back({index, row}, height, width)
+      hold(items, top, width, height)
+    end
+
+    # `before` is the cells above the position, nearest first.
+    defp back(_before, {index, row}, count, _width) when row >= count, do: {index, row - count}
+    defp back([], _position, _count, _width), do: {0, 0}
+
+    defp back([item | before], {index, row}, count, width),
+      do: back(before, {index - 1, length(item_lines(item, width))}, count - row, width)
+
+    # Moves a row number that is past its cell into the cells that follow.
+    defp forward([], {index, _row}, _width), do: {index, 0}
+
+    defp forward([item | rest], {index, row}, width) do
+      case length(item_lines(item, width)) do
+        rows when row >= rows -> forward(rest, {index + 1, row - rows}, width)
+        _rows -> {index, row}
+      end
+    end
+
+    # The row skip stays in the first cell: a row past that cell shows its last
+    # row. A frame can come before the check of a new width, and a skip over
+    # all rows would wrap every cell that the old row number passes.
+    defp rows_from(items, {index, row}, width) do
+      case Enum.drop(items, index) do
+        [] ->
+          []
+
+        [first | rest] ->
+          lines = item_lines(first, width)
+
+          lines
+          |> Enum.drop(min(row, length(lines) - 1))
+          |> Stream.concat(Stream.flat_map(rest, &item_lines(&1, width)))
+      end
     end
 
     @doc false
     # Public for tests: the transcript as width-bounded `Line` structs.
-    def transcript_lines(%ViewModel{} = vm, width) do
-      streaming =
-        if vm.streaming,
-          do: [%Message{role: :assistant, content: Enum.reverse(vm.streaming)}],
-          else: []
+    def transcript_lines(%ViewModel{} = vm, width),
+      do: Enum.flat_map(items(vm), &item_lines(&1, width))
 
-      Enum.flat_map(vm.cells ++ streaming, &(cell_lines(&1, width) ++ [%Line{}]))
-    end
+    # The cells, and the open assistant message as the last one.
+    defp items(%ViewModel{streaming: nil, cells: cells}), do: cells
+
+    defp items(%ViewModel{streaming: streaming, cells: cells}),
+      do: cells ++ [%Message{role: :assistant, content: Enum.reverse(streaming)}]
+
+    defp item_lines(item, width), do: cell_lines(item, width) ++ [%Line{}]
 
     defp cell_lines(%Message{role: :user} = message, width) do
       styled_lines("› " <> Message.text(message), width, @bold)
@@ -488,7 +608,7 @@ if Helyx.TUI.Available.available?() do
       }
     end
 
-    defp status_widget(vm) do
+    defp status_widget(vm, scroll) do
       state = if vm.running?, do: "working", else: "idle"
       %{steers: steers, follow_ups: follow_ups} = vm.queue
       # The reason is a fixed text of this module, never input. It comes
@@ -500,10 +620,13 @@ if Helyx.TUI.Available.available?() do
         style: @bold
       }
 
-      keys = %Span{
-        content: " Enter steer · Alt+Enter follow-up · Esc abort · Ctrl+C quit",
-        style: @dim
-      }
+      keys =
+        if scroll,
+          do: %Span{content: " scrolled · PgUp/PgDn · Ctrl+End newest", style: @bold},
+          else: %Span{
+            content: " Enter steer · Alt+Enter follow-up · Esc abort · Ctrl+C quit · PgUp scroll",
+            style: @dim
+          }
 
       %Paragraph{text: %Line{spans: reason ++ [model, keys]}}
     end
