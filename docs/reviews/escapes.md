@@ -18,3 +18,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-09-19 | #74 | r1: 4 standards judgement calls, 1 partial spec item, 0 failure-path | r1: 0 confirmed, 1 older defect became #83 | none |
 | 2026-09-19 | #71 | r1: 8 simplify, 2 docs, 1 defect (any HELYX_KEEP_ name restored); r2: 1 (PERL_BADLANG); r3: 0 | r1: 0 | a worker test printed the machine environment into its transcript: review and worker briefs forbid a print of the environment |
 | 2026-09-19 | #46 | simplify 2; r1: 3 docs, 2 failure-path (long model ref, key repeat); r2: 3 docs; r3: 0 | r1: 0 | none |
+| 2026-09-19 | #62 | simplify 2 test notes; r1: 1 standards wording, 4 spec (tests and docs), 2 failure-path docs | r1: 0 | none |
