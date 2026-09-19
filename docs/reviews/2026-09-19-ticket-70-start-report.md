@@ -105,3 +105,7 @@ The changes after this review are Markdown only. No further round.
 Passed on the final code, on `667e0a0`: root 1 property and 127 tests, `plugins/bundled` 163 tests, `apps/coding_agent` 5 tests, 0 failures.
 
 Passed again after the Codex round 1 fix: root 1 property and 127 tests, `plugins/bundled` 164 tests, `apps/coding_agent` 5 tests, 0 failures.
+
+## Codex round 2
+
+One finding, rejected. On Linux, a command can open the report pipe of the watchdog again through `/proc/<pid>/fd`. It can then write a false failure report, or a descendant can hold the write end open and block the read. Codex inferred this from the code and did not reproduce it. The reason to reject it: the command must attack its own watchdog on purpose, and a command with the same user ID can already kill or trace the watchdog. The bounds row states that such a command is out of scope.
