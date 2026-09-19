@@ -49,9 +49,31 @@ defmodule Helyx.Tool.Bash do
   # perl's own startup output can, because stderr is merged: a bad locale
   # warning prints environment values, which can hold any line. It cannot
   # hold the nonce, so no text can pass for a marker; `read_marker/4` reads
-  # past the rest. perl code that the user's environment loads into the
-  # watchdog (PERL5LIB, PERL5OPT) can read the nonce; that is the user's own
-  # code and out of scope.
+  # past the rest.
+  #
+  # The start report (#70). The held child writes the start line,
+  # "<nonce> 1", as its last act before the `exec`, so the line is in front
+  # of all command output, and a result is ok only with it: a watchdog that
+  # dies before it passes the go-ahead on, or a child that dies while held,
+  # leaves no start line. The child reports a failed `exec`, or its own
+  # death by `die`, through a second pipe that closes on `exec` (perl sets
+  # close-on-exec on every descriptor above 2): the watchdog reads end of
+  # file when the `exec` worked, and the error when it did not. It reads
+  # the pipe only after the child ended, so the read never waits: the write
+  # end is closed by then, by the `exec` or by the exit, and the watchdog's
+  # poll of stdin is never held. It then writes "<go> 0" and the error.
+  # `<go>` is a second random word, which arrives on stdin as the go-ahead
+  # line, after the fork: it is in no argument list and not in the child, so
+  # a command that ran cannot write a failure report, and the report counts
+  # wherever it is in the output: perl's own text can come before it (with
+  # `PERL5OPT=-w`, a warning about the `exec`). The command can read the
+  # nonce from the process table, but a start line is only true of a command
+  # that ran. The pipe is binary, so `PERL_UNICODE` cannot make its reads
+  # and writes fail.
+  #
+  # perl code that the user's environment loads into the watchdog (PERL5LIB,
+  # PERL5OPT) can read the nonce; that is the user's own code and out of
+  # scope.
   @watchdog ~S"""
   use POSIX ":sys_wait_h";
   my $nonce = shift @ARGV;
@@ -59,20 +81,29 @@ defmodule Helyx.Tool.Bash do
   my $dir = shift @ARGV;
   chdir($dir) or fail("cannot enter the working directory $dir");
   pipe(my $r, my $w) or fail("pipe failed");
+  pipe(my $er, my $ew) or fail("report pipe failed");
+  binmode($er); binmode($ew);
   my $child = fork() // fail("fork failed");
   if ($child == 0) {
-    close($w);
+    close($w); close($er);
     setpgrp(0, 0);
-    sysread($r, my $go, 1) or exit 0;
-    open(STDIN, "<", "/dev/null");
-    exec @ARGV;
-    exit 127;
+    eval {
+      sysread($r, my $go, 1) or exit 0;
+      open(STDIN, "<", "/dev/null");
+      syswrite(STDOUT, "$nonce 1\n");
+      exec @ARGV;
+      die "cannot run $ARGV[0]: $!\n";
+    };
+    syswrite($ew, $@);
+    exit 0;
   }
   $SIG{TERM} = "IGNORE";
-  close($r);
+  close($r); close($ew);
   syswrite(STDOUT, "$nonce $child\n");
-  if (defined(readline(STDIN))) { syswrite($w, "g"); close($w) }
+  my $go = readline(STDIN);
+  if (defined($go)) { syswrite($w, "g"); close($w) }
   else { close($w); kill("KILL", -$child); waitpid($child, 0); exit 0 }
+  chomp($go);
   while (1) {
     my $rin = ""; vec($rin, fileno(STDIN), 1) = 1;
     my $n = select(my $rout = $rin, undef, undef, 0.05);
@@ -86,6 +117,7 @@ defmodule Helyx.Tool.Bash do
     }
     if (waitpid($child, WNOHANG) > 0) {
       my $s = $?;
+      if (sysread($er, my $err, 4096)) { syswrite(STDOUT, "$go 0\n$err"); exit 0 }
       exit(($s & 127) ? 128 + ($s & 127) : $s >> 8);
     }
   }
@@ -144,7 +176,7 @@ defmodule Helyx.Tool.Bash do
   def run(_args, _cwd), do: {:error, "bash needs a command"}
 
   defp run_command(command, cwd) do
-    nonce = Base.encode16(:crypto.strong_rand_bytes(8))
+    nonce = random_word()
     {exe, args} = launcher(command, cwd, nonce)
 
     # No cd option: the watchdog enters `cwd`, so a failure has a signal.
@@ -198,17 +230,42 @@ defmodule Helyx.Tool.Bash do
         close(port)
         {:not_started, "the watchdog gave no marker: " <> text}
 
-      {group, acc} ->
+      {group, pre} ->
         Helyx.Tool.register_group(group)
-        go_ahead(port)
-        collect(port, acc, false)
+        go = random_word()
+        go_ahead(port, go)
+        start_report(collect(port, pre, false), pre, nonce <> " 1\n", go <> " 0\n")
     end
   end
 
+  # Reads the start report off the collected output (see the watchdog).
+  # `pre` is what came before the group marker, perl's own startup output.
+  # Output that was cut has lost its head, and only a command that ran
+  # writes that much: the watchdog's own text is at most `pre`, the start
+  # line, perl's warnings, and a 4,096-byte report.
+  defp start_report({_output, true, _status} = ran, _pre, _start, _failed), do: ran
+
+  defp start_report({output, false, status}, pre, start, failed) do
+    ^pre <> rest = output
+
+    case String.split(rest, failed, parts: 2) do
+      [before, reason] ->
+        {:not_started, pre <> String.replace_prefix(before, start, "") <> reason}
+
+      [^start <> body] ->
+        {pre <> body, false, status}
+
+      [_no_start_line] ->
+        {:not_started, "the command gave no start line: " <> output}
+    end
+  end
+
+  defp random_word, do: Base.encode16(:crypto.strong_rand_bytes(8))
+
   # A port whose watchdog already died is closed and the write raises; the
   # exit status is still in the mailbox for the collect.
-  defp go_ahead(port) do
-    Port.command(port, "\n")
+  defp go_ahead(port, go) do
+    Port.command(port, go <> "\n")
   rescue
     ArgumentError -> false
   end

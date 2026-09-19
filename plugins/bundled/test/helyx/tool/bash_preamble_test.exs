@@ -76,6 +76,47 @@ defmodule Helyx.Tool.Bash.PreambleTest do
     assert text =~ "NopeNope"
   end
 
+  # An executable file whose interpreter does not exist: it is found, and
+  # the exec fails.
+  defp put_bad_bash(dir) do
+    bin = Path.join(dir, "bin")
+    File.mkdir_p!(bin)
+    File.write!(Path.join(bin, "bash"), "#!/nonexistent/interpreter\n")
+    File.chmod!(Path.join(bin, "bash"), 0o755)
+    put_env("PATH", bin <> ":" <> System.get_env("PATH"))
+    Path.join(bin, "bash")
+  end
+
+  test "a bash that cannot be executed is an error, not exit code 127 (issue #70)",
+       %{tmp_dir: dir} do
+    bash = put_bad_bash(dir)
+    assert {:error, text} = Helyx.Tool.Bash.run(%{"command" => "echo ran"}, dir)
+    assert text =~ "did not start"
+    assert text =~ "cannot run #{bash}: No such file"
+    refute text =~ " 0\n"
+  end
+
+  test "perl's warning about the exec, in front of the report, is still an error (issue #70)",
+       %{tmp_dir: dir} do
+    bash = put_bad_bash(dir)
+    put_env("PERL5OPT", "-w")
+    assert {:error, text} = Helyx.Tool.Bash.run(%{"command" => "echo ran"}, dir)
+    assert text =~ "Can't exec"
+    assert text =~ "cannot run #{bash}: No such file"
+    refute text =~ " 0\n"
+  end
+
+  test "PERL_UNICODE=i: the held child dies and the result is an error, not exit code 255 (issue #70)",
+       %{tmp_dir: dir} do
+    put_env("PERL_UNICODE", "i")
+    ran = Path.join(dir, "ran")
+    assert {:error, text} = Helyx.Tool.Bash.run(%{"command" => "touch #{ran}"}, dir)
+    assert text =~ "did not start"
+    assert text =~ ":utf8 handles"
+    refute text =~ " 0\n"
+    refute File.exists?(ran)
+  end
+
   test "the group marker is found after perl's own warnings", %{tmp_dir: dir} do
     assert {:ok, text} = Helyx.Tool.Bash.run(%{"command" => "echo $$; ps -o pgid= -p $$"}, dir)
     # The marker line is gone from the output: what is left of the numbers
