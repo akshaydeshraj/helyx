@@ -68,8 +68,14 @@ defmodule Helyx.Tool.Bash do
   # wherever it is in the output: perl's own text can come before it (with
   # `PERL5OPT=-w`, a warning about the `exec`). The command can read the
   # nonce from the process table, but a start line is only true of a command
-  # that ran. The pipe is binary, so `PERL_UNICODE` cannot make its reads
-  # and writes fail.
+  # that ran.
+  #
+  # Two guards keep the report write alive. `binmode` takes off the `:utf8`
+  # layer that `PERL_UNICODE` can put on the pipe, because a `syswrite` to
+  # such a handle is fatal. The child also makes the reason bytes: with
+  # `PERL_UNICODE=A` perl decodes the path of bash to characters, and a
+  # `syswrite` of wide characters is fatal on any handle. A reason that is
+  # bytes already stays as it is; a second encode would damage it.
   #
   # perl code that the user's environment loads into the watchdog (PERL5LIB,
   # PERL5OPT) can read the nonce; that is the user's own code and out of
@@ -94,7 +100,9 @@ defmodule Helyx.Tool.Bash do
       exec @ARGV;
       die "cannot run $ARGV[0]: $!\n";
     };
-    syswrite($ew, $@);
+    my $reason = $@;
+    utf8::encode($reason) if utf8::is_utf8($reason);
+    syswrite($ew, $reason);
     exit 0;
   }
   $SIG{TERM} = "IGNORE";

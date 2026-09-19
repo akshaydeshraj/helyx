@@ -52,6 +52,39 @@ Review:
 
 Round 2 changed no code after the simplify step; the changes after the review are Markdown only. No further round.
 
+## Codex round 1
+
+2 findings.
+
+1. Confirmed, fixed. With `PERL_UNICODE=A` perl decodes its arguments. A bash path with a character above U+00FF (`/nonexistent/☃/bash`) puts wide characters in the reason. `syswrite($ew, $@)` was then fatal (`Wide character in syswrite`), the report pipe stayed empty, and `run/2` gave `{:ok, "Wide character in syswrite ...\nExit code: 255"}`. Fix: the child encodes the reason to bytes (`utf8::encode`) before the one write to the report pipe. The failed `exec` and the `die` path both go through that write. Test: `PERL_UNICODE=A and a wide character in the bash path` in `bash_preamble_test.exs`.
+2. Rejected as accepted behaviour, documented. The `exec` fails, and a `kill -9` ends only the watchdog before it reads the report pipe. The start line is there with no failure report, so the result is ok with `Exit code: 137`. It needs two faults at the same time in a window of milliseconds, no part of the command ran, and the result says that a signal ended it. The bounds row names it beside the other kill exception.
+
+The fix diff in `bash.ex` is 3 watchdog lines and 3 comment lines, in one file, with no function changed, so the rerun is a reduced round.
+
+## Round 3 (reduced: spec and failure path)
+
+Invariant named in both briefs: a bash result is ok only when the command reached its `exec`; every failure of the child before the `exec` reaches the report pipe as bytes.
+
+- Spec: 1 defect, reproduced. The encode had no condition. Without `PERL_UNICODE=A` the reason is bytes already, and the second encode damaged it: a bash path with `é` read as mojibake in 17 of 22 environments, the default one included. 16 `PERL_UNICODE` values with three locales gave no ok result for a command that did not run. 1 older item: `sub fail` writes before the marker with no such step, see "Outside the ticket".
+- Failure path: the reproduction passes. 1 reproduced item, not a defect of the start report: an executable `bash` with no `#!` line gets `ENOEXEC`, and `execvp` in libc runs the file through `/bin/sh`. The file that `PATH` names as bash ran, so this is not a failed start. The bounds row says so.
+
+Fix: `utf8::encode($reason) if utf8::is_utf8($reason);`. The test for the default environment now uses a path with a 2-byte and a 3-byte character; it fails without the condition. This is the second finding on the write of the reason, so the next round is a full round (the two-findings rule). The mechanism is now "the reason is always bytes, and bytes are never encoded again"; the round 4 altitude pass checked the alternatives.
+
+## Round 4 (full)
+
+Simplify, 2 agents with two angles each (a deviation from the four-agent form).
+
+- Reuse and efficiency: 0 findings.
+- Simplification and altitude: 1 comment finding, applied. The comment said that `binmode` keeps the write alive and then that a wide character write is fatal. It now names the two guards and what each one does. No simpler form of the three perl lines: `:utf8` on the pipe makes `syswrite` fatal, `print` encodes bytes two times or writes Latin-1, `utf8::downgrade` writes Latin-1.
+
+Review:
+
+- Standards: 0 code findings. Docs: two fragments in the bounds row and one in this record, rewritten as sentences. Not applied: "`ticket pending` names no ticket". The worker may not create issues; the report names the item for the orchestrator.
+- Spec: 0 defects. 7 paths of bash (ASCII, 2, 3, and 4 bytes, U+00FF, invalid UTF-8, mixed) in 24 environments: no ok result and no damaged path. 2 docs items, applied to the bounds row: the `-Mlocale` case with a libc that translates `strerror` (not reproduced on macOS; the result stays an error), and the go-ahead pipe with no `binmode` (`PERL_UNICODE=o` or `D` gives the error `the command gave no start line` for every command).
+- Failure path: 0 findings. Both reproductions pass. 8 more `PERL_UNICODE` values, 5 `PERL5OPT` values, `-Mlocale` with three locales, and `PERLIO` values with a real bash: every failed start is an error, and every command that ran is ok.
+
+The changes after this review are Markdown only. No further round.
+
 ## Judgement calls not applied
 
 - The line formats `<nonce> 1` and `<go> 0` are built in perl and again at the one Elixir call site. Two helper functions for two literals add names and remove no risk: the tests fail on any mismatch.
@@ -63,9 +96,12 @@ Round 2 changed no code after the simplify step; the changes after the review ar
 ## Outside the ticket
 
 - `PERL_UNICODE=I`: ticket #71 (above). A note for #71: `binmode` on the go-ahead pipe and on the watchdog's standard handles is the likely fix, and it also makes `PERL_UNICODE=i` run the command in place of the error that #70 gives.
+- `sub fail`, from #52, ticket pending: the marker write of a failed `chdir`, `pipe`, or `fork` does not make its reason bytes. With `PERL_UNICODE=A` and a working directory with a wide character the result is still an error, but the text is `the watchdog gave no marker: Wide character in syswrite`. With a character from U+0080 to U+00FF the text holds an invalid byte, which the hands replace.
 - `PERL5OPT=-d`, older than #70, ticket #71: the perl debugger takes the watchdog's stdin, no marker comes, and `read_marker/4` waits without a limit. When the calling process died, the watchdog and its child stayed alive; the child had not called `setpgrp`. No command ran. Found by the round 2 spec agent; the bounds row names it.
 - The round 1 failure-path reproduction left a watchdog and a stopped child alive (the defect it reported). They were killed by pid after round 2.
 
 ## Precommit
 
 Passed on the final code, on `667e0a0`: root 1 property and 127 tests, `plugins/bundled` 163 tests, `apps/coding_agent` 5 tests, 0 failures.
+
+Passed again after the Codex round 1 fix: root 1 property and 127 tests, `plugins/bundled` 164 tests, `apps/coding_agent` 5 tests, 0 failures.

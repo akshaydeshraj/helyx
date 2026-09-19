@@ -89,7 +89,9 @@ defmodule Helyx.Tool.Bash.PreambleTest do
 
   test "a bash that cannot be executed is an error, not exit code 127 (issue #70)",
        %{tmp_dir: dir} do
-    bash = put_bad_bash(dir)
+    # The path holds characters of two and of three bytes: the reason is
+    # bytes already, and it must arrive as it is.
+    bash = put_bad_bash(Path.join(dir, "é☃"))
     assert {:error, text} = Helyx.Tool.Bash.run(%{"command" => "echo ran"}, dir)
     assert text =~ "did not start"
     assert text =~ "cannot run #{bash}: No such file"
@@ -104,6 +106,18 @@ defmodule Helyx.Tool.Bash.PreambleTest do
     assert text =~ "Can't exec"
     assert text =~ "cannot run #{bash}: No such file"
     refute text =~ " 0\n"
+  end
+
+  test "PERL_UNICODE=A and a wide character in the bash path: still an error (issue #70)",
+       %{tmp_dir: dir} do
+    # perl decodes its arguments, so the reason holds a wide character, and
+    # a write of wide characters to the binary report pipe is fatal.
+    bash = put_bad_bash(Path.join(dir, "é☃"))
+    put_env("PERL_UNICODE", "A")
+    assert {:error, text} = Helyx.Tool.Bash.run(%{"command" => "echo ran"}, dir)
+    assert text =~ "did not start: "
+    assert text =~ "cannot run #{bash}: No such file"
+    refute text =~ "Wide character"
   end
 
   test "PERL_UNICODE=i: the held child dies and the result is an error, not exit code 255 (issue #70)",
