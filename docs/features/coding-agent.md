@@ -115,7 +115,8 @@ Bounds:
 
 | What | Bound | Over the bound |
 |---|---|---|
-| Session file on resume | Unbounded, one conversation per file, read whole into memory | Accepted for checkpoint one; compaction bounds the transcript itself (#1) |
+| Session file on resume | One regular file of at most 67,108,864 bytes (64 MiB), read whole into memory; the read stops one byte past the limit, so a file that grows during the resume is still over it. The limit is on file bytes. The lines are parsed one at a time, never split into a list of all lines. The heap that the JSON decode of the file uses is open, ticket #64: measured at 12 to 42 bytes of heap per file byte, for many short entries, for arrays of short values, and for deep nesting in one line. Decoded strings can keep the file binary alive for the life of the session | `{:error, {:too_large, text}}`; the text names the limit and says to start a new session; the file is not mutated. A last entry that lacks its newline counts with it, so a repair never makes a file that the next resume rejects. Compaction bounds the transcript itself (#1) |
+| Header scan for the most recent session | The first 65,536 bytes of each regular `*.jsonl` file in the project directory; a header line that does not end inside them is not read whole. The number of files in the directory is unbounded, one per session started there (#62) | A longer header line is cut, does not decode, and the file is not a session; a pipe, a device, or a directory is skipped without an open; the window between the type check and the open is open, ticket #65 |
 | Project directory slug | Last 100 characters of the slugged cwd | Collisions are disambiguated by the header `cwd` |
 | Prompt text | Must be valid UTF-8 | `{:error, :invalid_utf8}` at the client boundary |
 | Steer and follow-up queues | 32 entries each; entry text is human input, size accepted as unbounded (#29) | The session returns `{:error, :queue_full}` |
