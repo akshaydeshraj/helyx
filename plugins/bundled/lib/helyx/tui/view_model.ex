@@ -99,7 +99,15 @@ defmodule Helyx.TUI.ViewModel do
     add_cell(vm, {:tool, call, nil})
   end
 
-  def apply(vm, %Event{type: :tool_execution_end, data: %{message: %Message{} = result}}) do
+  # Only a message with the role and a binary call id attaches, as
+  # `Message.tool_result/2` makes it. The content is not checked. Any other
+  # message falls through to the catch-all, so a
+  # nil id never matches an open cell with a nil id.
+  def apply(vm, %Event{
+        type: :tool_execution_end,
+        data: %{message: %Message{role: :tool_result, tool_call_id: id} = result}
+      })
+      when is_binary(id) do
     %{vm | cells: attach_result(vm.cells, result)}
   end
 
@@ -130,20 +138,20 @@ defmodule Helyx.TUI.ViewModel do
 
   defp add_cell(vm, cell), do: %{vm | cells: vm.cells ++ [cell]}
 
-  # Tool calls run one at a time, so an open tool cell is always the last
-  # cell. A result that matches nothing (an abort answering a call that
-  # never started) changes nothing.
-  defp attach_result(cells, result) do
-    case List.last(cells) do
-      {:tool, %Message.ToolCall{id: id} = call, nil} ->
-        if id == result.tool_call_id do
-          List.replace_at(cells, -1, {:tool, call, result})
-        else
-          cells
-        end
+  # The result goes to the newest open tool cell with the same call id,
+  # wherever it is: a notice can arrive while the tool runs (#83). A cell
+  # that has a result never changes. A result that matches no open cell (an
+  # abort answering a call that never started) changes nothing. The search
+  # is one pass over the cells for each result.
+  defp attach_result(cells, %Message{tool_call_id: id} = result) do
+    open? = &match?({:tool, %Message.ToolCall{id: ^id}, nil}, &1)
 
-      _ ->
+    case Enum.find_index(Enum.reverse(cells), open?) do
+      nil ->
         cells
+
+      index ->
+        List.update_at(cells, -1 - index, fn {:tool, call, nil} -> {:tool, call, result} end)
     end
   end
 end
