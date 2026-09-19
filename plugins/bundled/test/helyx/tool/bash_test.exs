@@ -131,6 +131,116 @@ defmodule Helyx.Tool.BashTest do
     assert text =~ "NUL"
   end
 
+  test "a working directory the watchdog cannot enter is an error, not exit code 2 (issue #52)",
+       %{tmp_dir: dir} do
+    gone = Path.join(dir, "gone")
+    File.mkdir_p!(gone)
+    File.rmdir!(gone)
+
+    assert {:error, text} =
+             Helyx.Tool.Bash.run(%{"command" => "touch #{Path.join(dir, "ran")}"}, gone)
+
+    assert text =~ "did not start"
+    assert text =~ gone
+    assert text =~ "No such file"
+    refute File.exists?(Path.join(dir, "ran"))
+  end
+
+  test "an empty working directory is the same error (issue #52)" do
+    assert {:error, text} = Helyx.Tool.Bash.run(%{"command" => "pwd"}, "")
+    assert text =~ "did not start"
+  end
+
+  test "a real exit status 2 is an ok result (issue #52)", %{tmp_dir: dir} do
+    assert {:ok, "(no output)\nExit code: 2"} =
+             Helyx.Tool.Bash.run(%{"command" => "exit 2"}, dir)
+  end
+
+  test "a command whose first output looks like a marker still ran (issue #52)",
+       %{tmp_dir: dir} do
+    assert {:ok, "0\nnope\n"} = Helyx.Tool.Bash.run(%{"command" => "echo 0; echo nope"}, dir)
+  end
+
+  describe "the preamble limit of the marker read (issue #52)" do
+    # A ref stands for the port. Only a buffer that ends inside a line under
+    # the limit waits for a message.
+    defp read_marker(buffer), do: Helyx.Tool.Bash.read_marker(make_ref(), "N", "", buffer)
+
+    # The marker line "N 4242\n" is 7 bytes, so it ends at byte 4096, the
+    # limit, after 4089 bytes of noise with the newline.
+    test "a marker line that ends at the limit or under it is found" do
+      for size <- [4087, 4088] do
+        noise = String.duplicate("x", size)
+        assert read_marker(noise <> "\nN 4242\nout") == {4242, noise <> "\nout"}
+      end
+    end
+
+    test "multibyte noise counts in bytes" do
+      noise = String.duplicate("é", 2043) <> "xx"
+      assert byte_size(noise) == 4088
+      assert read_marker(noise <> "\nN 4242\nout") == {4242, noise <> "\nout"}
+      over = "é" <> noise
+      assert read_marker(over <> "\nN 4242\n") == {:no_marker, over <> "\nN 4242\n"}
+    end
+
+    test "a marker line that ends over the limit ends the search" do
+      for marker <- ["N 4242", "N 0"], over <- [1, 2, 100] do
+        # The marker line ends `over` bytes past the limit.
+        size = 4096 - byte_size(marker) - 2 + over
+        buffer = String.duplicate("x", size) <> "\n#{marker}\nout"
+        assert read_marker(buffer) == {:no_marker, buffer}
+      end
+    end
+
+    test "the limit counts all noise lines together" do
+      # 40 lines of 100 bytes with the newline are 4000 bytes read past.
+      lines = String.duplicate(String.duplicate("x", 99) <> "\n", 40)
+      at = lines <> String.duplicate("y", 88)
+      assert read_marker(at <> "\nN 4242\n") == {4242, at <> "\n"}
+      over = lines <> String.duplicate("y", 89) <> "\nN 4242\n"
+      assert read_marker(over) == {:no_marker, over}
+    end
+
+    test "the answer does not depend on how the stream is cut into messages" do
+      for {size, expected} <- [{4088, &{4242, &1}}, {4089, &{:no_marker, &1 <> "N 4242\n"}}] do
+        port = make_ref()
+        noise = String.duplicate("x", size) <> "\n"
+        send(self(), {port, {:data, "N 42"}})
+        send(self(), {port, {:data, "42\n"}})
+        assert Helyx.Tool.Bash.read_marker(port, "N", "", noise) == expected.(noise)
+      end
+    end
+
+    test "a partial line at the limit ends the search without a wait" do
+      buffer = String.duplicate("x", 4096)
+      assert read_marker(buffer) == {:no_marker, buffer}
+    end
+
+    test "a partial line under the limit waits; an exit then is no marker" do
+      port = make_ref()
+      send(self(), {port, {:exit_status, 2}})
+      buffer = String.duplicate("x", 4095)
+      assert Helyx.Tool.Bash.read_marker(port, "N", "", buffer) == {:no_marker, buffer}
+    end
+
+    test "the not-started marker is found after noise" do
+      assert read_marker("perl: warning\nN 0\nwhy") == {:not_started, "perl: warning\nwhy"}
+    end
+
+    test "a line without the nonce is never a marker" do
+      for forged <- ["4242", "0", "M 4242", "N 4242 1", "N  4242", " N 4242", "N 1", "N -5"] do
+        assert read_marker("#{forged}\nN 77\n") == {77, "#{forged}\n"}
+      end
+    end
+  end
+
+  test "a reason over the result limit is cut (issue #52)" do
+    cwd = "/" <> String.duplicate("x", 60_000)
+    assert {:error, text} = Helyx.Tool.Bash.run(%{"command" => "pwd"}, cwd)
+    assert text =~ "did not start"
+    assert byte_size(text) < 60_000
+  end
+
   test "a detached background child does not survive the call", %{run: run} do
     pid =
       run.(%{"command" => "sleep 60 >/dev/null 2>&1 & echo $!"})

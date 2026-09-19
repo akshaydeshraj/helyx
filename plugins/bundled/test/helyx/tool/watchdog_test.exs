@@ -7,7 +7,7 @@ defmodule Helyx.Tool.Bash.WatchdogTest do
   import Helyx.Tool.Bash.OSHelpers
 
   defp open(command) do
-    {exe, args} = Helyx.Tool.Bash.launcher(command)
+    {exe, args} = Helyx.Tool.Bash.launcher(command, File.cwd!(), "nonce")
 
     Port.open({:spawn_executable, exe}, [
       :binary,
@@ -20,8 +20,8 @@ defmodule Helyx.Tool.Bash.WatchdogTest do
   defp read_marker(port) do
     receive do
       {^port, {:data, data}} ->
-        [line, rest] = String.split(data, "\n", parts: 2)
-        {String.to_integer(line), rest}
+        ["nonce " <> group, rest] = String.split(data, "\n", parts: 2)
+        {String.to_integer(group), rest}
     after
       2_000 -> flunk("no group marker")
     end
