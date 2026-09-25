@@ -161,6 +161,12 @@ defmodule Helyx.Provider.Codex do
   # The port's own exit signal is not a stop: its exit status says it all.
   # Any other exit signal is the hands' shutdown (or their death).
   defp next(%{port: port} = state) do
+    if HarnessIO.overdue?(state),
+      do: {[], %{state | done?: true}},
+      else: receive_next(port, state)
+  end
+
+  defp receive_next(port, state) do
     receive do
       {^port, {:data, data}} -> data |> HarnessIO.lines(state, &in_order/2) |> settle()
       {^port, {:exit_status, status}} -> settle(exited(status, %{state | port: nil}))
@@ -189,6 +195,10 @@ defmodule Helyx.Provider.Codex do
   defp interrupt(_state, reason), do: exit(reason)
 
   defp await_end(%{port: port} = state, deadline) do
+    if HarnessIO.overdue?(deadline), do: :ok, else: receive_end(port, state, deadline)
+  end
+
+  defp receive_end(port, state, deadline) do
     receive do
       {^port, {:data, data}} ->
         {_events, state} = HarnessIO.lines(data, state, &translate/2)

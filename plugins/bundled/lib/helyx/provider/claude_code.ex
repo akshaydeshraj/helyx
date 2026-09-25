@@ -117,6 +117,10 @@ defmodule Helyx.Provider.ClaudeCode do
   # ends; after it, one exit wait from the terminal, whatever the program
   # still writes.
   defp next(%{port: port} = state) do
+    if HarnessIO.overdue?(state), do: exit_timeout(state), else: receive_next(port, state)
+  end
+
+  defp receive_next(port, state) do
     receive do
       {^port, {:data, data}} -> HarnessIO.lines(data, state, &translate/2)
       {^port, {:exit_status, status}} -> exited(status, %{state | port: nil})

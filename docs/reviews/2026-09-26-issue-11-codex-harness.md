@@ -144,3 +144,32 @@ The failure-path axis found nothing it could reproduce: a turn error while a com
 Not taken: a note on #111 that it also tracks the events that an abort or a steer drops (the ticket body names only the unbounded rows; for the orchestrator).
 
 Fix size: comments, docs, and tests only; no code line changed. No further round.
+
+## Round 8 (full): orchestrator Codex review, round 1
+
+The orchestrator's Codex review found F36. The same defect was on master in `Helyx.Provider.ClaudeCode.next/1`. Invariant restored: once a deadline has passed, no loop receives another message before it acts on the deadline.
+
+| # | Axis | Finding | Resolution |
+| - | ---- | ------- | ---------- |
+| F36 | Codex (orchestrator) | A `receive` with a matching `{^port, {:data, _}}` never reaches its `after`, even at a timeout of 0. After the terminal, a program that keeps writing kept `done?` false past the exit deadline. The terminal never reached the session, and the release never started. This happened in Codex and in Claude Code | `HarnessIO.overdue?/1` is checked before the `receive` in `next/1` of both providers and in the Codex `await_end/2`. There is one test for each provider: "stdout queued past the exit deadline does not hold the terminal". Each test queues 1,000 chunks after the deadline. Both tests fail when `overdue?/1` always returns false. The "Harness exit wait" row states the rule |
+| F37 | spec | The "Codex interrupt wait" row did not say that output cannot extend its deadline | The row now says so |
+
+Base: HEAD 219f161 plus the fix. Simplify ran with the standards axis. Bounds sensor: skipped, because no key is set.
+
+The failure-path axis found no path that breaks the invariant. It ran four throwaway tests with a real flooding program (`exec yes`):
+- A Claude Code result: `done` at 5,039 ms.
+- A lost session: the fresh run starts with `deadline: nil`, and no stale messages of the old port are left.
+- A Codex `turn/completed`: `done` at 5,122 ms.
+- A Codex `:shutdown` while the turn floods: `await_end` ends in 1,094 ms, which is inside the 2,000 ms stop grace of the hands.
+
+It found no other receive loop with a deadline: `Watchdog.read_marker/4` and `Bash.collect/3` have no deadline, and `Watchdog.Group` polls.
+
+Not taken:
+- A session-level test (spec). A session test cannot put messages into the mailbox of the stream Task. The stream tests show the `{:done, _}` terminal and the stop. `Hands.stream/4` sends `{:stream_end, _}` after the release. The orchestrator can ask for more.
+- A test of the overdue interrupt wait (spec). The failure-path probe covered it, and the spec asked only for the terminal test.
+- A named `exit_timeout/1` in Codex (standards). This is a judgement call, and it would add a function.
+- One clause for `overdue?/1` (standards).
+- One shared helper for the two test files (standards). The bundled project has no `test/support`.
+- The `Process.sleep(5_100)` coupling to `@exit_wait_ms` (standards). A longer exit wait makes the test fail, so it cannot pass falsely.
+
+Fix size, without tests and Markdown: about 17 code lines in 3 files, with 4 functions added. This round is a full round. Its fixes change only Markdown, so no further round is needed.

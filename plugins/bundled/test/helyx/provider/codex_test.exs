@@ -454,6 +454,41 @@ defmodule Helyx.Provider.CodexTest do
     refute os_alive?(wait_for_pid(pidfile))
   end
 
+  # A program can write faster than the stream reads. Waits in the stream's
+  # own process until the exit wait of the terminal has passed, then queues
+  # `n` chunks of stdout from its port: none of them may be read.
+  defp queue_stdout_past_deadline(n) do
+    port = Enum.find(Port.list(), &(Port.info(&1, :connected) == {:connected, self()}))
+    Process.sleep(5_100)
+    for _ <- 1..n, do: send(self(), {port, {:data, "x\n"}})
+  end
+
+  test "stdout queued past the exit deadline does not hold the terminal",
+       %{bin: bin, work: work} do
+    fresh(bin, 1, @tid, reply(@tid, "ok"), "sleep 30\n")
+
+    fn ->
+      {:ok, stream} = Codex.stream("m", %Helyx.Context{messages: [Message.user("go")]}, cwd: work)
+
+      events =
+        Enum.map(stream, fn
+          {:text_delta, _text} = event ->
+            tap(event, fn _ -> queue_stdout_past_deadline(1_000) end)
+
+          event ->
+            event
+        end)
+
+      {events, Process.info(self(), :message_queue_len)}
+    end
+    |> Task.async()
+    |> Task.await(15_000)
+    |> then(fn {events, {:message_queue_len, queued}} ->
+      assert [_, {:text_delta, "ok"}, {:done, %{stop_reason: :end_turn}}] = events
+      assert queued >= 1_000
+    end)
+  end
+
   test "a steer aborts the turn and starts a new one with the prompts", %{bin: bin} = ctx do
     fresh(bin, 1, @tid, [])
     resumed(bin, 2, @tid, reply(@tid, "Both."))

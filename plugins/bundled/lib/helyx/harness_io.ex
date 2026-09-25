@@ -89,6 +89,13 @@ defmodule Helyx.HarnessIO do
 
   def remaining(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
 
+  # A `receive` with a message that matches never reaches its `after`, even
+  # at a timeout of 0, so a program that keeps writing would hold a loop
+  # past its deadline. Every loop with a deadline asks this first.
+  def overdue?(%{deadline: deadline}), do: overdue?(deadline)
+  def overdue?(nil), do: false
+  def overdue?(deadline), do: remaining(deadline) == 0
+
   # A value that is not text is empty.
   def cap_error(text) when not is_binary(text), do: ""
   def cap_error(text) when byte_size(text) <= @error_max_bytes, do: text
