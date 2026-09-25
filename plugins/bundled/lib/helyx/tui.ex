@@ -27,8 +27,16 @@ if Helyx.TUI.Available.available?() do
     a pure fold over the session's events. It holds no session state of its
     own. Keys:
 
-      * typing fills the composer (`ExRatatui.Widgets.TextInput`: cursor
-        movement, Home/End, Delete, Backspace)
+      * typing fills the composer (`ExRatatui.Widgets.Textarea`: cursor
+        movement, Home/End, Delete, Backspace). It grows to at most 8 lines
+        and scrolls to the cursor past that
+      * Ctrl+J adds a new line; so does Shift+Enter where the terminal
+        reports Shift on Enter
+      * a paste keeps its new lines and tabs. A paste of more than 5 lines
+        shows as one marker, `[Pasted text #1, 20 lines]`, and is sent in
+        full. A marker is one unit: Backspace and Delete remove it whole,
+        Left and Right pass over it, and text typed in it goes after it.
+        Text that only looks like a marker is sent as typed
       * Enter sends the composer as a steer (a prompt when no turn runs)
       * Alt+Enter sends it as a follow-up. A rejected send (full queue, text
         that is not valid UTF-8) stays in the composer, and the status bar
@@ -54,7 +62,7 @@ if Helyx.TUI.Available.available?() do
     alias ExRatatui.Layout.Rect
     alias ExRatatui.Style
     alias ExRatatui.Text.{Line, Span}
-    alias ExRatatui.Widgets.{Block, Paragraph, TextInput}
+    alias ExRatatui.Widgets.{Block, Paragraph, Textarea}
     alias Helyx.{Message, Session}
     alias Helyx.TUI.ViewModel
 
@@ -63,9 +71,19 @@ if Helyx.TUI.Available.available?() do
     @tool %Style{fg: :cyan}
     @bad %Style{fg: :red}
 
-    # The rows under the transcript. One screen of scroll is the rest.
-    @composer_rows 3
+    # The rows under the transcript. One screen of scroll is the rest. The
+    # composer shows at most `@composer_lines` lines inside its two borders.
+    @composer_lines 8
     @status_rows 1
+
+    # A paste of more lines than this shows as one marker.
+    @paste_lines 5
+
+    # The last character of a marker, a control character. A paste drops it.
+    # A key code with it goes nowhere. ExRatatui does not draw it. So only a
+    # marker that the composer made ends with it, and text that looks like a
+    # marker is sent as typed.
+    @marker_end "\u0001"
 
     # East Asian Wide and Fullwidth blocks, the emoji blocks, and other ranges
     # that ExRatatui draws as two columns.
@@ -173,7 +191,10 @@ if Helyx.TUI.Available.available?() do
        %{
          session: session,
          vm: ViewModel.new(Keyword.fetch!(opts, :model)),
-         input: ExRatatui.text_input_new(),
+         input: ExRatatui.textarea_new(),
+         # Marker text to the full paste it stands for. Emptied with the
+         # composer, so a marker id is the map size plus one.
+         pastes: %{},
          # nil follows the newest output. `{cell, row}` is the first row on
          # the screen: a cell index and a row in that cell.
          scroll: nil,
@@ -227,12 +248,22 @@ if Helyx.TUI.Available.available?() do
     def handle_event(%Key{code: "end", kind: "press", modifiers: ["ctrl"]}, state),
       do: {:noreply, %{state | scroll: nil}}
 
+    # Ctrl+J is a new line in every terminal. Shift+Enter reaches here only
+    # where the terminal reports Shift on Enter; elsewhere it is Enter.
+    def handle_event(%Key{code: code, kind: kind, modifiers: modifiers}, state)
+        when {code, modifiers} in [{"j", ["ctrl"]}, {"enter", ["shift"]}] and
+               kind in ["press", "repeat"] do
+      {:noreply, edit(state, "\n", &insert/2)}
+    end
+
     def handle_event(%Key{code: "enter", kind: "press"} = key, state) do
-      case ExRatatui.text_input_get_value(state.input) do
+      case ExRatatui.textarea_get_value(state.input) do
         "" ->
           {:noreply, state}
 
-        text ->
+        value ->
+          text = expand(value, state.pastes)
+
           case command(text) do
             # A notice is a new cell, so the position gets its check.
             {:model, ref} -> {:noreply, settle(switch_model(ref, state))}
@@ -241,40 +272,171 @@ if Helyx.TUI.Available.available?() do
       end
     end
 
+    # Only Ctrl+J and Shift+Enter add a line: the repeat and the release of
+    # Enter do nothing.
+    def handle_event(%Key{code: "enter"}, state), do: {:noreply, state}
+
     # Everything else goes to the input widget, which inserts printable
-    # characters and handles its own editing keys.
+    # characters and handles its own editing keys. A paste marker is one
+    # unit for every key.
     def handle_event(%Key{} = key, state) do
       if key.kind in ["press", "repeat"] and key.modifiers -- ["shift"] == [] do
-        {:noreply, edit(state, key.code, &ExRatatui.text_input_handle_key/2)}
+        {:noreply, edit(state, key.code, &widget_key/2)}
       else
         {:noreply, state}
       end
     end
 
     def handle_event(%Paste{content: content}, state),
-      do: {:noreply, edit(state, content, &ExRatatui.text_input_insert_str/2)}
+      do: {:noreply, edit(state, content, &paste/2)}
 
     def handle_event(_event, state), do: {:noreply, state}
 
     # The only path by which event text reaches the widget. The widget raises
     # `ArgumentError` on text that is not valid UTF-8, and a raise in a
     # callback kills the TUI process. Reject, do not repair: a silent
-    # replacement would send text the user did not type.
+    # replacement would send text the user did not type. An edit that
+    # changes the composer height changes the screen of the transcript, so
+    # the position gets its check.
     defp edit(state, text, fun) do
       if is_binary(text) and String.valid?(text) do
-        fun.(state.input, text)
-        state
+        rows = composer_rows(state.input)
+        state = fun.(state, text)
+        if composer_rows(state.input) == rows, do: state, else: settle(state)
       else
         %{state | vm: ViewModel.reject(state.vm, "input rejected: not valid UTF-8")}
       end
     end
 
+    # Text never goes inside a marker: it goes after it.
+    defp insert(state, text) do
+      state = out_of_marker(state)
+      ExRatatui.textarea_insert_str(state.input, text)
+      state
+    end
+
+    # A marker is one unit for every key. Backspace in a marker or right
+    # after it, and Delete at a marker or in it, remove the whole marker.
+    # Left and Right pass over it in one step. Any other key with the cursor
+    # inside a marker acts at its end.
+    defp widget_key(state, code) when code in ["backspace", "delete", "left", "right"] do
+      case marker_at(state, code) do
+        nil ->
+          key(state, code)
+
+        {value, {start, stop}} when code in ["backspace", "delete"] ->
+          cut(state, value, start, stop)
+
+        {value, {_start, stop}} when code == "right" ->
+          cut(state, value, stop, stop)
+
+        {value, {start, _stop}} ->
+          cut(state, value, start, start)
+      end
+    end
+
+    # A key code with a control character could forge the end of a marker.
+    defp widget_key(state, code) do
+      if drop_controls(code) == code,
+        do: state |> out_of_marker() |> key(code),
+        else: state
+    end
+
+    defp hit?(code, cursor, {start, stop}) when code in ["backspace", "left"],
+      do: start < cursor and cursor <= stop
+
+    defp hit?(code, cursor, {start, stop}) when code in ["delete", "right"],
+      do: start <= cursor and cursor < stop
+
+    defp hit?(:inside, cursor, {start, stop}), do: start < cursor and cursor < stop
+
+    defp out_of_marker(state) do
+      case marker_at(state, :inside) do
+        nil -> state
+        {value, {_start, stop}} -> cut(state, value, stop, stop)
+      end
+    end
+
+    defp key(state, code) do
+      ExRatatui.textarea_handle_key(state.input, code, [])
+      state
+    end
+
+    # The composer becomes `value` without the bytes from `from` to `to`,
+    # with the cursor at `from`. ExRatatui has no call to set the cursor or to
+    # delete a range, and its Right key stops short of zero-width characters
+    # at the end of a line. `textarea_insert_str/2` leaves the cursor exactly
+    # at the end of the text it inserts, so the TUI sets the text after the
+    # cursor and inserts the text before it. Linear in the composer text.
+    defp cut(state, value, from, to) do
+      ExRatatui.textarea_set_value(state.input, binary_part(value, to, byte_size(value) - to))
+      ExRatatui.textarea_insert_str(state.input, binary_part(value, 0, from))
+      state
+    end
+
+    # The composer text and the byte span of the live marker that `hit?/3`
+    # finds for the cursor, or nil. The cursor column counts code points, so
+    # one walk of the cursor line turns it into a byte offset. One read of
+    # the composer and one search for all markers: linear in the composer
+    # text.
+    defp marker_at(%{pastes: pastes}, _code) when map_size(pastes) == 0, do: nil
+
+    defp marker_at(state, code) do
+      {row, column} = ExRatatui.textarea_cursor(state.input)
+      value = ExRatatui.textarea_get_value(state.input)
+      {above, [line | _]} = value |> String.split("\n", parts: row + 2) |> Enum.split(row)
+      line_start = Enum.reduce(above, 0, &(byte_size(&1) + 1 + &2))
+
+      cursor =
+        line |> String.to_charlist() |> Enum.take(column) |> List.to_string() |> byte_size()
+
+      spans =
+        for {at, size} <- :binary.matches(value, Map.keys(state.pastes)), do: {at, at + size}
+
+      case Enum.find(spans, &hit?(code, line_start + cursor, &1)) do
+        nil -> nil
+        span -> {value, span}
+      end
+    end
+
+    # A terminal can send a pasted new line as CR. Control characters other
+    # than tab and new line drop, as in the transcript.
+    defp paste(state, content) do
+      text = content |> String.replace(["\r\n", "\r"], "\n") |> drop_controls()
+
+      case line_count(text) do
+        lines when lines > @paste_lines ->
+          marker = "[Pasted text ##{map_size(state.pastes) + 1}, #{lines} lines]" <> @marker_end
+          insert(%{state | pastes: Map.put(state.pastes, marker, text)}, marker)
+
+        _lines ->
+          insert(state, text)
+      end
+    end
+
+    # A final new line does not start a line.
+    defp line_count(text) do
+      newlines = length(:binary.matches(text, "\n"))
+      if String.ends_with?(text, "\n"), do: newlines, else: newlines + 1
+    end
+
+    # One pass, so a marker inside a paste is not expanded.
+    defp expand(value, pastes) when map_size(pastes) == 0, do: value
+
+    defp expand(value, pastes),
+      do: String.replace(value, Map.keys(pastes), &Map.fetch!(pastes, &1))
+
+    defp clear_composer(state) do
+      ExRatatui.textarea_set_value(state.input, "")
+      %{state | pastes: %{}}
+    end
+
     # `/model` is the only command. The rule is on bytes, not on looks; the
-    # feature doc's bounds table holds the rule and its limit. The input
-    # widget drops control characters from a paste, so `/model<tab>a/b`
-    # arrives as `/modela/b`: no separator after the word, so the usage
-    # notice. The ref goes to `Helyx.ModelRef` unsplit, which owns its bounds.
-    # The widget holds only valid UTF-8; the `u` flag raises on anything else.
+    # feature doc's bounds table holds the rule and its limit. A paste keeps
+    # tabs and new lines, so `/model<tab>a/b` has a separator. The text is
+    # the composer with its paste markers expanded. The ref goes to
+    # `Helyx.ModelRef` unsplit, which owns its bounds. The widget holds only
+    # valid UTF-8; the `u` flag raises on anything else.
     defp command(text) do
       case Regex.run(~r/\A[\s\p{C}]*\/model([\s\p{C}]*)/u, text, return: :index) do
         nil -> :message
@@ -294,8 +456,7 @@ if Helyx.TUI.Available.available?() do
       # A rejected message stays in the composer, and the status bar says why.
       case sent do
         :ok ->
-          ExRatatui.text_input_set_value(state.input, "")
-          %{state | scroll: nil}
+          %{clear_composer(state) | scroll: nil}
 
         {:error, reason} ->
           %{state | vm: ViewModel.reject(state.vm, send_error(reason))}
@@ -315,8 +476,7 @@ if Helyx.TUI.Available.available?() do
     defp switch_model(ref, state) do
       case Session.set_model(state.session, ref) do
         :ok ->
-          ExRatatui.text_input_set_value(state.input, "")
-          state
+          clear_composer(state)
 
         {:error, reason} ->
           %{state | vm: ViewModel.notice(state.vm, model_error(reason))}
@@ -336,7 +496,7 @@ if Helyx.TUI.Available.available?() do
       [transcript, composer, status] =
         Layout.split(area, :vertical, [
           {:min, 0},
-          {:length, @composer_rows},
+          {:length, composer_rows(state.input, frame.height)},
           {:length, @status_rows}
         ])
 
@@ -371,7 +531,7 @@ if Helyx.TUI.Available.available?() do
     defp on_screen(state, position) do
       case state.terminal_size_fn.() do
         {width, height} when is_integer(width) and is_integer(height) ->
-          rows = max(height - @composer_rows - @status_rows, 1)
+          rows = max(height - composer_rows(state.input, height) - @status_rows, 1)
           %{state | scroll: position.(width, rows)}
 
         {:error, _reason} ->
@@ -521,8 +681,12 @@ if Helyx.TUI.Available.available?() do
       # and a raw 0x9B byte is a one-byte CSI.
       |> String.replace_invalid("")
       |> String.replace("\t", "  ")
-      |> String.replace(~r/[\x00-\x08\x0B-\x1F\x7F\x{80}-\x{9F}]/u, "")
+      |> drop_controls()
     end
+
+    # All C0 and C1 control characters but tab and new line.
+    defp drop_controls(text),
+      do: String.replace(text, ~r/[\x00-\x08\x0B-\x1F\x7F\x{80}-\x{9F}]/u, "")
 
     # The wrap is one pure function from a line and a width to its rows. No
     # row is wider than `width` columns, with one exception: a glyph wider than
@@ -600,8 +764,16 @@ if Helyx.TUI.Available.available?() do
 
     # Composer and status
 
+    defp composer_rows(input),
+      do: min(ExRatatui.textarea_line_count(input), @composer_lines) + 2
+
+    # The composer shrinks, down to one line, before the transcript loses its
+    # last row. So the drawn screen is the scroll screen at 5 rows or more.
+    defp composer_rows(input, height),
+      do: min(composer_rows(input), max(height - @status_rows - 1, 3))
+
     defp composer_widget(input) do
-      %TextInput{
+      %Textarea{
         state: input,
         cursor_style: %Style{modifiers: [:reversed]},
         block: %Block{borders: [:all], title: "prompt"}
@@ -624,7 +796,8 @@ if Helyx.TUI.Available.available?() do
         if scroll,
           do: %Span{content: " scrolled · PgUp/PgDn · Ctrl+End newest", style: @bold},
           else: %Span{
-            content: " Enter steer · Alt+Enter follow-up · Esc abort · Ctrl+C quit · PgUp scroll",
+            content:
+              " Enter steer · Alt+Enter follow-up · Ctrl+J newline · Esc abort · Ctrl+C quit · PgUp scroll",
             style: @dim
           }
 

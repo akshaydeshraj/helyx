@@ -106,7 +106,7 @@ defmodule Helyx.TUITest do
     for n <- 1..32, do: :ok = Session.steer(state.session, "s#{n}")
 
     state = state |> press("x") |> press("enter")
-    assert ExRatatui.text_input_get_value(state.input) == "x"
+    assert ExRatatui.textarea_get_value(state.input) == "x"
     assert state.vm.reason == "not sent: the queue is full"
     assert status_text(state) =~ "not sent: the queue is full"
 
@@ -114,10 +114,12 @@ defmodule Helyx.TUITest do
     long = %{state | vm: %{state.vm | model: String.duplicate("m", 256)}}
     assert String.starts_with?(status_text(long), " ✕ not sent: the queue is full ")
 
-    # The release and the repeat of the rejected Enter keep the reason.
+    # The release and the repeat of the rejected Enter keep the reason, and
+    # do not edit the composer.
     for kind <- ["release", "repeat"] do
       {:noreply, kept} = TUI.handle_event(%Key{code: "enter", kind: kind}, state)
       assert kept.vm.reason == "not sent: the queue is full"
+      assert ExRatatui.textarea_get_value(kept.input) == "x"
     end
 
     # Enter again is a key press and a reject at once: the reason stays set.
@@ -131,7 +133,7 @@ defmodule Helyx.TUITest do
 
     state = press(state, "y")
     assert state.vm.reason == nil
-    assert ExRatatui.text_input_get_value(state.input) == "yx"
+    assert ExRatatui.textarea_get_value(state.input) == "yx"
     refute status_text(state) =~ "not sent"
   end
 
@@ -152,20 +154,20 @@ defmodule Helyx.TUITest do
     state = mounted(core, "typing", [])
 
     state = state |> press("h") |> press("i") |> press("!", ["shift"])
-    assert ExRatatui.text_input_get_value(state.input) == "hi!"
+    assert ExRatatui.textarea_get_value(state.input) == "hi!"
 
     state = press(state, "backspace")
-    assert ExRatatui.text_input_get_value(state.input) == "hi"
+    assert ExRatatui.textarea_get_value(state.input) == "hi"
 
     state = state |> press("x", ["ctrl"]) |> press("f1")
-    assert ExRatatui.text_input_get_value(state.input) == "hi"
+    assert ExRatatui.textarea_get_value(state.input) == "hi"
 
     # The widget owns the cursor: Home then typing inserts at the front.
     state = state |> press("home") |> press("a")
-    assert ExRatatui.text_input_get_value(state.input) == "ahi"
+    assert ExRatatui.textarea_get_value(state.input) == "ahi"
 
     {:noreply, state} = TUI.handle_event(%ExRatatui.Event.Paste{content: " there"}, state)
-    assert ExRatatui.text_input_get_value(state.input) == "a therehi"
+    assert ExRatatui.textarea_get_value(state.input) == "a therehi"
   end
 
   # The callbacks run in the TUI process, so a raise here is its death.
@@ -175,7 +177,7 @@ defmodule Helyx.TUITest do
     {:noreply, state} = TUI.handle_event(%ExRatatui.Event.Paste{content: "a" <> <<0xFF>>}, state)
     state = press(state, <<0xFF>>)
 
-    assert ExRatatui.text_input_get_value(state.input) == "hi"
+    assert ExRatatui.textarea_get_value(state.input) == "hi"
     assert state.vm.cells == []
     assert state.vm.reason == "input rejected: not valid UTF-8"
     assert press(state, "!").vm.reason == nil
@@ -185,7 +187,7 @@ defmodule Helyx.TUITest do
     state = mounted(core, "answer", [["Hello ", "there."]])
 
     state = state |> press("h") |> press("i") |> press("enter")
-    assert ExRatatui.text_input_get_value(state.input) == ""
+    assert ExRatatui.textarea_get_value(state.input) == ""
 
     state = drain(state)
 
@@ -553,6 +555,41 @@ defmodule Helyx.TUITest do
       assert rows == ["› m1", "› m2"]
     end
 
+    test "a change of the composer height checks the position", %{core: core} do
+      # Three new lines leave the transcript 2 rows; PgUp is then 4 rows from
+      # the end. One line less gives 3 rows, two lines less give 4 rows: the
+      # rest fits the screen, so the view follows the newest output again.
+      state = scroll_state(core, 10)
+      state = Enum.reduce(1..3, state, fn _, acc -> press(acc, "j", ["ctrl"]) end)
+      state = press(state, "page_up")
+      assert {_index, _row} = state.scroll
+
+      state = press(state, "backspace")
+      assert {_index, _row} = state.scroll
+      assert press(state, "backspace").scroll == nil
+    end
+
+    test "on a small terminal the composer shrinks, so the drawn screen is the scroll screen",
+         %{core: core} do
+      # 11 rows: a full composer would leave the transcript no row. It gets
+      # 9 rows, the transcript 1, and PgUp moves by that 1 row.
+      Process.put(:terminal_size, {20, 11})
+      state = scroll_state(core, 10)
+      state = Enum.reduce(1..8, state, fn _, acc -> press(acc, "j", ["ctrl"]) end)
+
+      [{_, transcript}, {_, composer}, _status] = TUI.render(state, %{width: 20, height: 11})
+      assert {transcript.height, composer.height} == {1, 9}
+
+      state = press(state, "page_up")
+      assert screen(state) == ["› m10"]
+
+      # At 6 rows the composer has 2 lines, at 5 one; below that the transcript has none.
+      for {height, rows} <- [{6, {1, 4}}, {5, {1, 3}}, {4, {0, 3}}] do
+        [{_, transcript}, {_, composer}, _] = TUI.render(state, %{width: 20, height: height})
+        assert {transcript.height, composer.height} == rows
+      end
+    end
+
     test "an event at a moment with no terminal size returns to the newest output", %{core: core} do
       state = core |> scroll_state(10) |> press("page_up")
       Process.put(:terminal_size, {:error, :no_tty})
@@ -672,7 +709,7 @@ defmodule Helyx.TUITest do
       assert status_text(state) =~ "fake/switch"
 
       state = state |> submit("/model other/any") |> fold_model_change()
-      assert ExRatatui.text_input_get_value(state.input) == ""
+      assert ExRatatui.textarea_get_value(state.input) == ""
       assert status_text(state) =~ "other/any"
       assert Session.model(state.session) == "other/any"
 
@@ -697,14 +734,14 @@ defmodule Helyx.TUITest do
             {"/model\u00A0fake/a\u00A0b", "invalid model ref"},
             {"/model \u00A0 ", "usage: /model"}
           ] do
-        ExRatatui.text_input_set_value(state.input, "")
+        ExRatatui.textarea_set_value(state.input, "")
         state = submit(state, text)
 
         assert {:notice, shown} = List.last(state.vm.cells)
         assert shown =~ notice
         # At most the provider id: never the whole ref, whatever its size.
         assert byte_size(shown) < 80
-        assert ExRatatui.text_input_get_value(state.input) == text
+        assert ExRatatui.textarea_get_value(state.input) == text
         assert status_text(state) =~ "fake/stay"
         assert Session.model(state.session) == "fake/stay"
       end
@@ -716,18 +753,17 @@ defmodule Helyx.TUITest do
          %{core: core} do
       state = mounted(core, "plain", [["ok"]])
 
-      # The widget drops a pasted tab, so the third line arrives as "/modelfake/x".
-      for text <- ["/models are fun", "/model-x", "/model\tfake/x"] do
-        ExRatatui.text_input_set_value(state.input, "")
+      for text <- ["/models are fun", "/model-x"] do
+        ExRatatui.textarea_set_value(state.input, "")
         state = submit(state, text)
         assert {:notice, "usage: /model" <> _} = List.last(state.vm.cells)
-        assert ExRatatui.text_input_get_value(state.input) != ""
+        assert ExRatatui.textarea_get_value(state.input) != ""
       end
 
       refute_receive {:helyx_event, _}, 50
 
       # A slash elsewhere, or another first word, is a message.
-      ExRatatui.text_input_set_value(state.input, "")
+      ExRatatui.textarea_set_value(state.input, "")
       state = state |> submit("see /model") |> drain()
       assert last_answer(state) == "ok"
     end
@@ -747,14 +783,14 @@ defmodule Helyx.TUITest do
         {:noreply, _} = TUI.handle_event(%ExRatatui.Event.Paste{content: text}, state)
         press(state, "enter", if(model == "other/any", do: ["alt"], else: []))
         assert_receive {:helyx_event, %Event{type: :model_change, data: %{model: ^model}}}
-        assert ExRatatui.text_input_get_value(state.input) == ""
+        assert ExRatatui.textarea_get_value(state.input) == ""
       end
 
       # A rejected command stays in the composer, and nothing joins a queue.
       {:noreply, _} = TUI.handle_event(%ExRatatui.Event.Paste{content: "/model nope/x"}, state)
       state = press(state, "enter", ["alt"])
       assert {:notice, "unknown provider: nope"} = List.last(state.vm.cells)
-      assert ExRatatui.text_input_get_value(state.input) == "/model nope/x"
+      assert ExRatatui.textarea_get_value(state.input) == "/model nope/x"
       assert Session.queue_count(state.session) == %{steers: 0, follow_ups: 0}
       refute_receive {:helyx_event, %Event{type: :queue_update}}, 50
 
@@ -771,7 +807,7 @@ defmodule Helyx.TUITest do
       state = mounted(core, "looks", Enum.map(lines, fn _ -> ["ok"] end))
 
       for text <- lines do
-        ExRatatui.text_input_set_value(state.input, "")
+        ExRatatui.textarea_set_value(state.input, "")
         state = state |> submit(text) |> drain()
         assert last_answer(state) == "ok"
         assert Session.model(state.session) == "fake/looks"
@@ -788,22 +824,229 @@ defmodule Helyx.TUITest do
           ] do
         :ok = Session.set_model(state.session, "fake/bom")
         assert_receive {:helyx_event, %Event{type: :model_change}}
-        ExRatatui.text_input_set_value(state.input, "")
+        ExRatatui.textarea_set_value(state.input, "")
         submit(state, text)
         assert_receive {:helyx_event, %Event{type: :model_change, data: %{model: "other/any"}}}
-        assert ExRatatui.text_input_get_value(state.input) == ""
+        assert ExRatatui.textarea_get_value(state.input) == ""
       end
 
       # Inside the ref, or after it, such a character is the ref's problem:
       # it is not trimmed, so the ref is rejected, and nothing is sent.
       for text <- ["/model fake/a\u200Bb", "/model fake/ab\u200B"] do
-        ExRatatui.text_input_set_value(state.input, "")
+        ExRatatui.textarea_set_value(state.input, "")
         state = submit(state, text)
         assert {:notice, "invalid model ref" <> _} = List.last(state.vm.cells)
-        assert ExRatatui.text_input_get_value(state.input) == text
+        assert ExRatatui.textarea_get_value(state.input) == text
       end
 
       refute_receive {:helyx_event, _}, 50
+    end
+  end
+
+  describe "multiline composer" do
+    defp paste(state, text) do
+      {:noreply, state} = TUI.handle_event(%ExRatatui.Event.Paste{content: text}, state)
+      state
+    end
+
+    defp value(state), do: ExRatatui.textarea_get_value(state.input)
+
+    defp composer_height(state) do
+      [_transcript, {_widget, %Rect{height: height}}, _status] =
+        TUI.render(state, %{width: 40, height: 30})
+
+      height
+    end
+
+    defp lines(count), do: Enum.map_join(1..count, "\n", &"l#{&1}\tx")
+
+    defp marker(id, lines), do: "[Pasted text ##{id}, #{lines} lines]\u0001"
+
+    test "Ctrl+J and Shift+Enter add a new line, Enter sends it all", %{core: core} do
+      state = mounted(core, "lines", [["ok"]])
+
+      state =
+        state
+        |> press("a")
+        |> press("j", ["ctrl"])
+        |> press("b")
+        |> press("enter", ["shift"])
+        |> press("c")
+
+      assert value(state) == "a\nb\nc"
+      assert status_text(state) =~ "Ctrl+J newline"
+
+      state = state |> press("enter") |> drain()
+      assert value(state) == ""
+      assert [prompt, _answer] = state.vm.cells
+      assert Helyx.Message.text(prompt) == "a\nb\nc"
+    end
+
+    test "the composer grows to 8 lines and the transcript screen shrinks with it", %{
+      core: core
+    } do
+      state = mounted(core, "grow", [])
+      assert composer_height(state) == 3
+
+      state = Enum.reduce(1..6, state, fn _, state -> press(state, "j", ["ctrl"]) end)
+      assert composer_height(state) == 9
+
+      state = press(state, "j", ["ctrl"])
+      assert composer_height(state) == 10
+
+      state = press(state, "j", ["ctrl"])
+      assert ExRatatui.textarea_line_count(state.input) == 9
+      assert composer_height(state) == 10
+    end
+
+    test "a paste of 5 lines or fewer is text, with its tabs and new lines", %{core: core} do
+      state = mounted(core, "short", [])
+
+      for count <- [4, 5] do
+        ExRatatui.textarea_set_value(state.input, "")
+        state = paste(state, lines(count))
+        assert value(state) == lines(count)
+        assert state.pastes == %{}
+      end
+
+      # Lines count by new lines, not by bytes or characters.
+      ExRatatui.textarea_set_value(state.input, "")
+      wide = Enum.map_join(1..5, "\n", fn _ -> "日本語\t🙂é" end)
+      state = paste(state, wide)
+      assert value(state) == wide
+      assert paste(state, wide <> "\nü").pastes |> Map.keys() == [marker(1, 6)]
+
+      # A final new line does not start a line; CR and CRLF are new lines.
+      ExRatatui.textarea_set_value(state.input, "")
+      state = paste(state, "a\r\nb\rc\nd\ne\n")
+      assert value(state) == "a\nb\nc\nd\ne\n"
+      assert state.pastes == %{}
+
+      # Control characters other than tab and new line drop.
+      ExRatatui.textarea_set_value(state.input, "")
+      state = paste(state, "a\e[31mb\u009Bc")
+      assert value(state) == "a[31mbc"
+    end
+
+    test "a paste of more than 5 lines is one marker and is sent in full", %{core: core} do
+      state = mounted(core, "long", [["ok"]])
+      big = lines(6) <> "\n"
+
+      state = state |> press("é") |> paste(big) |> press("!") |> paste("ü\n" <> lines(19))
+      assert value(state) == "é" <> marker(1, 6) <> "!" <> marker(2, 20)
+
+      state = state |> press("enter") |> drain()
+      assert [prompt, _answer] = state.vm.cells
+      assert Helyx.Message.text(prompt) == "é" <> big <> "!ü\n" <> lines(19)
+      assert state.pastes == %{}
+
+      # The ids start again with the next prompt.
+      state = paste(state, lines(6))
+      assert value(state) == marker(1, 6)
+
+      # A two-digit id and a three-digit count are one marker too.
+      state = Enum.reduce(2..10, state, fn _, acc -> paste(acc, lines(6)) end)
+      state = state |> paste(lines(100)) |> press("backspace")
+      assert String.ends_with?(value(state), marker(10, 6))
+      state = press(state, "backspace")
+      assert String.ends_with?(value(state), marker(9, 6))
+    end
+
+    test "a marker is one unit for every key", %{core: core} do
+      state = mounted(core, "unit", [])
+
+      # Backspace right after a marker removes it whole.
+      state = state |> press("ß") |> paste(lines(7)) |> press("x")
+      state = press(state, "backspace")
+      assert value(state) == "ß" <> marker(1, 7)
+      state = press(state, "backspace")
+      assert value(state) == "ß"
+
+      # Up and Down keep the column, so they can put the cursor inside a
+      # marker: text then goes after it, and Backspace removes it whole.
+      ExRatatui.textarea_set_value(state.input, "")
+      state = state |> press("a") |> press("b") |> press("c") |> press("j", ["ctrl"])
+      state = paste(state, lines(6))
+      up_down = fn state -> state |> press("up") |> press("down") end
+
+      state = state |> up_down.() |> press("x")
+      assert value(state) == "abc\n" <> marker(2, 6) <> "x"
+      state = state |> up_down.() |> paste("p") |> up_down.() |> press("j", ["ctrl"])
+      assert value(state) == "abc\n" <> marker(2, 6) <> "\npx"
+      state = state |> press("right") |> press("up") |> press("backspace")
+      assert value(state) == "abc\n\npx"
+
+      # Delete at the start of a marker or inside it removes it whole.
+      ExRatatui.textarea_set_value(state.input, "")
+      state = state |> press("a") |> paste(lines(6)) |> press("z") |> press("home")
+      state = state |> press("right") |> press("delete")
+      assert value(state) == "az"
+      state = state |> press("j", ["ctrl"]) |> paste(lines(6)) |> up_down.() |> press("delete")
+      assert value(state) == "a\nz"
+
+      # Left and Right pass over a marker in one step.
+      ExRatatui.textarea_set_value(state.input, "")
+      state = state |> press("q") |> paste(lines(6)) |> press("r")
+      state = state |> press("left") |> press("left") |> press("p")
+      assert value(state) == "qp" <> marker(5, 6) <> "r"
+      state = state |> press("right") |> press("s")
+      assert value(state) == "qp" <> marker(5, 6) <> "sr"
+
+      # Zero-width text after a marker does not stop the cursor short of its
+      # end.
+      ExRatatui.textarea_set_value(state.input, "")
+      state = state |> press("x") |> paste(lines(6)) |> press("\u200b") |> press("home")
+      state = state |> press("right") |> press("right") |> press("y")
+      assert value(state) == "x" <> marker(6, 6) <> "y\u200b"
+      state = state |> press("home") |> press("right") |> press("delete")
+      assert value(state) == "xy\u200b"
+    end
+
+    test "only the markers that the composer made are replaced", %{core: core} do
+      state = mounted(core, "forge", [["ok"], ["ok"]])
+      look = "[Pasted text #1, 6 lines]"
+
+      # Typed or pasted, the text of a live marker is sent as it is, and
+      # Backspace after them removes only the typed character.
+      state = paste(state, lines(6))
+      state = Enum.reduce(String.graphemes(look), state, &press(&2, &1))
+      state = state |> paste(" " <> look) |> press("x") |> press("backspace")
+      state = state |> press("enter") |> drain()
+      assert [prompt, _answer] = state.vm.cells
+      assert Helyx.Message.text(prompt) == lines(6) <> look <> " " <> look
+
+      # A key code or a paste with the end character of a marker cannot
+      # forge one: the key goes nowhere, and the paste drops the character.
+      state = paste(state, lines(6))
+      state = state |> press("\u0001") |> paste(look <> "\u0001")
+      assert value(state) == marker(1, 6) <> look
+      state = state |> press("enter") |> drain()
+      assert Helyx.Message.text(Enum.at(state.vm.cells, 2)) == lines(6) <> look
+    end
+
+    test "a pasted tab after /model is a separator", %{core: core} do
+      state = mounted(core, "tab", [["ok"]])
+
+      # The Tab key indents in the composer.
+      state = press(state, "tab")
+      assert value(state) != ""
+      ExRatatui.textarea_set_value(state.input, "")
+
+      state = state |> paste("/model\tother/any") |> press("enter")
+      assert_receive {:helyx_event, %Event{type: :model_change, data: %{model: "other/any"}}}
+      assert value(state) == ""
+
+      # A new line is whitespace: before the ref it separates, after it the
+      # trim drops it. Text on a later line makes the ref invalid.
+      for {text, model} <- [{"/model\nfake/r", "fake/r"}, {"/model fake/q\n", "fake/q"}] do
+        state = state |> paste(text) |> press("enter")
+        assert_receive {:helyx_event, %Event{type: :model_change, data: %{model: ^model}}}
+        assert value(state) == ""
+      end
+
+      state = state |> paste("/model fake/a\nhello") |> press("enter")
+      assert {:notice, "invalid model ref" <> _} = List.last(state.vm.cells)
+      assert value(state) == "/model fake/a\nhello"
     end
   end
 end
