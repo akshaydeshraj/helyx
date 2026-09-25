@@ -1,7 +1,7 @@
 defmodule Helyx.HandsTest do
-  # The hands' group bookkeeping, driven directly with the test process as
-  # the session. The `kill_cmd` seam fakes kill(1), so a group that survives
-  # KILL is testable without an unkillable OS process.
+  # The hands' handle bookkeeping, driven directly with the test process as
+  # the session. The hold test tools release, keep, or fail on the handles
+  # they get, so no OS resource is needed.
   use ExUnit.Case, async: true
 
   alias Helyx.Message.ToolCall
@@ -11,7 +11,9 @@ defmodule Helyx.HandsTest do
 
     plugins = [
       Helyx.Test.Provider,
-      Helyx.Test.Tool.Register,
+      Helyx.Test.Tool.Hold,
+      Helyx.Test.Tool.HoldTwo,
+      Helyx.Test.Tool.HoldBare,
       Helyx.Test.Tool.Upcase
     ]
 
@@ -19,7 +21,7 @@ defmodule Helyx.HandsTest do
     %{core: core}
   end
 
-  defp start_hands(core, opts) do
+  defp start_hands(core, opts \\ []) do
     {:ok, hands} =
       Helyx.Hands.start_link([core: core, cwd: File.cwd!(), session: self()] ++ opts)
 
@@ -28,116 +30,117 @@ defmodule Helyx.HandsTest do
 
   defp call(id, name, arguments), do: %ToolCall{id: id, name: name, arguments: arguments}
 
-  # A kill(1) fake: reports every group alive while the Agent holds true,
-  # and echoes each invocation to the test process.
-  defp fake_kill(agent, test_pid) do
-    fn args ->
-      send(test_pid, {:kill, args})
-
-      case {args, Agent.get(agent, & &1)} do
-        {["-0" | _], true} -> {"", 0}
-        {["-0" | _], false} -> {"no such process", 1}
-        _ -> {"", 0}
-      end
-    end
+  defp upcase(hands, id) do
+    :ok = Helyx.Hands.run(hands, "t1", call(id, "upcase", %{"text" => "hi"}))
+    assert_receive {:tool_result, "t1", ^id, result}, 2_000
+    result
   end
 
-  test "a group that survives KILL gives an error result and blocks the next call", %{core: core} do
+  test "an unconfirmed handle gives an error result and blocks calls until a retry releases it",
+       %{core: core} do
     {:ok, agent} = Agent.start_link(fn -> true end)
-    hands = start_hands(core, kill_cmd: fake_kill(agent, self()), wait_ms: 0)
+    hands = start_hands(core)
+    handles = [{:keep, agent}, {:report, self()}]
 
-    :ok = Helyx.Hands.run(hands, "t1", call("c1", "register", %{"groups" => [4242]}))
+    :ok = Helyx.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => handles}))
     assert_receive {:tool_result, "t1", "c1", {:error, text}}, 2_000
-    assert text =~ "could not be killed"
-    assert text =~ "4242"
-    assert_received {:kill, ["-KILL", "--", "-4242"]}
+    assert text =~ "could not be released"
+    assert text =~ inspect({:keep, agent})
+    assert_received {:release, :deliver, _handles}
 
-    # The next call is refused with an error result, and the stuck group is
-    # signalled again first.
-    :ok = Helyx.Hands.run(hands, "t1", call("c2", "upcase", %{"text" => "hi"}))
-    assert_receive {:tool_result, "t1", "c2", {:error, text}}, 2_000
+    # The next call is refused, and the kept handle gets a retry first.
+    assert {:error, text} = upcase(hands, "c2")
     assert text =~ "earlier call"
-    assert text =~ "4242"
-    assert_received {:kill, ["-KILL", "--", "-4242"]}
 
-    # Once the group is gone, the stuck set clears and calls run again.
+    # Once the retry releases it, calls run again.
     Agent.update(agent, fn _ -> false end)
-    :ok = Helyx.Hands.run(hands, "t1", call("c3", "upcase", %{"text" => "hi"}))
-    assert_receive {:tool_result, "t1", "c3", {:ok, "HI"}}, 2_000
+    assert upcase(hands, "c3") == {:ok, "HI"}
   end
 
-  test "cancel reports a group that survives KILL", %{core: core} do
-    {:ok, agent} = Agent.start_link(fn -> true end)
-    hands = start_hands(core, kill_cmd: fake_kill(agent, self()), wait_ms: 0)
+  test "cancel releases with :cancel and reports an unconfirmed handle", %{core: core} do
+    hands = start_hands(core)
+    handles = [:keep, {:report, self()}]
 
     :ok =
-      Helyx.Hands.run(hands, "t1", call("c1", "register", %{"groups" => [777], "ms" => 60_000}))
+      Helyx.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => handles, "ms" => 60_000}))
 
-    await_registered(hands)
+    await_held(hands, 1)
 
     assert {:error, text} = Helyx.Hands.cancel(hands, "t1")
-    assert text =~ "could not be killed"
-    assert text =~ "777"
+    assert text =~ "could not be released"
+    assert text =~ ":keep"
+    assert_received {:release, :cancel, _handles}
 
-    # The survivor is remembered: the next call is refused.
-    :ok = Helyx.Hands.run(hands, "t1", call("c2", "upcase", %{"text" => "hi"}))
-    assert_receive {:tool_result, "t1", "c2", {:error, text}}, 2_000
+    assert {:error, text} = upcase(hands, "c2")
     assert text =~ "earlier call"
   end
 
-  test "two groups registered by one call are both killed at delivery", %{core: core} do
-    hands = start_hands(core, [])
-    g1 = spawn_group()
-    g2 = spawn_group()
-
-    :ok = Helyx.Hands.run(hands, "t1", call("c1", "register", %{"groups" => [g1, g2]}))
-    assert_receive {:tool_result, "t1", "c1", {:ok, "registered"}}, 5_000
-    refute group_alive?(g1)
-    refute group_alive?(g2)
+  test "a release just under the deadline confirms its handles", %{core: core} do
+    hands = start_hands(core, release_ms: 300)
+    :ok = Helyx.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 250}]}))
+    assert_receive {:tool_result, "t1", "c1", {:ok, "held"}}, 2_000
+    assert upcase(hands, "c2") == {:ok, "HI"}
   end
 
-  # The watchdog is the reaper: it may be KILLed only after the command
-  # group is gone, and only after it had time to exit by itself.
-  test "a watchdog group is swept only after the command group is gone", %{core: core} do
-    {:ok, agent} = Agent.start_link(fn -> MapSet.new([100, 200]) end)
-    test_pid = self()
+  @tag :capture_log
+  test "a release just past the deadline is killed and confirms nothing", %{core: core} do
+    hands = start_hands(core, release_ms: 300)
+    start = System.monotonic_time(:millisecond)
+    :ok = Helyx.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 350}]}))
+    assert_receive {:tool_result, "t1", "c1", {:error, text}}, 2_000
+    assert System.monotonic_time(:millisecond) - start < 340
+    assert text =~ "could not be released"
 
-    kill = fn args ->
-      send(test_pid, {:kill, args})
-
-      case args do
-        ["-0", "--", target] ->
-          if MapSet.member?(Agent.get(agent, & &1), -String.to_integer(target)),
-            do: {"", 0},
-            else: {"no such process", 1}
-
-        ["-KILL", "--" | targets] ->
-          killed = MapSet.new(targets, &(-String.to_integer(&1)))
-          Agent.update(agent, &MapSet.difference(&1, killed))
-          {"", 0}
-      end
-    end
-
-    hands = start_hands(core, kill_cmd: kill, wait_ms: 200)
-
-    :ok =
-      Helyx.Hands.run(
-        hands,
-        "t1",
-        call("c1", "register", %{"groups" => [100], "watchdogs" => [200]})
-      )
-
-    assert_receive {:tool_result, "t1", "c1", {:ok, "registered"}}, 5_000
-    assert [[_, _, "-100"], [_, _, "-200"]] = drain_kills()
+    # The release Task is gone; only the ending tool Task can be left.
+    Process.sleep(100)
+    assert Task.Supervisor.children(Helyx.Core.task_supervisor(core)) == []
   end
 
-  defp drain_kills(acc \\ []) do
-    receive do
-      {:kill, ["-KILL" | rest]} -> drain_kills([["-KILL" | rest] | acc])
-      {:kill, _} -> drain_kills(acc)
-    after
-      0 -> Enum.reverse(acc)
+  @tag :capture_log
+  test "a retry has a deadline of one second", %{core: core} do
+    # The first release times out, so both handles go to the retry.
+    hands = start_hands(core, release_ms: 100)
+    :ok = Helyx.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 1_500}]}))
+    assert_receive {:tool_result, "t1", "c1", {:error, _text}}, 3_000
+
+    # The retry is killed at its deadline, and the call is refused.
+    start = System.monotonic_time(:millisecond)
+    assert {:error, text} = upcase(hands, "c2")
+    assert text =~ "earlier call"
+    assert (System.monotonic_time(:millisecond) - start) in 1_000..1_400
+  end
+
+  @tag :capture_log
+  test "a release that raises, exits, or returns a bad value confirms nothing", %{core: core} do
+    for handle <- [:raise, :exit, :bad, :improper] do
+      hands = start_hands(core)
+      :ok = Helyx.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [handle]}))
+      assert_receive {:tool_result, "t1", "c1", {:error, text}}, 2_000
+      assert text =~ inspect(handle)
+      assert {:error, text} = upcase(hands, "c2")
+      assert text =~ "earlier call"
     end
+  end
+
+  test "an abort releases the handles of each tool in parallel, with one deadline",
+       %{core: core} do
+    hands = start_hands(core, release_ms: 1_500)
+    arguments = %{"handles" => [{:slow, 1_000}], "ms" => 60_000}
+    :ok = Helyx.Hands.run(hands, "t1", call("c1", "hold", arguments))
+    :ok = Helyx.Hands.run(hands, "t1", call("c2", "hold_two", arguments))
+    await_held(hands, 2)
+
+    # One after the other, the two releases would pass the deadline.
+    assert Helyx.Hands.cancel(hands, "t1") == :ok
+    assert upcase(hands, "c3") == {:ok, "HI"}
+  end
+
+  test "a tool without release/3 cannot hold a handle", %{core: core} do
+    hands = start_hands(core)
+    :ok = Helyx.Hands.run(hands, "t1", call("c1", "hold_bare", %{}))
+    assert_receive {:tool_result, "t1", "c1", {:error, text}}, 2_000
+    assert text =~ "release/3"
+    assert upcase(hands, "c2") == {:ok, "HI"}
   end
 
   test "a tool whose check fails stops the session with a clear error" do
@@ -151,41 +154,18 @@ defmodule Helyx.HandsTest do
              Helyx.Session.start(core, model: "test/ok")
   end
 
-  # Polls until the running Task has registered its group, so cancel finds
-  # it held.
-  defp await_registered(hands, tries \\ 200) do
+  # Polls until `n` running Tasks hold a handle, so cancel finds them held.
+  defp await_held(hands, n, tries \\ 200) do
     cond do
-      map_size(:sys.get_state(hands).groups) > 0 ->
+      map_size(:sys.get_state(hands).held) >= n ->
         :ok
 
       tries == 0 ->
-        flunk("no group was registered")
+        flunk("no handle was held")
 
       true ->
         Process.sleep(10)
-        await_registered(hands, tries - 1)
+        await_held(hands, n, tries - 1)
     end
-  end
-
-  # A real OS process group: perl makes itself a group leader, reports its
-  # pid, and sleeps.
-  defp spawn_group do
-    perl = System.find_executable("perl")
-
-    port =
-      Port.open({:spawn_executable, perl}, [
-        :binary,
-        {:args, ["-e", ~S|setpgrp(0, 0); syswrite(STDOUT, "$$\n"); exec "sleep", "60"|]}
-      ])
-
-    receive do
-      {^port, {:data, line}} -> String.to_integer(String.trim(line))
-    after
-      2_000 -> flunk("no group pid")
-    end
-  end
-
-  defp group_alive?(group) do
-    match?({_, 0}, System.cmd("kill", ["-0", "--", "-#{group}"], stderr_to_stdout: true))
   end
 end

@@ -6,7 +6,7 @@ Ticket #4 took six review rounds on PR #22 (`docs/reviews/2026-09-17-abort-clean
 
 Every resource has a release path that works when its owner dies. A holder alone is not enough: ticket #37 showed that any cleanup that lives in a BEAM process fails when that process dies first, so the death itself must cause the cleanup. Inside the VM, work is linked to its owner, and the owner traps exits so a crash below it stays a message; the chain is session, hands, Task. At the OS boundary, a command's life is tied to its port: the perl watchdog kills the command's process group when the port closes, which any death above it causes, down to a `kill -9` of the whole VM.
 
-A process group, port, file handle, or other OS resource that a tool creates is still registered with the hands before the external work starts, because delivery and `cancel/2` wait until the resource is gone, and that wait needs the id. If registration cannot complete, the external work does not start: either the hands hold the resource before the work runs, or the work never ran.
+A process group, port, file handle, or other OS resource that a tool creates is still held with the hands before the external work starts, as an opaque handle, with `Helyx.Tool.hold/1`, because delivery and `cancel/2` wait until the resource is gone, and that wait needs the handle. The tool that holds the handle releases it through its `release/3` callback; the hands call it and keep every handle that is not confirmed as released. The OS work lives in the plugin, never in Core. If the hold cannot complete, the external work does not start: either the hands hold the resource before the work runs, or the work never ran.
 
 ## Considered options
 
@@ -14,11 +14,13 @@ A process group, port, file handle, or other OS resource that a tool creates is 
 
 ## Consequences
 
-- The bash launcher carries a handshake: the perl watchdog writes the group id, the tool registers it with `Helyx.Tool.register_group/1`, and only then sends the go-ahead line that lets the command exec.
+- The bash launcher carries a handshake: the perl watchdog writes the group id, the tool holds it with `Helyx.Tool.hold/1`, and only then sends the go-ahead line that lets the command exec.
 - Every feature doc lists its external resources in an ownership table (`docs/features/TEMPLATE.md`); a row whose release path dies with its owner is a design flag the spec axis raises before implementation.
-- Harness providers that spawn processes follow the same rule: they are spawned on the hands side (ADR 0003), and their processes are registered with the hands before use.
+- Harness providers that spawn processes follow the same rule: they are spawned on the hands side (ADR 0003), and their processes are held with the hands before use.
 - perl is required for the bash tool; a system without it is a clear error when the hands start.
 
 ## Revision
 
 2026-09-18, ticket #37. The original decision, "OS resources are owned by long-lived processes, never by Tasks", was too broad: a long-lived holder still fails when the holder itself dies first. The rule is restated as above, and links plus the port watchdog replaced the port scan, the perl-less launcher mode, and the kill of late registrations.
+
+2026-09-25, `docs/features/tool-resource-release.md`. The hands held process group ids and did the OS work to release them, so Core knew about signals, group kinds, and perl. The hold stays, but the handle is opaque, and the plugin that holds it releases it through `release/3`. The cleanup and refusal contract does not change.

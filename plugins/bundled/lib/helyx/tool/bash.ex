@@ -13,9 +13,9 @@ defmodule Helyx.Tool.Bash do
   The call returns when stdout closes, so a background child that keeps
   stdout open holds the call until it exits.
 
-  The command runs in its own process group under a perl watchdog. The
-  watchdog registers the group with the hands before the command is allowed
-  to execute, and ties the command's life to the port: when the port closes,
+  The command runs in its own process group under a perl watchdog. The tool
+  holds the group with the hands before the command is allowed to execute.
+  The watchdog ties the command's life to the port: when the port closes,
   because anything above the command died, the watchdog kills the group.
   perl is required; `check/0` reports a system without it when the hands
   start.
@@ -34,7 +34,7 @@ defmodule Helyx.Tool.Bash do
   # error kills the group too); when the command ends first, it exits with
   # the command's status
   # (128 plus the signal for a signal death). The watchdog ignores TERM in
-  # the parent only, after the fork, so the hands can TERM every registered
+  # the parent only, after the fork, so a release can TERM every held
   # group without cutting the cleanup short; ignored dispositions survive
   # exec, so the child must not inherit one. The 50 ms select tick is the
   # poll for both stdin and the child.
@@ -190,18 +190,21 @@ defmodule Helyx.Tool.Bash do
 
   def run(_args, _cwd), do: {:error, "bash needs a command"}
 
+  @impl true
+  defdelegate release(handles, mode, deadline), to: Helyx.Tool.Bash.Group
+
   defp run_command(command, cwd) do
     nonce = random_word()
     {exe, options} = launcher(command, cwd, nonce)
     port = Port.open({:spawn_executable, exe}, options)
 
     # The runtime detaches port programs into their own process group, so
-    # the port's OS pid is the watchdog's group. Registered as :watchdog:
-    # the hands wait for it, so an abort cannot return while the command is
-    # a zombie, and they sweep it only after the command group is gone, so
-    # a KILL from the hands can never cut the reap short.
+    # the port's OS pid is the watchdog's group. Held as :watchdog: the
+    # release waits for it, so an abort cannot return while the command is
+    # a zombie, and KILLs it only after the command group is gone, so a
+    # KILL can never cut the reap short.
     case Port.info(port, :os_pid) do
-      {:os_pid, os_pid} -> Helyx.Tool.register_group(os_pid, :watchdog)
+      {:os_pid, os_pid} -> Helyx.Tool.hold({:watchdog, os_pid})
       nil -> :ok
     end
 
@@ -246,7 +249,7 @@ defmodule Helyx.Tool.Bash do
   end
 
   # Takes the marker off the stream. Only a group marker leads to the
-  # go-ahead, after the group is registered: a command never runs without
+  # go-ahead, after the group is held: a command never runs without
   # its group in the hands, and there is no ok result without a group marker.
   # With no marker, the closed port is the watchdog's signal to kill the
   # child it holds, if it got that far.
@@ -261,7 +264,7 @@ defmodule Helyx.Tool.Bash do
         {:not_started, "the watchdog gave no marker: " <> text}
 
       {group, pre} ->
-        Helyx.Tool.register_group(group)
+        Helyx.Tool.hold({:command, group})
         go = random_word()
         go_ahead(port, go)
         start_report(collect(port, pre, false), pre, nonce <> " 1\n", go <> " 0\n")

@@ -15,7 +15,7 @@ defmodule Helyx.SessionTest do
       Helyx.Test.Tool.Kill,
       Helyx.Test.Tool.Slow,
       Helyx.Test.Tool.Binary,
-      Helyx.Test.Tool.Register
+      Helyx.Test.Tool.Hold
     ]
 
     start_supervised!({Helyx.Core, name: core, plugins: plugins})
@@ -267,7 +267,7 @@ defmodule Helyx.SessionTest do
     :ok = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
-    assert final_text(collect_until(:agent_end)) == "binary,kill,register,slow,upcase"
+    assert final_text(collect_until(:agent_end)) == "binary,hold,kill,slow,upcase"
   end
 
   test "tool calls run on the hands and the loop continues until the provider stops", %{
@@ -1005,36 +1005,32 @@ defmodule Helyx.SessionTest do
   end
 
   describe "client calls during a sweep of the hands (issue #93)" do
-    # The `kill_cmd` seam of the hands reports the group alive, so a sweep
-    # takes its full time: one KILL wait of `@wait_ms`, and before it, in an
-    # abort, 500 ms of TERM grace. With the production wait of 5,000 ms the
-    # sweep is longer than the 5 s timeout of the client calls. The tests use
-    # a shorter wait and measure each call.
-    @wait_ms 500
+    # The "stuck" turn holds a handle whose release takes `@slow_ms` and one
+    # that stays held, so each sweep takes its full time and ends
+    # unconfirmed. The client calls must answer in far less.
+    @slow_ms 800
+    @budget_ms 400
 
-    # Starts a turn whose tool call registered a group that no KILL removes.
+    # Starts a turn whose tool call holds a handle that no release confirms.
     defp start_stuck_turn(core) do
       {:ok, session} = Session.start(core, model: "test/stuck")
       :ok = Session.subscribe(session)
-
       hands = :sys.get_state(Session.pid(session)).hands
-      stuck = fn _args -> {"", 0} end
-      :sys.replace_state(hands, &%{&1 | kill_cmd: stuck, wait_ms: @wait_ms})
 
       :ok = Session.prompt(session, "go")
       assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
       {session, hands, await_tool_task(hands, 100)}
     end
 
-    # The pid of the tool Task, once it has registered its group.
-    defp await_tool_task(_hands, 0), do: flunk("the group was never registered")
+    # The pid of the tool Task, once it holds its handles.
+    defp await_tool_task(_hands, 0), do: flunk("no handle was held")
 
     defp await_tool_task(hands, tries) do
-      case Map.keys(:sys.get_state(hands).groups) do
-        [task] ->
+      case Map.to_list(:sys.get_state(hands).held) do
+        [{task, [_, _]}] ->
           task
 
-        [] ->
+        _ ->
           Process.sleep(10)
           await_tool_task(hands, tries - 1)
       end
@@ -1080,7 +1076,7 @@ defmodule Helyx.SessionTest do
       # The events of the abort go out at the start of the sweep.
       assert stop_reason(collect_until(:agent_end)) == :aborted
 
-      results = timed_calls(session, @wait_ms)
+      results = timed_calls(session, @budget_ms)
       assert results[:steer] == :ok
       assert results[:follow_up] == :ok
       assert results[:prompt] == :ok
@@ -1088,7 +1084,7 @@ defmodule Helyx.SessionTest do
       # The abort waits for the sweep, and no turn starts during it: the
       # hands cannot take a tool call.
       assert {:ok, abort_ms} = Task.await(abort, 10_000)
-      assert abort_ms >= @wait_ms + 400
+      assert abort_ms >= @slow_ms
 
       # The messages sent during the sweep start one turn after it, steers
       # first.
@@ -1115,14 +1111,14 @@ defmodule Helyx.SessionTest do
     test "every client call answers during the sweep of a delivered call", %{core: core} do
       {session, _hands, task} = start_stuck_turn(core)
 
-      # The Task dies, and the hands sweep its group before the result.
+      # The Task dies, and the hands release its handles before the result.
       Process.exit(task, :kill)
-      results = timed_calls(session, @wait_ms - 200)
+      results = timed_calls(session, @budget_ms)
       assert results[:prompt] == {:error, :turn_running}
 
       events = collect_until(:agent_end)
       assert [result] = for(%{type: :tool_execution_end, data: %{message: m}} <- events, do: m)
-      assert Helyx.Message.text(result) =~ "could not be killed"
+      assert Helyx.Message.text(result) =~ "could not be released"
     end
 
     @tag :capture_log

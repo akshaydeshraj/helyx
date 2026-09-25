@@ -35,11 +35,12 @@ defmodule Helyx.Session do
   change emits a `:queue_update` event.
 
   An abort does not block the session. The session ends the turn at once and
-  asks the hands to kill the turn's processes, which can take many seconds
-  when a process group is stuck. Until the hands answer, the session answers
-  every client call, but it starts no turn, because the hands cannot take a
-  tool call during their sweep: a prompt, a steer, or a follow-up queues, and
-  one turn starts with the queue when the hands have answered.
+  asks the hands to release the turn's resources. This can take many
+  seconds when a resource stays. Until the hands answer, the session
+  answers every client call, but it starts no turn, because the hands
+  cannot take a tool call during the release: a prompt, a steer, or a
+  follow-up queues, and one turn starts with the queue when the hands have
+  answered.
   """
 
   use GenServer, restart: :temporary
@@ -309,7 +310,7 @@ defmodule Helyx.Session do
   end
 
   # An abort waits for the hands. A turn that starts now could send a tool
-  # call to the hands during their sweep, and that call would block the
+  # call to the hands during their release, and that call would block the
   # session, so every message queues until the hands answer.
   @impl true
   def handle_call({:steer, text}, _from, %State{aborting: {_request, _callers}} = state) do
@@ -361,7 +362,7 @@ defmodule Helyx.Session do
 
   def handle_call(:abort, _from, %State{turn: nil} = state), do: {:reply, :ok, state}
 
-  # The sweep of the hands can take longer than the timeout of a client call
+  # The release of the hands can take longer than the timeout of a client call
   # (issue #93), so the session does not wait in a call: the answer of the
   # hands arrives as a message, and the abort callers get their reply then.
   def handle_call(:abort, from, %State{turn: %Turn{} = turn} = state) do

@@ -14,42 +14,44 @@ defmodule Helyx.Hands do
   leaves the hands: each invalid sequence is replaced with U+FFFD, so a
   later encoder never sees invalid stored text.
 
-  A tool that starts an OS process group registers it with
-  `Helyx.Tool.register_group/2`, so the hands hold the groups outside the
-  Task, kill them when the call delivers, however the Task ended, and hold
-  the result until every group is gone. A group registered as `:watchdog`
-  is swept only after every command group is gone or stuck, and gets time
-  to exit by itself first, so the hands never KILL a reaper that still has
-  work. A group that survives KILL past the wait is stuck: the result
-  becomes an error, the group is signalled again at the start of each
-  later tool call, and the hands refuse tool calls
-  with an error result while a stuck group is alive. Chat, abort, and quit
-  are not blocked.
+  A tool that creates an OS resource holds it with `Helyx.Tool.hold/1`. The
+  hands then keep an opaque handle outside the Task. When the call
+  delivers, however the Task ended, the hands call the tool's `release/3`
+  with the Task's handles. The result goes to the session only after the
+  release returns. The OS work lives in the tool, never here.
+
+  The release runs in its own Task with a deadline. A handle is
+  unconfirmed when the release returns it. All the handles of a release are
+  unconfirmed when the release times out, raises, exits, or returns a bad
+  value. An unconfirmed handle makes the result an error. The tool gets
+  `:retry` for it at the start of each later tool call. While a handle is
+  unconfirmed, the hands refuse tool calls with an error result. Chat,
+  abort, and quit are not blocked.
 
   At init, each tool's optional `check/0` runs; a failed check stops the
   hands with `{:tool_unavailable, name, reason}`, so the session fails to
   start with a clear error.
 
-  `cancel/2` aborts a turn: it kills the turn's tool Tasks and the operating
-  system process groups they registered, TERM first and KILL after a grace
-  period, and returns only when every process is gone. A group that survives
-  is reported as an error and joins the stuck set.
+  `cancel/2` aborts a turn: it kills the turn's tool Tasks and calls
+  `release/3` with `:cancel` for their handles, one release Task per tool,
+  in parallel, with one deadline. It returns only when every release has
+  returned or timed out. An unconfirmed handle is reported as an error.
   """
 
   use GenServer
 
-  alias Helyx.Message.ToolCall
+  # The release deadline of a retry, for all tools together.
+  @retry_ms 1_000
 
-  @grace_ms 500
+  alias Helyx.Message.ToolCall
 
   defmodule State do
     @moduledoc false
-    # `tools` is the tool module by name. `tasks` holds each running Task and
-    # its call, by monitor ref. `groups` holds the registered process groups
-    # per Task pid, as a map of group id to kind (:command or :watchdog).
-    # `stuck` holds groups that survived KILL. `kill_cmd` and `wait_ms` are
-    # seams for tests: the kill(1) runner and the ceiling of each wait for a
-    # killed group.
+    # `tools` is the tool module by name. `tasks` holds each running Task,
+    # its turn, its call id, and its tool module, by monitor ref. `held`
+    # holds the handles per Task pid. `unconfirmed` holds the handles that
+    # no release confirmed, per tool module. `release_ms` is the release
+    # deadline of a delivery or a cancel, a seam for tests.
     @enforce_keys [:core, :cwd, :session]
     defstruct [
       :core,
@@ -57,10 +59,9 @@ defmodule Helyx.Hands do
       :session,
       tools: %{},
       tasks: %{},
-      groups: %{},
-      stuck: MapSet.new(),
-      kill_cmd: &Helyx.Hands.kill_cmd/1,
-      wait_ms: 5_000
+      held: %{},
+      unconfirmed: %{},
+      release_ms: 20_000
     ]
   end
 
@@ -77,15 +78,15 @@ defmodule Helyx.Hands do
   def run(hands, turn_id, %ToolCall{} = call), do: GenServer.call(hands, {:run, turn_id, call})
 
   @doc """
-  Cancels the turn's tool Tasks and their processes. Returns when all are
-  gone, or an error naming the groups that survived KILL.
+  Cancels the turn's tool Tasks and releases their handles. Returns when
+  every release has returned, or an error naming the unconfirmed handles.
   """
   @spec cancel(pid(), String.t()) :: :ok | {:error, String.t()}
   def cancel(hands, turn_id), do: GenServer.call(hands, {:cancel, turn_id}, :infinity)
 
   @doc """
   Sends the request of `cancel/2` and returns at once, so the caller stays
-  free during the sweep. The answer arrives as a message; give each message
+  free during the release. The answer arrives as a message; give each message
   to `cancel_response/2`.
   """
   @spec request_cancel(pid(), String.t()) :: :gen_server.request_id()
@@ -100,9 +101,6 @@ defmodule Helyx.Hands do
           {:reply, :ok | {:error, String.t()}} | {:error, {term(), term()}} | :no_reply
   def cancel_response(message, request),
     do: :gen_server.check_response(message, request)
-
-  @doc false
-  def kill_cmd(args), do: System.cmd("kill", args, stderr_to_stdout: true)
 
   # The tool table comes from Core. The session checks it for duplicate
   # names before it starts the hands, so this match holds.
@@ -134,45 +132,51 @@ defmodule Helyx.Hands do
   end
 
   def handle_call({:run, turn_id, call}, _from, state) do
-    state = clear_stuck(state)
+    state = retry(state)
 
-    if MapSet.size(state.stuck) > 0 do
-      {:reply, :ok, refuse(state, turn_id, call)}
-    else
+    if state.unconfirmed == %{} do
       {:reply, :ok, start_task(state, turn_id, call)}
+    else
+      {:reply, :ok, refuse(state, turn_id, call)}
     end
   end
 
-  # A registration from a Task that was already killed is dropped: its port
-  # is closed, so the watchdog kills the group.
-  def handle_call({:register_group, group, kind}, {pid, _tag}, state) do
-    if Enum.any?(state.tasks, fn {_ref, {task, _turn, _call}} -> task.pid == pid end) do
-      groups = Map.update(state.groups, pid, %{group => kind}, &Map.put(&1, group, kind))
-      {:reply, :ok, %{state | groups: groups}}
-    else
-      {:reply, :ok, state}
+  # A handle from a Task that was already killed is dropped: the tool frees
+  # the resource when its Task dies (see `Helyx.Tool.hold/1`). A tool with
+  # no `release/3` gets `:no_release`, and `Helyx.Tool.hold/1` raises in its
+  # Task.
+  def handle_call({:hold, handle}, {pid, _tag}, state) do
+    case Enum.find_value(state.tasks, fn {_ref, {task, _, _, tool}} -> task.pid == pid && tool end) do
+      nil ->
+        {:reply, :ok, state}
+
+      tool ->
+        if function_exported?(tool, :release, 3) do
+          held = Map.update(state.held, pid, [handle], &[handle | &1])
+          {:reply, :ok, %{state | held: held}}
+        else
+          {:reply, :no_release, state}
+        end
     end
   end
 
   def handle_call({:cancel, turn_id}, _from, state) do
     {cancelled, kept} =
-      Map.split_with(state.tasks, fn {_ref, {_task, id, _call_id}} -> id == turn_id end)
+      Map.split_with(state.tasks, fn {_ref, {_task, id, _call_id, _tool}} -> id == turn_id end)
 
-    tasks = for {_ref, {task, _id, _call_id}} <- cancelled, do: task
-    {registered, groups} = Map.split(state.groups, Enum.map(tasks, & &1.pid))
-    Enum.each(tasks, &Task.shutdown(&1, :brutal_kill))
+    cancelled = Map.values(cancelled)
+    Enum.each(cancelled, fn {task, _, _, _} -> Task.shutdown(task, :brutal_kill) end)
+    {taken, held} = Map.split(state.held, Enum.map(cancelled, fn {task, _, _, _} -> task.pid end))
 
-    # Killing the Tasks closed their ports, so each watchdog TERMs its own
-    # group; the TERM from here covers a watchdog that is already gone. The
-    # watchdogs get no TERM (they ignore it) and are swept last.
-    merged = registered |> Map.values() |> Enum.reduce(%{}, &Map.merge(&2, &1))
-    {commands, watchdogs} = split_kinds(merged)
-    signal(commands, "TERM", state.kill_cmd)
-    left = await_gone(commands, @grace_ms, state.kill_cmd)
-    {left, state} = kill_and_wait(left, state.wait_ms, state)
-    {left_watchdogs, state} = sweep_watchdogs(watchdogs, state)
+    by_tool =
+      Enum.reduce(cancelled, %{}, fn {task, _, _, tool}, acc ->
+        add_handles(acc, %{tool => Map.get(taken, task.pid, [])})
+      end)
 
-    {:reply, killed_error(left ++ left_watchdogs) || :ok, %{state | tasks: kept, groups: groups}}
+    left = release(by_tool, :cancel, state.release_ms, state.core)
+    state = %{state | tasks: kept, held: held, unconfirmed: add_handles(state.unconfirmed, left)}
+
+    {:reply, unconfirmed_error(left) || :ok, state}
   end
 
   @impl true
@@ -193,29 +197,26 @@ defmodule Helyx.Hands do
   def handle_info(_message, state), do: {:noreply, state}
 
   # The hands stop only for a trapped reason; on an untrappable kill the
-  # links do the same work. The watchdogs see the closed ports and kill the
-  # OS side.
+  # links do the same work. Each tool frees its resources when its Task dies
+  # (see `Helyx.Tool.hold/1`).
   @impl true
   def terminate(_reason, state) do
-    for {_ref, {task, _turn, _call}} <- state.tasks, do: Task.shutdown(task, :brutal_kill)
+    for {_ref, {task, _turn, _call, _tool}} <- state.tasks, do: Task.shutdown(task, :brutal_kill)
     :ok
   end
 
-  # No process survives its call: the registered groups are killed when the
-  # result delivers, however the Task ended, and the result is held until
-  # every group is gone, so the next call cannot overlap a dying one.
-  # Straight SIGKILL: the call is over, nothing in the group has output
-  # anyone will read. A group that survives makes the result an error.
+  # No resource survives its call: the handles are released when the result
+  # delivers, however the Task ended, and the result waits until the
+  # release returns, so the next call cannot overlap a dying one. A handle
+  # the release does not confirm makes the result an error.
   defp deliver(ref, result, state) do
-    {{task, turn_id, call_id}, tasks} = Map.pop!(state.tasks, ref)
-    {groups, remaining} = Map.pop(state.groups, task.pid, %{})
-    {commands, watchdogs} = split_kinds(groups)
-    {left, state} = kill_and_wait(commands, state.wait_ms, state)
-    {left_watchdogs, state} = sweep_watchdogs(watchdogs, state)
+    {{task, turn_id, call_id, tool}, tasks} = Map.pop!(state.tasks, ref)
+    {handles, held} = Map.pop(state.held, task.pid, [])
+    left = release(%{tool => handles}, :deliver, state.release_ms, state.core)
 
-    result = killed_error(left ++ left_watchdogs) || result
+    result = unconfirmed_error(left) || result
     send(state.session, {:tool_result, turn_id, call_id, scrub(result)})
-    %{state | tasks: tasks, groups: remaining}
+    %{state | tasks: tasks, held: held, unconfirmed: add_handles(state.unconfirmed, left)}
   end
 
   defp start_task(state, turn_id, call) do
@@ -229,101 +230,78 @@ defmodule Helyx.Hands do
         run_tool(tool, call, cwd)
       end)
 
-    %{state | tasks: Map.put(state.tasks, task.ref, {task, turn_id, call.id})}
+    %{state | tasks: Map.put(state.tasks, task.ref, {task, turn_id, call.id, tool})}
   end
 
   defp refuse(state, turn_id, call) do
     error =
-      "a process from an earlier call could not be killed " <>
-        "(process group #{groups_text(state.stuck)}); the call was not run"
+      "a resource from an earlier call could not be released " <>
+        "(#{handles_text(state.unconfirmed)}); the call was not run"
 
     send(state.session, {:tool_result, turn_id, call.id, {:error, error}})
     state
   end
 
-  # Splits an id-to-kind map into command and watchdog id lists.
-  defp split_kinds(groups) do
-    {watchdogs, commands} = Enum.split_with(groups, fn {_group, kind} -> kind == :watchdog end)
-    {Enum.map(commands, &elem(&1, 0)), Enum.map(watchdogs, &elem(&1, 0))}
+  # Gives every unconfirmed handle to its tool again, with one short
+  # deadline for all tools, and keeps the ones still held.
+  defp retry(state),
+    do: %{state | unconfirmed: release(state.unconfirmed, :retry, @retry_ms, state.core)}
+
+  # Calls `release/3` of each tool with its handles, one Task per tool, in
+  # parallel, with one deadline. A Task that is still running at the
+  # deadline is killed, and the wait returns only when it is gone. Returns
+  # the handles still held, per tool. A reply that arrives before the kill
+  # counts, because the release did return. A release that raises, exits, times
+  # out, or returns anything but a proper list of given handles confirms
+  # none of them. A tool with no handles gets no call.
+  defp release(by_tool, mode, ms, core) do
+    deadline = System.monotonic_time(:millisecond) + ms
+    supervisor = Helyx.Core.task_supervisor(core)
+
+    tasks =
+      for {tool, handles} <- by_tool, handles != [] do
+        {tool, handles,
+         Task.Supervisor.async(supervisor, tool, :release, [handles, mode, deadline])}
+      end
+
+    timeout = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    results =
+      Task.yield_many(Enum.map(tasks, &elem(&1, 2)), timeout: timeout, on_timeout: :kill_task)
+
+    for {{tool, handles, _task}, {_task2, result}} <- Enum.zip(tasks, results),
+        left = still_held(result, handles),
+        left != [],
+        into: %{},
+        do: {tool, left}
   end
 
-  # A watchdog is a reaper: it is swept only after every command group is
-  # gone or stuck, because a KILLed watchdog cannot reap its command, and
-  # where PID 1 does not reap orphans the zombie would hold its group, and
-  # the stuck set, forever. It exits by itself once the command is reaped;
-  # the KILL is the fallback for a watchdog that never does.
-  defp sweep_watchdogs(watchdogs, state) do
-    waiting = await_gone(watchdogs, state.wait_ms, state.kill_cmd)
-    kill_and_wait(waiting, state.wait_ms, state)
+  defp still_held({:ok, left}, handles) when is_list(left) do
+    if List.improper?(left) or left -- handles != [], do: handles, else: left
   end
 
-  # KILLs the groups, waits up to `timeout_ms` for every one to be gone, and
-  # remembers survivors as stuck, so an unkillable process stops blocking
-  # the hands after the wait without being forgotten (issue #37).
-  defp kill_and_wait(groups, timeout_ms, state) do
-    signal(groups, "KILL", state.kill_cmd)
-    left = await_gone(groups, timeout_ms, state.kill_cmd)
-    {left, %{state | stuck: MapSet.union(state.stuck, MapSet.new(left))}}
+  defp still_held(_failed, handles), do: handles
+
+  defp add_handles(a, b), do: Map.merge(a, b, fn _tool, x, y -> x ++ y end)
+
+  defp unconfirmed_error(left) when left == %{}, do: nil
+
+  defp unconfirmed_error(left),
+    do: {:error, "a resource of the call could not be released (#{handles_text(left)})"}
+
+  defp handles_text(by_tool) do
+    by_tool
+    |> Enum.flat_map(&elem(&1, 1))
+    |> Enum.map(&inspect/1)
+    |> Enum.sort()
+    |> Enum.join(", ")
   end
-
-  # Signals every stuck group again and forgets the ones that are gone. One
-  # probe after the re-KILL: a group that is still there stays stuck, and
-  # the next call probes again.
-  defp clear_stuck(%State{stuck: stuck} = state) do
-    if MapSet.size(stuck) == 0 do
-      state
-    else
-      groups = MapSet.to_list(stuck)
-      signal(groups, "KILL", state.kill_cmd)
-      %{state | stuck: MapSet.new(await_gone(groups, 0, state.kill_cmd))}
-    end
-  end
-
-  defp killed_error([]), do: nil
-
-  defp killed_error(left),
-    do: {:error, "a process could not be killed (process group #{groups_text(left)})"}
-
-  defp groups_text(groups), do: Enum.join(Enum.sort(groups), ", ")
 
   # Every result leaves the hands through here, so text is made valid once,
   # for the ok, error, crash, and catch paths alike. Valid text, the common
   # case, is passed through without a copy.
   defp scrub({status, text}) do
     if String.valid?(text), do: {status, text}, else: {status, String.replace_invalid(text)}
-  end
-
-  # One kill(1) run signals the whole set.
-  defp signal([], _name, _kill), do: :ok
-
-  defp signal(groups, name, kill) do
-    kill.(["-#{name}", "--" | Enum.map(groups, &"-#{&1}")])
-    :ok
-  end
-
-  # Polls until every group is empty or the timeout of real elapsed time
-  # passes. Returns the groups that still have a process.
-  defp await_gone(groups, timeout_ms, kill) do
-    poll_gone(groups, System.monotonic_time(:millisecond) + timeout_ms, kill)
-  end
-
-  defp poll_gone(groups, deadline, kill) do
-    case Enum.filter(groups, &alive?(&1, kill)) do
-      [] ->
-        []
-
-      alive ->
-        if System.monotonic_time(:millisecond) >= deadline do
-          alive
-        else
-          Process.sleep(20)
-          poll_gone(alive, deadline, kill)
-        end
-    end
-  end
-
-  defp alive?(group, kill) do
-    match?({_, 0}, kill.(["-0", "--", "-#{group}"]))
   end
 
   defp run_tool(:unknown, call, _cwd), do: {:error, "unknown tool: #{call.name}"}

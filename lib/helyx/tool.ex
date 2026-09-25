@@ -11,8 +11,22 @@ defmodule Helyx.Tool do
 
   The optional `check/0` runs when the hands start. A tool that needs
   something from the system, an executable for example, reports it missing
-  there, so the session fails to start with a clear error instead of every
-  call failing later.
+  there. Then the session fails to start with a clear error, and no call
+  fails later for that reason.
+
+  A tool that creates an OS resource, a process group for example, holds it
+  with `hold/1` before the external work starts, and implements the
+  optional `release/3`. The hands call `release(handles, mode, deadline)`
+  with the handles of a call when it delivers (`:deliver`), when its turn is
+  aborted (`:cancel`), and before a later call for handles that an earlier
+  release did not confirm (`:retry`). `deadline` is absolute, in
+  `System.monotonic_time(:millisecond)` on the node of the hands. The return
+  value is the handles still held; `[]` means every one is released. The
+  callback must be safe to call again with the same handles, and it must
+  not wait past the deadline. The tool must also free the resource by
+  itself when its Task dies with no release, because the hands can die
+  first and drop a late `hold/1` (ADR 0004); the bash tool's watchdog does
+  this when its port closes.
   """
 
   use Helyx.Interface, mode: :multi
@@ -24,8 +38,14 @@ defmodule Helyx.Tool do
   @callback parameters() :: map()
   @callback run(arguments :: map(), cwd :: String.t()) :: {:ok, String.t()} | {:error, String.t()}
   @callback check() :: :ok | {:error, String.t()}
+  @callback release(
+              handles :: [term()],
+              mode :: :deliver | :cancel | :retry,
+              deadline :: integer()
+            ) ::
+              [term()]
 
-  @optional_callbacks check: 0
+  @optional_callbacks check: 0, release: 3
 
   @max_lines 2000
   @max_bytes 51_200
@@ -54,22 +74,24 @@ defmodule Helyx.Tool do
   def max_bytes, do: @max_bytes
 
   @doc """
-  Registers an OS process group the tool call started with the hands that
-  run it. A call can register several groups; the hands hold them per Task
-  and kill every one when the call delivers or the turn is aborted, so no
-  group outlives the Task that started it. A group registered as
-  `:watchdog` is a reaper: the hands sweep it only after every `:command`
-  group swept with it is gone or stuck, and give it time to exit by itself
-  first, so a KILL from the hands can never leave a command unreaped. A no-op when
-  the tool runs outside the hands. Groups below 2 are rejected: `kill -- -1`
-  would signal every process the user may signal.
+  Holds an opaque handle of a resource the tool call created with the hands
+  that run it. The hands keep it outside the Task and give it to the tool's
+  `release/3` when the call delivers or its turn is aborted, so no resource
+  outlives the call. Returns only when the hands hold the handle, so work
+  that starts after it is never unheld. A no-op when the tool runs outside
+  the hands. Raises when the tool does not implement `release/3`.
   """
-  @spec register_group(pos_integer(), :command | :watchdog) :: :ok
-  def register_group(group, kind \\ :command)
-      when is_integer(group) and group > 1 and kind in [:command, :watchdog] do
+  @spec hold(term()) :: :ok
+  def hold(handle) do
     case Process.get(:helyx_hands) do
-      nil -> :ok
-      hands -> GenServer.call(hands, {:register_group, group, kind}, :infinity)
+      nil ->
+        :ok
+
+      hands ->
+        case GenServer.call(hands, {:hold, handle}, :infinity) do
+          :ok -> :ok
+          :no_release -> raise ArgumentError, "a tool without release/3 cannot hold a resource"
+        end
     end
   end
 
