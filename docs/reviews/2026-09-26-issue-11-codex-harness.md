@@ -173,3 +173,8 @@ Not taken:
 - The `Process.sleep(5_100)` coupling to `@exit_wait_ms` (standards). A longer exit wait makes the test fail, so it cannot pass falsely.
 
 Fix size, without tests and Markdown: about 17 code lines in 3 files, with 4 functions added. This round is a full round. Its fixes change only Markdown, so no further round is needed.
+
+## Codex review
+
+- Round 1: 1 finding, confirmed by reading: queued stdout kept `receive` in `next/1` from its `after` clause, so the exit deadline never fired. The same bug was in `Helyx.Provider.ClaudeCode` on master. Fixed in both through `HarnessIO.overdue?/1`.
+- Round 2: approve, no findings.
