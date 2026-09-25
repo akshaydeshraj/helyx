@@ -60,7 +60,10 @@ defmodule Helyx.Watchdog.GroupTest do
     kill = fake_kill([4242], [4242])
     start = System.monotonic_time(:millisecond)
 
-    assert Group.release([{:command, 4242}], :deliver, deadline(100), kill) == [{:command, 4242}]
+    assert Group.release([{:command, 4242}], :deliver, deadline(100), kill: kill) == [
+             {:command, 4242}
+           ]
+
     assert System.monotonic_time(:millisecond) - start < 300
     assert signals() == [{"-KILL", ["-4242"]}]
   end
@@ -70,7 +73,9 @@ defmodule Helyx.Watchdog.GroupTest do
   test "the watchdog is KILLed only after the command group is gone" do
     kill = fake_kill([100, 200])
 
-    assert Group.release([{:watchdog, 200}, {:command, 100}], :deliver, deadline(20_000), kill) ==
+    assert Group.release([{:watchdog, 200}, {:command, 100}], :deliver, deadline(20_000),
+             kill: kill
+           ) ==
              []
 
     assert signals() == [{"-KILL", ["-100"]}, {"-KILL", ["-200"]}]
@@ -79,7 +84,9 @@ defmodule Helyx.Watchdog.GroupTest do
   test "a cancel TERMs the command group before the KILL, and never the watchdog" do
     kill = fake_kill([100, 200], [], %{200 => 100})
 
-    assert Group.release([{:command, 100}, {:watchdog, 200}], :cancel, deadline(2_000), kill) ==
+    assert Group.release([{:command, 100}, {:watchdog, 200}], :cancel, deadline(2_000),
+             kill: kill
+           ) ==
              []
 
     assert signals() == [{"-TERM", ["-100"]}, {"-KILL", ["-100"]}]
@@ -90,7 +97,7 @@ defmodule Helyx.Watchdog.GroupTest do
     start = System.monotonic_time(:millisecond)
     handles = [{:command, 100}, {:watchdog, 200}]
 
-    assert Group.release(handles, :retry, deadline(1_000), kill) == handles
+    assert Group.release(handles, :retry, deadline(1_000), kill: kill) == handles
     assert System.monotonic_time(:millisecond) - start < 100
     assert signals() == [{"-KILL", ["-100", "-200"]}]
   end
@@ -98,7 +105,7 @@ defmodule Helyx.Watchdog.GroupTest do
   test "a group below 2 is never signalled, and an unknown handle stays held" do
     kill = fake_kill([])
     handles = [{:command, 1}, {:watchdog, 0}, :other]
-    assert Group.release(handles, :cancel, deadline(100), kill) == handles
+    assert Group.release(handles, :cancel, deadline(100), kill: kill) == handles
     assert signals() == []
   end
 
@@ -108,13 +115,15 @@ defmodule Helyx.Watchdog.GroupTest do
       _ -> {"", 0}
     end
 
-    assert Group.release([{:command, 340}], :retry, deadline(100), kill) == [{:command, 340}]
+    assert Group.release([{:command, 340}], :retry, deadline(100), kill: kill) == [
+             {:command, 340}
+           ]
   end
 
   test "no kill run starts after the deadline, and every group stays held" do
     kill = fake_kill([100, 200])
     handles = [{:command, 100}, {:watchdog, 200}]
-    assert Group.release(handles, :deliver, deadline(0), kill) == handles
+    assert Group.release(handles, :deliver, deadline(0), kill: kill) == handles
     refute_received {:kill, _}
   end
 
@@ -124,7 +133,7 @@ defmodule Helyx.Watchdog.GroupTest do
     until = deadline(50)
     handles = [{:command, 100}, {:watchdog, 200}]
 
-    assert Group.release(handles, :cancel, until, slow) == handles
+    assert Group.release(handles, :cancel, until, kill: slow) == handles
     # Only a run that started before the deadline ends after it.
     assert System.monotonic_time(:millisecond) - until < 35
   end
@@ -132,15 +141,29 @@ defmodule Helyx.Watchdog.GroupTest do
   test "the TERM grace is 500 ms" do
     kill = fake_kill([100])
     start = System.monotonic_time(:millisecond)
-    assert Group.release([{:command, 100}], :cancel, deadline(10_000), kill) == []
+    assert Group.release([{:command, 100}], :cancel, deadline(10_000), kill: kill) == []
     assert (System.monotonic_time(:millisecond) - start) in 500..700
+  end
+
+  test "a longer grace waits up to its limit before the KILL" do
+    kill = fake_kill([100])
+    start = System.monotonic_time(:millisecond)
+
+    assert Group.release([{:command, 100}], :cancel, deadline(20_000),
+             kill: kill,
+             grace_ms: 1_000
+           ) ==
+             []
+
+    assert (System.monotonic_time(:millisecond) - start) in 1_000..1_300
+    assert signals() == [{"-TERM", ["-100"]}, {"-KILL", ["-100"]}]
   end
 
   test "a KILL wait ends after 5,000 ms" do
     kill = fake_kill([4242], [4242])
     start = System.monotonic_time(:millisecond)
 
-    assert Group.release([{:command, 4242}], :deliver, deadline(20_000), kill) == [
+    assert Group.release([{:command, 4242}], :deliver, deadline(20_000), kill: kill) == [
              {:command, 4242}
            ]
 
@@ -150,7 +173,7 @@ defmodule Helyx.Watchdog.GroupTest do
   test "no wait passes the deadline" do
     kill = fake_kill([4242], [4242])
     until = deadline(50)
-    Group.release([{:command, 4242}], :cancel, until, kill)
+    Group.release([{:command, 4242}], :cancel, until, kill: kill)
     assert System.monotonic_time(:millisecond) - until < 15
   end
 

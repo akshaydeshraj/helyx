@@ -4,7 +4,7 @@ defmodule Helyx.Watchdog do
   # releases the groups. The bash tool and the Claude Code provider share it;
   # it is not a plugin, and neither plugin calls the other (ADR 0005).
   #
-  # `start/3` opens the port, holds the watchdog with the hands, reads the
+  # `start/4` opens the port, holds the watchdog with the hands, reads the
   # group marker, holds the command group, and only then sends the go-ahead,
   # so either the hands hold the group before the program runs, or it never
   # ran (ADR 0004). `release/3` is the `release/3` of the plugin that holds
@@ -16,10 +16,11 @@ defmodule Helyx.Watchdog do
   # until the go-ahead line arrives on stdin, so either the hands hold the
   # group id before the command runs, or the command never ran. Then it
   # watches: when its stdin ends, because the port closed, it TERMs the
-  # group, waits the grace period, KILLs it, and reaps the command before it
-  # exits (a read that fails gives undef, which is also false, so a read
-  # error kills the group too); when the command ends first, it exits with
-  # the command's status
+  # group, waits the grace period (its fourth argument, in ms), KILLs it,
+  # and reaps the command before it exits (a read that fails gives undef,
+  # which is also false, so a read error kills the group too). The wait
+  # ends when its direct child exits, not when the group is empty. When
+  # the command ends first, the watchdog exits with the command's status
   # (128 plus the signal for a signal death). The watchdog ignores TERM in
   # the parent only, after the fork, so a release can TERM every held
   # group without cutting the cleanup short; ignored dispositions survive
@@ -35,7 +36,11 @@ defmodule Helyx.Watchdog do
   # select reports it writable, so a command that does not read cannot stop
   # the watch of stdin. A write that fails for any other reason than a full
   # pipe (the command closed its stdin) drops the rest of the input. SIGPIPE
-  # is ignored in the parent only, after the fork, like TERM.
+  # is ignored in the parent only, after the fork, like TERM. At -2 the
+  # input is open (#11): the watchdog forwards everything that follows the
+  # go-ahead line up to the first NUL byte, then closes the pipe. A protocol
+  # of JSON lines never holds a raw NUL, so a NUL ends the input and the
+  # command reads end of file while the watch of stdin goes on.
   #
   # The watchdog enters the working directory itself, before the fork. The
   # port's cd option has no failure signal: the emulator's child exits with
@@ -74,7 +79,7 @@ defmodule Helyx.Watchdog do
   # `sysread` or `syswrite` on such a handle is fatal; `PERL5OPT=-d` starts
   # the debugger on the watchdog's stdin; `PERL5LIB` can replace the POSIX
   # module. So the port starts perl without every variable whose name
-  # starts with `PERL` (`launcher/4`), except `PERL_BADLANG`. That one only
+  # starts with `PERL` (`launcher/5`), except `PERL_BADLANG`. That one only
   # stops the locale warning. A user with a locale that the system does not
   # have sets it to 0, and without it that user gets the warning in front of
   # every result.
@@ -94,12 +99,13 @@ defmodule Helyx.Watchdog do
   sub fail { syswrite(STDOUT, "$nonce 0\n$_[0]: $!"); exit 0 }
   my $feed = shift @ARGV;
   my $dir = shift @ARGV;
+  my $grace = shift(@ARGV) / 1000;
   for (keys %ENV) { $ENV{$1} = substr(delete $ENV{$_}, 1) if /^HELYX_KEEP_(PERL.*)/s }
   chdir($dir) or fail("cannot enter the working directory $dir");
   pipe(my $r, my $w) or fail("pipe failed");
   pipe(my $er, my $ew) or fail("report pipe failed");
   my ($ir, $iw);
-  if ($feed >= 0) { pipe($ir, $iw) or fail("input pipe failed") }
+  if ($feed != -1) { pipe($ir, $iw) or fail("input pipe failed") }
   my $child = fork() // fail("fork failed");
   if ($child == 0) {
     close($w); close($er); close($iw) if $iw;
@@ -134,12 +140,15 @@ defmodule Helyx.Watchdog do
       if (!$got) {
         kill("TERM", -$child);
         my $t = 0;
-        while (waitpid($child, WNOHANG) == 0 and $t < 0.5) { select(undef, undef, undef, 0.05); $t += 0.05 }
+        while (waitpid($child, WNOHANG) == 0 and $t < $grace) { select(undef, undef, undef, 0.05); $t += 0.05 }
         kill("KILL", -$child);
         waitpid($child, 0);
         exit 0;
       }
-      if ($iw) { my $take = substr($buf, 0, $feed); $out .= $take; $feed -= length($take) }
+      if ($iw and $feed < 0) {
+        my $end = index($buf, "\0");
+        if ($end < 0) { $out .= $buf } else { $out .= substr($buf, 0, $end); $feed = 0 }
+      } elsif ($iw) { my $take = substr($buf, 0, $feed); $out .= $take; $feed -= length($take) }
     }
     if ($n > 0 and $win and vec($win, fileno($iw), 1)) {
       my $put = syswrite($iw, $out);
@@ -153,10 +162,14 @@ defmodule Helyx.Watchdog do
   }
   """
 
+  # The TERM grace when the port closes, unless the caller gives one.
+  @grace_ms 500
+
   @doc false
   # Opens the port for `argv` in `cwd` and runs the handshake. With `input`
   # nil the command's stdin is /dev/null; with a binary the command reads
-  # exactly that binary, then end of file. Returns:
+  # exactly that binary, then end of file. With `:open` the command reads
+  # what `write/2` sends until `write(port, <<0>>)` or the close. Returns:
   #
   #   * `{:started, port, pre, nonce, go}`: the go-ahead is sent. `pre` is
   #     what came before the marker, perl's own startup output. The output
@@ -170,9 +183,13 @@ defmodule Helyx.Watchdog do
   # command never runs without its group in the hands. With no marker, the
   # closed port is the watchdog's signal to kill the child it holds, if it
   # got that far.
-  def start(argv, cwd, input) do
+  #
+  # The option `:grace_ms` (default #{@grace_ms}) is the wait between the
+  # TERM and the KILL of the command group when the port closes.
+  def start(argv, cwd, input, opts \\ []) do
     nonce = random_word()
-    {exe, options} = launcher(argv, cwd, nonce, if(input, do: byte_size(input), else: -1))
+    grace = Keyword.get(opts, :grace_ms, @grace_ms)
+    {exe, options} = launcher(argv, cwd, nonce, feed(input), grace)
     port = Port.open({:spawn_executable, exe}, options)
 
     # The runtime detaches port programs into their own process group, so
@@ -196,19 +213,20 @@ defmodule Helyx.Watchdog do
       {group, pre} ->
         Helyx.Tool.hold({:command, group})
         go = random_word()
-        go_ahead(port, [go, "\n", input || ""])
+        write(port, [go, "\n", if(is_binary(input), do: input, else: "")])
         {:started, port, pre, nonce, go}
     end
   end
 
   @doc false
-  # The release of the handles `start/3` holds. See `Helyx.Watchdog.Group`.
-  defdelegate release(handles, mode, deadline), to: Helyx.Watchdog.Group
+  # The release of the handles `start/4` holds. See `Helyx.Watchdog.Group`.
+  defdelegate release(handles, mode, deadline, opts \\ []), to: Helyx.Watchdog.Group
 
   @doc false
   # Public for the watchdog's direct tests. `feed` is the input byte count,
-  # or -1 for none (see the watchdog).
-  def launcher(argv, cwd, nonce, feed) do
+  # -1 for none, or -2 for open input (see the watchdog). `grace_ms` is the
+  # TERM grace when the port closes.
+  def launcher(argv, cwd, nonce, feed, grace_ms \\ @grace_ms) do
     perl = System.find_executable("perl") || "/usr/bin/perl"
     # ponytail: the VM decodes a name or a value that is not UTF-8 as
     # Latin-1. Such a `PERL*` value reaches the command with other bytes,
@@ -232,15 +250,23 @@ defmodule Helyx.Watchdog do
        :exit_status,
        :stderr_to_stdout,
        {:env, unset ++ keep},
-       {:args, ["-e", @watchdog, "--", nonce, Integer.to_string(feed), cwd | argv]}
+       {:args,
+        ["-e", @watchdog, "--", nonce, Integer.to_string(feed), cwd, Integer.to_string(grace_ms)] ++
+          argv}
      ]}
   end
 
   defp random_word, do: Base.encode16(:crypto.strong_rand_bytes(8))
 
-  # A port whose watchdog already died is closed and the write raises; the
-  # exit status is still in the mailbox for the caller's read.
-  defp go_ahead(port, data) do
+  defp feed(nil), do: -1
+  defp feed(:open), do: -2
+  defp feed(input), do: byte_size(input)
+
+  @doc false
+  # Writes to the watchdog's stdin. A port whose watchdog already died is
+  # closed and the write raises; the exit status is still in the mailbox for
+  # the caller's read.
+  def write(port, data) do
     Port.command(port, data)
   rescue
     ArgumentError -> false

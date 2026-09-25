@@ -82,6 +82,19 @@ defmodule Helyx.WatchdogTest do
     assert group_gone_within?(group, 300)
   end
 
+  test "a longer grace holds the KILL until its limit" do
+    argv = ["bash", "-c", "trap '' TERM; echo ready; sleep 30"]
+    {exe, options} = Helyx.Watchdog.launcher(argv, File.cwd!(), "nonce", -1, 1_000)
+    port = Port.open({:spawn_executable, exe}, options)
+    {group, ""} = read_marker(port)
+    assert "" = go(port, "", "nonce 1\nready\n")
+
+    Port.close(port)
+    Process.sleep(800)
+    assert os_alive?("-#{group}")
+    assert group_gone_within?(group, 50)
+  end
+
   test "a failed exec: the start line, then the report under the go-ahead word (issue #70)" do
     port = open("echo ran", "/nonexistent/bash")
     {_group, rest} = read_marker(port)
@@ -157,6 +170,25 @@ defmodule Helyx.WatchdogTest do
       {group, rest} = read_marker(port)
       true = Port.command(port, "go\nshort")
       assert "" = await(port, rest, "nonce 1\nshort")
+
+      Port.close(port)
+      assert group_gone_within?(group, 200)
+    end
+
+    test "open input: parts arrive until a NUL byte, then the command reads end of file" do
+      argv = ["bash", "-c", "cat; echo done"]
+      assert {:started, port, "", nonce, _go} = Helyx.Watchdog.start(argv, File.cwd!(), :open)
+      Helyx.Watchdog.write(port, "one\n")
+      assert "" = await(port, "", "#{nonce} 1\none\n")
+      Helyx.Watchdog.write(port, ["two\n", <<0>>, "dropped\n"])
+      assert {"two\ndone\n", 0} = collect(port, "")
+    end
+
+    test "open input: a closed port kills the group, with the input still open" do
+      port = open("cat; sleep 30", "bash", -2)
+      {group, rest} = read_marker(port)
+      true = Port.command(port, "go\nready\n")
+      assert "" = await(port, rest, "nonce 1\nready\n")
 
       Port.close(port)
       assert group_gone_within?(group, 200)

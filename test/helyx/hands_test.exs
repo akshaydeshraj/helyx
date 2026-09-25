@@ -105,6 +105,43 @@ defmodule Helyx.HandsTest do
       assert_received {:release, :cancel, [{:report, _}]}
       refute_receive {:stream_end, _, _}, 100
     end
+
+    # A trapping stream Task gets the shutdown first (#11); the release
+    # still comes after it is gone.
+    test "cancel lets a trapping stream end by itself, then releases", %{core: core} do
+      hands = start_hands(core)
+      test = self()
+
+      stream(hands, fn ->
+        Process.flag(:trap_exit, true)
+        Helyx.Tool.hold({:report, test})
+
+        receive do
+          {:EXIT, _from, :shutdown} -> send(test, :stopping)
+        end
+      end)
+
+      await_held(hands, 1)
+      assert Helyx.Hands.cancel(hands, "t1") == :ok
+      assert_received :stopping
+      assert_received {:release, :cancel, [{:report, _}]}
+    end
+
+    test "cancel kills a trapping stream that does not end within the grace", %{core: core} do
+      hands = start_hands(core)
+      test = self()
+
+      stream(hands, fn ->
+        Process.flag(:trap_exit, true)
+        Helyx.Tool.hold({:report, test})
+        Process.sleep(60_000)
+      end)
+
+      await_held(hands, 1)
+      {elapsed, :ok} = :timer.tc(fn -> Helyx.Hands.cancel(hands, "t1") end, :millisecond)
+      assert elapsed in 2_000..3_000
+      assert_received {:release, :cancel, [{:report, _}]}
+    end
   end
 
   test "cancel releases with :cancel and reports an unconfirmed handle", %{core: core} do

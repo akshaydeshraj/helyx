@@ -555,6 +555,33 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     end
   end
 
+  # A program can write faster than the stream reads. Waits in the stream's
+  # own process until the exit wait of the terminal has passed, then queues
+  # `n` chunks of stdout from its port: none of them may be read.
+  defp queue_stdout_past_deadline(n) do
+    port = Enum.find(Port.list(), &(Port.info(&1, :connected) == {:connected, self()}))
+    Process.sleep(5_100)
+    for _ <- 1..n, do: send(self(), {port, {:data, "x\n"}})
+  end
+
+  test "stdout queued past the exit deadline does not hold the terminal",
+       %{bin: bin, work: work} do
+    scenario(bin, 1, reply(@sid, "ok"), "sleep 30\n")
+
+    {:ok, stream} =
+      ClaudeCode.stream("haiku", %Helyx.Context{messages: [Message.user("hi")]}, cwd: work)
+
+    events =
+      Enum.map(stream, fn
+        {:text_delta, _text} = event -> tap(event, fn _ -> queue_stdout_past_deadline(1_000) end)
+        event -> event
+      end)
+
+    assert [_, {:text_delta, "ok"}, {:done, %{stop_reason: :end_turn}}] = events
+    assert {:message_queue_len, queued} = Process.info(self(), :message_queue_len)
+    assert queued >= 1_000
+  end
+
   test "output after the result is not read, and the exit wait runs once from the result",
        %{bin: bin, work: work} do
     # 17 MB after the result, then output each second for 10 s: neither the

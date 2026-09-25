@@ -15,7 +15,8 @@ defmodule Helyx.Watchdog.Group do
   #
   # `:deliver` KILLs straight away: the call is over, nothing in the group
   # has output anyone will read. `:cancel` TERMs first and KILLs after the
-  # grace period. `:retry` KILLs again and probes once, with no wait.
+  # grace period (500 ms, or the `:grace_ms` option). `:retry` KILLs again
+  # and probes once, with no wait.
   #
   # No kill(1) run starts at or after the deadline: a skipped probe counts
   # the group as alive, so the handle is returned as still held. A group is
@@ -26,15 +27,17 @@ defmodule Helyx.Watchdog.Group do
   @wait_ms 5_000
 
   @doc false
-  # `kill` runs kill(1); tests pass a fake.
-  def release(handles, mode, deadline, kill \\ &kill_cmd/1) do
-    kill = until_deadline(deadline, kill)
+  # Options: `:grace_ms`, the TERM grace of a cancel; `:kill`, which runs
+  # kill(1), for tests.
+  def release(handles, mode, deadline, opts \\ []) do
+    kill = until_deadline(deadline, Keyword.get(opts, :kill, &kill_cmd/1))
+    grace = Keyword.get(opts, :grace_ms, @grace_ms)
     # `kill -- -1` would signal every process the user may signal, so a
     # group below 2 is never signalled.
     {valid, unknown} = Enum.split_with(handles, &valid?/1)
     commands = for {:command, group} <- valid, do: group
     watchdogs = for {:watchdog, group} <- valid, do: group
-    {commands, watchdogs} = sweep(commands, watchdogs, mode, deadline, kill)
+    {commands, watchdogs} = sweep(commands, watchdogs, mode, deadline, grace, kill)
     Enum.map(commands, &{:command, &1}) ++ Enum.map(watchdogs, &{:watchdog, &1}) ++ unknown
   end
 
@@ -44,19 +47,19 @@ defmodule Helyx.Watchdog.Group do
 
   defp valid?(_handle), do: false
 
-  defp sweep(commands, watchdogs, :retry, _deadline, kill) do
+  defp sweep(commands, watchdogs, :retry, _deadline, _grace, kill) do
     signal(commands ++ watchdogs, "KILL", kill)
     {alive(commands, kill), alive(watchdogs, kill)}
   end
 
-  defp sweep(commands, watchdogs, mode, deadline, kill) do
-    left = if mode == :cancel, do: term(commands, deadline, kill), else: commands
+  defp sweep(commands, watchdogs, mode, deadline, grace, kill) do
+    left = if mode == :cancel, do: term(commands, within(deadline, grace), kill), else: commands
     {kill_and_wait(left, deadline, kill), sweep_watchdogs(watchdogs, deadline, kill)}
   end
 
-  defp term(commands, deadline, kill) do
+  defp term(commands, until, kill) do
     signal(commands, "TERM", kill)
-    poll_gone(commands, within(deadline, @grace_ms), kill)
+    poll_gone(commands, until, kill)
   end
 
   defp sweep_watchdogs(watchdogs, deadline, kill) do
