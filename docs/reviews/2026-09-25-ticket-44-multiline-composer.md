@@ -113,3 +113,7 @@ The round 7 fix changed the mechanism of cursor moves (`cut/4` added; `marker_ke
 | - | Failure path | No finding. The round 7 reproductions pass. Characters next to a marker (U+200B, U+200D, U+FE0F, U+0301, a skin tone emoji) and 2,300 random sequences of 40 steps held the invariant | - |
 
 Round 8 changed tests and Markdown only, so no further round.
+
+## Codex review, round 1
+
+Adversarial review against `origin/master` after the rebase, 2026-09-25: approve, no findings. Its probes ran 200,000 mixed edits with no partial marker and 192 layouts with no height violation.
