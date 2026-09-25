@@ -51,7 +51,8 @@ defmodule Helyx.SessionFile do
   defmodule Resumed do
     @moduledoc """
     What `resume/3` restores: the file, the session id, the model, the
-    transcript, and the last harness session id of each harness provider.
+    transcript, and the last harness session of each harness provider: its
+    id and the number of messages before its entry.
     """
     @enforce_keys [:file, :session_id, :model, :messages]
     defstruct [:file, :session_id, :model, :messages, harness_sessions: %{}]
@@ -61,7 +62,7 @@ defmodule Helyx.SessionFile do
             session_id: String.t(),
             model: String.t(),
             messages: [Message.t()],
-            harness_sessions: %{String.t() => String.t()}
+            harness_sessions: %{String.t() => {String.t(), non_neg_integer()}}
           }
   end
 
@@ -399,11 +400,23 @@ defmodule Helyx.SessionFile do
   end
 
   # The last harness session entry of each provider wins: a lost harness
-  # session is followed by a new entry for the same provider.
+  # session is followed by a new entry for the same provider. Each keeps the
+  # number of messages before it, so the session can tell whether the
+  # harness session has made a message since.
   defp harness_sessions(entries) do
-    for %{"type" => "harness_session"} = entry <- entries, into: %{} do
-      {entry["provider"], entry["harness_session_id"]}
-    end
+    {sessions, _count} =
+      Enum.reduce(entries, {%{}, 0}, fn
+        %{"type" => "message"}, {sessions, count} ->
+          {sessions, count + 1}
+
+        %{"type" => "harness_session"} = entry, {sessions, count} ->
+          {Map.put(sessions, entry["provider"], {entry["harness_session_id"], count}), count}
+
+        _entry, acc ->
+          acc
+      end)
+
+    sessions
   end
 
   # The most recently started session whose header matches the working

@@ -62,7 +62,7 @@ defmodule Helyx.SessionFileTest do
     assert resumed.model == "test/other"
   end
 
-  test "harness session entries are written, and the last one per provider is restored",
+  test "harness session entries are written, and the last one per provider is restored with the messages before it",
        %{tmp_dir: dir} do
     {:ok, file} = SessionFile.create(dir, "sess1", "/repo", "claude-code/opus")
     assert {:ok, %{harness_sessions: sessions}} = SessionFile.resume(dir, "/repo")
@@ -71,16 +71,21 @@ defmodule Helyx.SessionFileTest do
     file
     |> SessionFile.append_harness_session("claude-code", "first")
     |> SessionFile.append_harness_session("codex", "codex-1")
+    |> SessionFile.append_message(Helyx.Message.user("hello"))
     |> SessionFile.append_harness_session("claude-code", "sécond")
 
     assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
-    assert resumed.harness_sessions == %{"claude-code" => "sécond", "codex" => "codex-1"}
+
+    assert resumed.harness_sessions == %{
+             "claude-code" => {"sécond", 1},
+             "codex" => {"codex-1", 0}
+           }
 
     # The entry has the shape the feature doc gives, and it moves the leaf.
     entries =
       file.path |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&JSON.decode!/1)
 
-    assert [_header, first, _codex, last] = entries
+    assert [_header, first, _codex, _message, last] = entries
 
     assert %{
              "type" => "harness_session",
@@ -121,7 +126,9 @@ defmodule Helyx.SessionFileTest do
       cwd = "/long#{byte_size(id)}"
       {:ok, file} = SessionFile.create(dir, "long#{byte_size(id)}", cwd, "test/ok")
       SessionFile.append_harness_session(file, "claude-code", id)
-      assert {:ok, %{harness_sessions: %{"claude-code" => ^id}}} = SessionFile.resume(dir, cwd)
+
+      assert {:ok, %{harness_sessions: %{"claude-code" => {^id, 0}}}} =
+               SessionFile.resume(dir, cwd)
     end
   end
 

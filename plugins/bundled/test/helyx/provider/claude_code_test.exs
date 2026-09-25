@@ -229,7 +229,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
     assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
 
-    assert {:ok, %{harness_sessions: %{"claude-code" => @sid}}} =
+    assert {:ok, %{harness_sessions: %{"claude-code" => {@sid, 1}}}} =
              SessionFile.resume(ctx.sessions, ctx.work)
   end
 
@@ -292,8 +292,39 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     assert [%Message{role: :user}, %Message{content: [%Message.Text{text: "Fresh."}]}] =
              messages(events)
 
-    assert {:ok, %{harness_sessions: %{"claude-code" => @fresh}}} =
+    assert {:ok, %{harness_sessions: %{"claude-code" => {@fresh, 3}}}} =
              SessionFile.resume(ctx.sessions, ctx.work)
+  end
+
+  test "a fresh session aborted before its first message is not resumed, in memory or after a restart",
+       %{bin: bin} = ctx do
+    scenario(bin, 1, reply(@sid, "Hi."))
+    scenario(bin, 2, [lost(@sid)], "exit 1\n")
+    scenario(bin, 3, [init(@fresh)], "sleep 30\n")
+    scenario(bin, 4, [init(@fresh)], "sleep 30\n")
+    scenario(bin, 5, reply(@fresh, "Fresh."))
+
+    session = start(ctx)
+    prompt(session, "hello")
+    :ok = Session.prompt(session, "again")
+    collect_until(:harness_session)
+    :ok = Session.abort(session)
+    collect_until(:agent_end)
+
+    :ok = Session.prompt(session, "more")
+    collect_until(:harness_session)
+    :ok = Session.abort(session)
+    collect_until(:agent_end)
+    refute Enum.any?(args(bin, 4), &String.starts_with?(&1, "--resume"))
+    assert %{"message" => %{"content" => [%{"text" => "hello"}]}} = hd(stdin(bin, 4))
+
+    GenServer.stop(Session.pid(session))
+    {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
+    :ok = Session.subscribe(session)
+    prompt(session, "last")
+
+    refute Enum.any?(args(bin, 5), &String.starts_with?(&1, "--resume"))
+    assert %{"message" => %{"content" => [%{"text" => "hello"}]}} = hd(stdin(bin, 5))
   end
 
   test "a switch to a claude-code model replays the history, tool calls too", %{bin: bin} = ctx do

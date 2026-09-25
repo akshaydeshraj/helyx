@@ -382,3 +382,35 @@ Bounds sensor: skipped: TYPESAFE_API_KEY is not set.
 Spec: no finding. The old form was valid iodata with the same bytes; the fix is for Dialyzer, not for byte order. Failure path: no finding (a line at the cap in one-byte chunks with split `é` characters, one over, one under, empty and mixed chunks). The round is clean.
 
 Precommit: passed.
+
+## Codex round 1 (after the rebase on origin/master)
+
+| Severity | Finding | Resolution |
+| -------- | ------- | ---------- |
+| High | After a lost-session retry, the `init` of the fresh session stores its id at once. An abort, a failure, or a restart can come before the fresh session makes a message. Then the last assistant message is still from the same provider (the old session), so `resumable/2` returns the new id. The next turn resumes a session that never got the full replay and sends only the prompt. | Invariant: a harness session id is resumed only when that harness session has the transcript up to its end. Each harness session is kept with the number of transcript messages before its entry, in memory and, from the entry's place in the file, on resume. `resumable/2` returns the id only when the last assistant message came from the provider after that harness session's entry. Test "a fresh session aborted before its first message is not resumed, in memory or after a restart" (it failed before the fix: the next turn passed `--resume`). |
+
+Fix diff: 2 code files, and the shape of `harness_sessions` changes. Full round.
+
+### Codex fix, full round: simplify, standards, spec, failure path
+
+Bounds sensor: skipped: TYPESAFE_API_KEY is not set.
+
+Simplify: `resumable/2` drops the messages before the entry with `Enum.drop/2` and keeps the old `last_assistant/1`, so no index is threaded. Skipped: the altitude angle proposed to hold the id at `init` and write the entry at the first message; the user's decision for #10 is that the entry is written at `init`.
+
+| Axis | Finding | Resolution |
+| ---- | ------- | ---------- |
+| Standards | `start`, `stored`, and `id` in `resumable/2` did not say what they hold. | Renamed to `before`, `harness_id`, and `provider`. |
+| Standards | The count in memory and the count from the file must agree; a named type for the pair. | Skipped: every message goes through `append_message/2`, which writes the file in the same order, and the restart test checks it. A type for one use adds a name for no change. |
+| Standards | One Resume sentence and one review cell were not STE; the review used another term than the feature doc. | Rewritten. |
+| Spec | None. Steer and `fail_turn` have no test of their own; they use the same mechanism. | No change. |
+| Failure path | None reproduced (a fresh session that fails after one delta, a steer before its first message, a switch and back, a late `init` from an old Task). | No change. |
+
+Fix diff: 6 lines in 1 code file (renames), no function added. Reduced round.
+
+### Codex fix, reduced round: spec, failure path
+
+Bounds sensor: skipped: TYPESAFE_API_KEY is not set.
+
+Spec: no finding (the renames keep the logic). Failure path: no finding reproduced (the boundary at the entry, the count after a restart, disk write failures, a lost resume and a fresh start in one turn). The round is clean.
+
+Precommit: passed.

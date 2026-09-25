@@ -112,7 +112,8 @@ defmodule Helyx.Session do
       steers: [],
       follow_ups: [],
       provider_pids: MapSet.new(),
-      # The last harness session id per harness provider id.
+      # The last harness session per harness provider id: its id and the
+      # number of transcript messages before it started.
       harness_sessions: %{},
       # `{request, callers}` while the hands cancel an aborted turn: the
       # request of `Helyx.Hands.request_cancel/2` and the abort callers that
@@ -439,7 +440,7 @@ defmodule Helyx.Session do
     # matched it, so the session runs no plugin code for it.
     provider = turn.model.provider
     file = persist(state.file, &SessionFile.append_harness_session(&1, provider, id))
-    sessions = Map.put(state.harness_sessions, provider, id)
+    sessions = Map.put(state.harness_sessions, provider, {id, length(state.transcript)})
     state = %{state | file: file, harness_sessions: sessions}
     data = %{provider: provider, harness_session_id: id, lost: turn.resumed != nil, cut: cut}
     {:noreply, emit(state, :harness_session, data)}
@@ -702,14 +703,19 @@ defmodule Helyx.Session do
   end
 
   # The harness session to resume: the provider's last one, when the last
-  # assistant message of the transcript came from this provider. Otherwise
-  # the harness does not have the transcript's end, and a fresh session gets
-  # it from the provider.
-  defp resumable(state, id) do
-    with {:ok, stored} <- Map.fetch(state.harness_sessions, id),
-         %Message{model: model} when is_binary(model) <- last_assistant(state.transcript),
-         {:ok, %ModelRef{provider: ^id}} <- ModelRef.parse(model) do
-      stored
+  # assistant message of the transcript came from this provider after that
+  # session started. A message of the harness session shows that it read
+  # the replay and the prompt. Otherwise the harness does not have the
+  # transcript's end (another provider answered last, or a fresh session
+  # ended before its first message), and a fresh session gets it from the
+  # provider.
+  defp resumable(state, provider) do
+    with {:ok, {harness_id, before}} <- Map.fetch(state.harness_sessions, provider),
+         # Enum.drop/2 shares the tail of the list; it does not copy it.
+         %Message{model: model} when is_binary(model) <-
+           last_assistant(Enum.drop(state.transcript, before)),
+         {:ok, %ModelRef{provider: ^provider}} <- ModelRef.parse(model) do
+      harness_id
     else
       _other -> nil
     end
