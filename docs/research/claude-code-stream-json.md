@@ -84,6 +84,7 @@ Runs on 2026-09-25 with version `2.1.282`, `--model haiku`, `--input-format stre
 
 - **SIGTERM** to a run that had written `init` and started its reply ended it with exit status 143 and no `result` line.
 - **A harness session whose run was killed can be resumed.** `--resume <id>` of that session ran the next prompt, and the model knew the prompt of the killed run (a code word given there).
+- **A run killed during a tool call can be resumed** (`claude` 2.1.282, `--model haiku`, `bypassPermissions`). The run started `Bash` with `sleep 40`, got `SIGTERM` after its `tool_use` line and before a result, and `--resume <id>` ran the next prompt with no error. The model answered that the outcome of the command was unknown because the session ended before the result was recorded. So Claude Code closes an open tool call of a killed run by itself.
 - **The `=` forms `--model=haiku` and `--resume=<id>` work** like the two-word forms. With a lost id, the output is the same as the lost case above: one `result` line, `error_during_execution`, `num_turns` 0, `errors` `["No conversation found with session ID: <id>"]`, and the same text on stderr.
 - **`--permission-mode bypassPermissions`**: the `Write` tool ran with no prompt in a `-p` run through `Helyx.Provider.ClaudeCode`, and a `--resume=` turn after it knew the file's content.
 

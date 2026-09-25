@@ -414,3 +414,8 @@ Bounds sensor: skipped: TYPESAFE_API_KEY is not set.
 Spec: no finding (the renames keep the logic). Failure path: no finding reproduced (the boundary at the entry, the count after a restart, disk write failures, a lost resume and a fresh start in one turn). The round is clean.
 
 Precommit: passed.
+
+## Codex review
+
+- Round 1 (after the rebase): 1 finding, confirmed. A fresh session from a lost-session recovery that was interrupted before the replay completed was resumed on the next turn, so the history was lost with no notice. Fixed in `61b1750`: a harness session is resumed only after it has made a message.
+- Round 2: 1 finding, rejected by the orchestrator. The claim was that an `aborted` result that Helyx adds for an open call after an abort or a failure never reaches the harness, so the next resumed turn uses a different tool history. A real run (research note, "A run killed during a tool call can be resumed") shows that Claude Code closes the open call of a killed run by itself, and that the model knows the result is unknown. That is the meaning of the `aborted` result, so the histories agree. The proposed fix, a full replay after every abort during a tool call, would replace the harness's own context with the text replay on each Esc.
