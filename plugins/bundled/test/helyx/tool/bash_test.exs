@@ -176,13 +176,13 @@ defmodule Helyx.Tool.BashTest do
       spawn_link(fn ->
         watchdog =
           receive do
-            {:"$gen_call", from, {:register_group, watchdog, :watchdog}} ->
+            {:"$gen_call", from, {:hold, {:watchdog, watchdog}}} ->
               GenServer.reply(from, :ok)
               watchdog
           end
 
         receive do
-          {:"$gen_call", from, {:register_group, _group, :command}} ->
+          {:"$gen_call", from, {:hold, {:command, _group}}} ->
             {_, 0} = System.cmd("kill", ["-KILL", "#{watchdog}"])
             GenServer.reply(from, :ok)
         end

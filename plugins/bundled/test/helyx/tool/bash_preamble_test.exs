@@ -21,15 +21,15 @@ defmodule Helyx.Tool.Bash.PreambleTest do
     end)
   end
 
-  # Stands in for the hands: it sends the group registrations to `test`.
-  defp registrations_to(test), do: spawn_link(fn -> forward_registrations(test) end)
+  # Stands in for the hands: it sends the held handles to `test`.
+  defp holds_to(test), do: spawn_link(fn -> forward_holds(test) end)
 
-  defp forward_registrations(test) do
+  defp forward_holds(test) do
     receive do
-      {:"$gen_call", from, {:register_group, group, kind}} ->
-        send(test, {:registered, group, kind})
+      {:"$gen_call", from, {:hold, {kind, group}}} ->
+        send(test, {:held, group, kind})
         GenServer.reply(from, :ok)
-        forward_registrations(test)
+        forward_holds(test)
     end
   end
 
@@ -55,9 +55,9 @@ defmodule Helyx.Tool.Bash.PreambleTest do
     put_env("LC_MESSAGES", String.duplicate("x", 5000))
     test = self()
 
-    Process.put(:helyx_hands, registrations_to(test))
+    Process.put(:helyx_hands, holds_to(test))
     assert {:error, _} = Helyx.Tool.Bash.run(%{"command" => "sleep 30"}, dir)
-    assert_received {:registered, watchdog, :watchdog}
+    assert_received {:held, watchdog, :watchdog}
     # The watchdog reaps the child it holds before it exits.
     assert gone_within?("-#{watchdog}", 200)
   end
@@ -160,14 +160,14 @@ defmodule Helyx.Tool.Bash.PreambleTest do
 
       task =
         Task.async(fn ->
-          Process.put(:helyx_hands, registrations_to(test))
+          Process.put(:helyx_hands, holds_to(test))
           Helyx.Tool.Bash.run(%{"command" => "echo v=$PERL5OPT."}, dir)
         end)
 
       assert {:ok, {:ok, text}} = Task.yield(task, 5_000)
       assert text =~ "v=-d.\n"
-      assert_received {:registered, watchdog, :watchdog}
-      assert_received {:registered, group, :command}
+      assert_received {:held, watchdog, :watchdog}
+      assert_received {:held, group, :command}
       assert group_gone_within?(watchdog, 200)
       assert group_gone_within?(group, 200)
     end

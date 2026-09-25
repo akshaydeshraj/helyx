@@ -132,8 +132,9 @@ defmodule Helyx.Test.Provider do
   #   "transcript" every message in the context as "role:text" lines
   #   "abort"      three calls to the slow tool that sleep for a minute;
   #                after the results, echoes them as text
-  #   "stuck"      one call to the register tool: group 4242, a sleep of a
-  #                minute; after the result, echoes the results
+  #   "stuck"      one call to the hold tool: a handle whose release takes
+  #                800 ms and one that stays held, a sleep of a minute;
+  #                after the result, echoes the results
   #   "steer"      one slow call; after the result, echoes the user message
   #                texts so far, so tests see which steers reached the call
   @behaviour Helyx.Provider
@@ -272,8 +273,8 @@ defmodule Helyx.Test.Provider do
     if Enum.any?(messages, &(&1.role == :tool_result)) do
       {:ok, echo_results(messages)}
     else
-      arguments = %{"groups" => [4242], "ms" => 60_000}
-      call = %Helyx.Message.ToolCall{id: "1", name: "register", arguments: arguments}
+      arguments = %{"handles" => [%{"slow" => 800}, "keep"], "ms" => 60_000}
+      call = %Helyx.Message.ToolCall{id: "1", name: "hold", arguments: arguments}
       {:ok, [{:tool_call, call}, {:done, %{stop_reason: :tool_use, usage: %{}}}]}
     end
   end
@@ -470,24 +471,93 @@ defmodule Helyx.Test.Tool.Slow do
   end
 end
 
-defmodule Helyx.Test.Tool.Register do
+defmodule Helyx.Test.Tool.Hold do
   @moduledoc false
-  # Registers the given process group ids with the hands, then sleeps `ms`,
-  # so tests can drive the group bookkeeping without a real command.
+  # Holds the handles in "handles" with the hands, then sleeps "ms", so tests
+  # can drive the release without an OS resource. Its release acts on the
+  # handles it gets:
+  #
+  #   {:report, pid}  sends {:release, mode, handles} to pid
+  #   {:slow, ms}     sleeps ms before the release returns
+  #   :keep           stays held
+  #   {:keep, agent}  stays held while the Agent holds true
+  #   :raise, :exit   the release raises or exits
+  #   :bad            the release returns a handle it was not given
+  #   :improper       the release returns an improper list
+  #
+  # "keep" and %{"slow" => ms} are the forms a transcript can hold. Every
+  # other handle is released.
   @behaviour Helyx.Tool
 
   @impl true
-  def name, do: "register"
+  def name, do: "hold"
   @impl true
-  def description, do: "Registers process groups."
+  def description, do: "Holds handles."
   @impl true
   def parameters, do: %{"type" => "object"}
   @impl true
-  def run(%{"groups" => groups} = args, _cwd) do
-    Enum.each(groups, &Helyx.Tool.register_group/1)
-    Enum.each(Map.get(args, "watchdogs", []), &Helyx.Tool.register_group(&1, :watchdog))
+  def run(%{"handles" => handles} = args, _cwd) do
+    Enum.each(handles, &Helyx.Tool.hold/1)
     Process.sleep(Map.get(args, "ms", 0))
-    {:ok, "registered"}
+    {:ok, "held"}
+  end
+
+  # The improper list of `:improper` is on purpose.
+  @dialyzer {:nowarn_function, release: 3}
+  @impl true
+  def release(handles, mode, _deadline) do
+    for {:report, pid} <- handles, do: send(pid, {:release, mode, handles})
+    Process.sleep(Enum.sum(for {:slow, ms} <- handles, do: ms))
+    Process.sleep(Enum.sum(for %{"slow" => ms} <- handles, do: ms))
+
+    cond do
+      :raise in handles -> raise "release failed"
+      :exit in handles -> exit(:release_failed)
+      :bad in handles -> [:not_given]
+      :improper in handles -> [:improper | :tail]
+      true -> Enum.filter(handles, &kept?/1)
+    end
+  end
+
+  defp kept?(:keep), do: true
+  defp kept?("keep"), do: true
+  defp kept?({:keep, agent}), do: Agent.get(agent, & &1)
+  defp kept?(_handle), do: false
+end
+
+defmodule Helyx.Test.Tool.HoldTwo do
+  @moduledoc false
+  # A second tool module with the release of the hold tool, so tests can see
+  # one release Task per module.
+  @behaviour Helyx.Tool
+
+  @impl true
+  def name, do: "hold_two"
+  @impl true
+  defdelegate description, to: Helyx.Test.Tool.Hold
+  @impl true
+  defdelegate parameters, to: Helyx.Test.Tool.Hold
+  @impl true
+  defdelegate run(args, cwd), to: Helyx.Test.Tool.Hold
+  @impl true
+  defdelegate release(handles, mode, deadline), to: Helyx.Test.Tool.Hold
+end
+
+defmodule Helyx.Test.Tool.HoldBare do
+  @moduledoc false
+  # Holds a handle but has no release/3.
+  @behaviour Helyx.Tool
+
+  @impl true
+  def name, do: "hold_bare"
+  @impl true
+  def description, do: "Holds a handle it cannot release."
+  @impl true
+  def parameters, do: %{"type" => "object"}
+  @impl true
+  def run(_args, _cwd) do
+    Helyx.Tool.hold(:handle)
+    {:ok, "held"}
   end
 end
 

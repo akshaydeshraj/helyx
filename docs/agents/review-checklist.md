@@ -14,7 +14,7 @@ Invariants the review axes check on every diff. Add one when a review or a PR co
 
 - A race is closed structurally or stated as a hole. It is never accepted by window size or by who the caller is today. An open race is written in the ownership table as "open, ticket #N", the same vocabulary as an unbounded input.
 - Two findings on one mechanism stop the patching. The next round fixes the mechanism, not the path.
-- Every resource has a release path that works when its owner dies (ADR 0004): inside the VM through links to the owner, at the OS boundary through the port watchdog. The resource is still registered with the hands before the external work starts, because delivery and cancel wait until it is gone.
+- Every resource has a release path that works when its owner dies (ADR 0004): inside the VM through links to the owner, at the OS boundary through the port watchdog. The resource is still held with the hands, with `Helyx.Tool.hold/1`, before the external work starts, because delivery and cancel wait until it is gone.
 
 ## Events
 
