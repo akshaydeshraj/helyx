@@ -17,10 +17,10 @@ Simplify: a comment line was joined to 116 columns (wrapped). The Enter exclusio
 | 5 | Standards | Data clump `input` and `pastes`; feature envy in the Backspace clause; two helper styles in the test file | Judgement calls. The Backspace clause now says why it drives the widget key by key. No other change |
 | 6 | Spec | "Backspace on the marker removes the whole paste": only a Backspace right after the marker did | Fixed: a Backspace with the cursor inside a marker or right after it removes the whole marker. Test added |
 | 7 | Spec | The Tab key now indents, which the doc did not say | Fixed in the doc; test added |
-| 8 | Spec, failure path | Text equal to a pending marker, typed or in a short paste, is replaced by the paste on send, and one Backspace removes it (reproduced) | Accepted hole, stated in the feature doc. The marker is plain text in the widget; a structural fix needs marker positions that the widget does not report |
-| 9 | Failure path | A marker changed by one character sends the changed text, and the paste is lost with no notice (reproduced) | Accepted hole, stated in the feature doc |
+| 8 | Spec, failure path | Text equal to a pending marker, typed or in a short paste, is replaced by the paste on send, and one Backspace removes it (reproduced) | Accepted hole in round 1. Fixed in round 7: a marker ends with U+0001, which no typed or pasted text can hold |
+| 9 | Failure path | A marker changed by one character sends the changed text, and the paste is lost with no notice (reproduced) | Accepted hole in round 1. Fixed in round 7: a marker is one unit for every edit |
 | 10 | Spec | Control characters other than tab and LF drop from a paste | Kept: the one-line input dropped them too, and the doc states it |
-| 11 | Spec | The kitty keyboard protocol is not on | Undecided: ExRatatui 0.14.1 has no call for keyboard enhancement flags. Needs a fork or an upstream change |
+| 11 | Spec | The kitty keyboard protocol is not on | Ticket #108: ExRatatui 0.14.1 has no call for keyboard enhancement flags |
 
 ## Round 2 (full)
 
@@ -47,8 +47,8 @@ The round 2 fix changed one comment line of code; the rest was tests and Markdow
 | - | ---- | ------- | ---------- |
 | 1 | Spec | The `/model` row said "the rest of the line" and "a new line after the ref makes an invalid model ref". The code trims the rest of the composer text: a new line is a separator, a final new line is trimmed, text on a later line makes an invalid ref | Fixed in the doc; tests for the three cases |
 | 2 | Failure path | Below 12 rows with a full composer, the render gave the transcript 0 rows while `on_screen/2` counted 1 (reproduced) | Fixed in the code: `composer_rows/2` shrinks the composer to keep 1 transcript row down to a height of 5, and both the render and `on_screen/2` read it. Test at 11, 5, and 4 rows |
-| 3 | Failure path | Delete or Ctrl+J inside a marker changes it, and the paste is not sent (reproduced) | Accepted hole, stated in the feature doc (round 1 #9). The mechanism, a marker that is plain text, is not patched; making markers atomic is a design question for the user |
-| 4 | Failure path | Pasted text equal to a pending marker expands into the paste (reproduced) | Accepted hole, stated in the feature doc (round 1 #8) |
+| 3 | Failure path | Delete or Ctrl+J inside a marker changes it, and the paste is not sent (reproduced) | Accepted hole in round 3. The orchestrator decided that a marker is one unit; fixed in round 7 |
+| 4 | Failure path | Pasted text equal to a pending marker expands into the paste (reproduced) | Accepted hole in round 3. Fixed in round 7 |
 
 ## Round 4 (full)
 
@@ -85,3 +85,31 @@ The round 5 fix is the second finding on the Backspace marker search, so this ro
 | - | Failure path | No finding. 1,000, 4,000, 16,000 copies: 0, 3, 21 ms (was 71 ms, 1.19 s, 25.6 s). 200 markers with a line of 90,000 multibyte code points: 10 ms. Code point and grapheme cases held | - |
 
 The reviewers changed no code in round 6. No further round.
+
+## Round 7 (full)
+
+Base `71640cc`. The orchestrator decided that a paste marker is one unit for every edit, and that only the markers that the composer made are replaced on send. Invariant for this round: the text sent equals what the user sees, with every live marker replaced by exactly its own paste; no edit drops a paste without removing its marker, and no typed text is replaced. Shift+Enter through the kitty keyboard protocol is #108. The fix adds and removes functions, so the round was full. Bounds sensor: `bounds sensor skipped: TYPESAFE_API_KEY is not set`.
+
+Simplify: one search helper, `marker_at/2`, for the key clause and for `out_of_marker/1`; the composer split stops at the cursor row; the `keys/2` parameter no longer shadows the function name. Skipped: a cursor that never stays inside a marker (Delete inside a marker must remove it, so the cursor position is needed), a sentinel at the start of the marker, and the control check in `edit/3` (a paste drops controls and Ctrl+J inserts one, so the check belongs to the key path).
+
+| # | Axis | Finding | Resolution |
+| - | ---- | ------- | ---------- |
+| 1 | Standards | The rows that say "Fixed in round 7" point at this section | Fixed: this section |
+| 2 | Standards | Three clauses in one sentence about U+0001, in the doc and the comment | Fixed |
+| 3 | Standards | `:inside` shares the `code` parameter with key codes; `cursor`, `start`, `stop`, `size` travel together; the key set is checked in four places; the test helper `inside` | Helper renamed `up_down`. The fix below removes `size`, `marker_keys/5`, and `to_stop/3`. Others are judgement calls, no change |
+| 4 | Spec, failure path | The textarea Right key stops short of zero-width characters at the end of a line (U+0001, U+200B, U+0301), not only when the marker ends the line. With U+200B or U+0301 after a marker, Delete removed the marker text without its U+0001 and one typed character, and a typed character went inside the marker (reproduced by both agents) | Fixed at the mechanism, the second finding on cursor moves by counted Right keys (the first was a marker at the end of a line, found by a test): `cut/4` sets the text after the new cursor and inserts the text before it, so the cursor lands exactly. No counted key moves are left. Regression test with U+200B |
+| 5 | Spec | The doc said Up, Down, Home, and End move as the widget moves; the code first moves the cursor to the end of a marker for every key | Fixed in the doc |
+
+## Round 8 (full)
+
+The round 7 fix changed the mechanism of cursor moves (`cut/4` added; `marker_keys/5`, `to_stop/3`, and `keys/2` removed), so this round was full. Base `71640cc`. Bounds sensor: `bounds sensor skipped: TYPESAFE_API_KEY is not set`. Simplify: no change. Skipped: fewer composer reads for Up and Down (the doc row states the linear cost of each edit), and Left keys in place of `cut/4` for Left (one mechanism for both edges).
+
+| # | Axis | Finding | Resolution |
+| - | ---- | ------- | ---------- |
+| 1 | Standards | A test held an invisible U+200B; a test comment said Backspace removes one character of the look-alike text; "thus" in the doc | Fixed: `"​"` escapes, the comment, and "so" |
+| 2 | Standards | `cut/4` also only moves the cursor; `:inside` shares the `code` parameter; the test copies the marker format; `look` | Judgement calls, no change |
+| 3 | Spec | Shift+Tab (`back_tab`) goes to the textarea and inserts spaces; the doc named only Tab | Fixed in the doc. Behaviour from the first commit, not changed |
+| - | Spec | No finding on the invariant. The round 7 reproductions pass. Random edits (5,500 sequences of 60 steps) with zero-width, combining, and wide characters kept every marker whole or removed it whole | - |
+| - | Failure path | No finding. The round 7 reproductions pass. Characters next to a marker (U+200B, U+200D, U+FE0F, U+0301, a skin tone emoji) and 2,300 random sequences of 40 steps held the invariant | - |
+
+Round 8 changed tests and Markdown only, so no further round.

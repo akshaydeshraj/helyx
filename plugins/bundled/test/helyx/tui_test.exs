@@ -860,6 +860,8 @@ defmodule Helyx.TUITest do
 
     defp lines(count), do: Enum.map_join(1..count, "\n", &"l#{&1}\tx")
 
+    defp marker(id, lines), do: "[Pasted text ##{id}, #{lines} lines]\u0001"
+
     test "Ctrl+J and Shift+Enter add a new line, Enter sends it all", %{core: core} do
       state = mounted(core, "lines", [["ok"]])
 
@@ -912,7 +914,7 @@ defmodule Helyx.TUITest do
       wide = Enum.map_join(1..5, "\n", fn _ -> "日本語\t🙂é" end)
       state = paste(state, wide)
       assert value(state) == wide
-      assert paste(state, wide <> "\nü").pastes |> Map.keys() == ["[Pasted text #1, 6 lines]"]
+      assert paste(state, wide <> "\nü").pastes |> Map.keys() == [marker(1, 6)]
 
       # A final new line does not start a line; CR and CRLF are new lines.
       ExRatatui.textarea_set_value(state.input, "")
@@ -931,9 +933,7 @@ defmodule Helyx.TUITest do
       big = lines(6) <> "\n"
 
       state = state |> press("é") |> paste(big) |> press("!") |> paste("ü\n" <> lines(19))
-
-      assert value(state) ==
-               "é[Pasted text #1, 6 lines]![Pasted text #2, 20 lines]"
+      assert value(state) == "é" <> marker(1, 6) <> "!" <> marker(2, 20)
 
       state = state |> press("enter") |> drain()
       assert [prompt, _answer] = state.vm.cells
@@ -942,49 +942,86 @@ defmodule Helyx.TUITest do
 
       # The ids start again with the next prompt.
       state = paste(state, lines(6))
-      assert value(state) == "[Pasted text #1, 6 lines]"
+      assert value(state) == marker(1, 6)
 
       # A two-digit id and a three-digit count are one marker too.
       state = Enum.reduce(2..10, state, fn _, acc -> paste(acc, lines(6)) end)
       state = state |> paste(lines(100)) |> press("backspace")
-      assert String.ends_with?(value(state), "[Pasted text #10, 6 lines]")
+      assert String.ends_with?(value(state), marker(10, 6))
       state = press(state, "backspace")
-      assert String.ends_with?(value(state), "[Pasted text #9, 6 lines]")
+      assert String.ends_with?(value(state), marker(9, 6))
     end
 
-    test "Backspace right after a marker removes the whole marker", %{core: core} do
-      state = mounted(core, "back", [["ok"]])
+    test "a marker is one unit for every key", %{core: core} do
+      state = mounted(core, "unit", [])
 
+      # Backspace right after a marker removes it whole.
       state = state |> press("ß") |> paste(lines(7)) |> press("x")
-      assert value(state) == "ß[Pasted text #1, 7 lines]x"
-
       state = press(state, "backspace")
-      assert value(state) == "ß[Pasted text #1, 7 lines]"
-
+      assert value(state) == "ß" <> marker(1, 7)
       state = press(state, "backspace")
       assert value(state) == "ß"
 
-      state = press(state, "backspace")
-      assert value(state) == ""
+      # Up and Down keep the column, so they can put the cursor inside a
+      # marker: text then goes after it, and Backspace removes it whole.
+      ExRatatui.textarea_set_value(state.input, "")
+      state = state |> press("a") |> press("b") |> press("c") |> press("j", ["ctrl"])
+      state = paste(state, lines(6))
+      up_down = fn state -> state |> press("up") |> press("down") end
 
-      # Backspace inside a marker removes the whole marker too.
-      state = state |> paste(lines(6)) |> press("z") |> press("left") |> press("left")
-      assert value(state) == "[Pasted text #2, 6 lines]z"
-      state = state |> press("left") |> press("backspace")
-      assert value(state) == "z"
-      state = state |> press("end") |> press("backspace")
-      assert value(state) == ""
+      state = state |> up_down.() |> press("x")
+      assert value(state) == "abc\n" <> marker(2, 6) <> "x"
+      state = state |> up_down.() |> paste("p") |> up_down.() |> press("j", ["ctrl"])
+      assert value(state) == "abc\n" <> marker(2, 6) <> "\npx"
+      state = state |> press("right") |> press("up") |> press("backspace")
+      assert value(state) == "abc\n\npx"
 
-      # A marker on the second line, cursor after it.
-      state = state |> press("a") |> press("j", ["ctrl"]) |> paste(lines(6))
-      state = press(state, "backspace")
-      assert value(state) == "a\n"
+      # Delete at the start of a marker or inside it removes it whole.
+      ExRatatui.textarea_set_value(state.input, "")
+      state = state |> press("a") |> paste(lines(6)) |> press("z") |> press("home")
+      state = state |> press("right") |> press("delete")
+      assert value(state) == "az"
+      state = state |> press("j", ["ctrl"]) |> paste(lines(6)) |> up_down.() |> press("delete")
+      assert value(state) == "a\nz"
 
-      # A paste inside a paste is not expanded again.
-      inner = "[Pasted text #3, 6 lines]\n" <> lines(6)
-      state = state |> paste(lines(6)) |> paste(inner) |> press("enter") |> drain()
+      # Left and Right pass over a marker in one step.
+      ExRatatui.textarea_set_value(state.input, "")
+      state = state |> press("q") |> paste(lines(6)) |> press("r")
+      state = state |> press("left") |> press("left") |> press("p")
+      assert value(state) == "qp" <> marker(5, 6) <> "r"
+      state = state |> press("right") |> press("s")
+      assert value(state) == "qp" <> marker(5, 6) <> "sr"
+
+      # Zero-width text after a marker does not stop the cursor short of its
+      # end.
+      ExRatatui.textarea_set_value(state.input, "")
+      state = state |> press("x") |> paste(lines(6)) |> press("\u200b") |> press("home")
+      state = state |> press("right") |> press("right") |> press("y")
+      assert value(state) == "x" <> marker(6, 6) <> "y\u200b"
+      state = state |> press("home") |> press("right") |> press("delete")
+      assert value(state) == "xy\u200b"
+    end
+
+    test "only the markers that the composer made are replaced", %{core: core} do
+      state = mounted(core, "forge", [["ok"], ["ok"]])
+      look = "[Pasted text #1, 6 lines]"
+
+      # Typed or pasted, the text of a live marker is sent as it is, and
+      # Backspace after them removes only the typed character.
+      state = paste(state, lines(6))
+      state = Enum.reduce(String.graphemes(look), state, &press(&2, &1))
+      state = state |> paste(" " <> look) |> press("x") |> press("backspace")
+      state = state |> press("enter") |> drain()
       assert [prompt, _answer] = state.vm.cells
-      assert Helyx.Message.text(prompt) == "a\n" <> lines(6) <> inner
+      assert Helyx.Message.text(prompt) == lines(6) <> look <> " " <> look
+
+      # A key code or a paste with the end character of a marker cannot
+      # forge one: the key goes nowhere, and the paste drops the character.
+      state = paste(state, lines(6))
+      state = state |> press("\u0001") |> paste(look <> "\u0001")
+      assert value(state) == marker(1, 6) <> look
+      state = state |> press("enter") |> drain()
+      assert Helyx.Message.text(Enum.at(state.vm.cells, 2)) == lines(6) <> look
     end
 
     test "a pasted tab after /model is a separator", %{core: core} do

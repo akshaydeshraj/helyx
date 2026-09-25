@@ -34,7 +34,9 @@ if Helyx.TUI.Available.available?() do
         reports Shift on Enter
       * a paste keeps its new lines and tabs. A paste of more than 5 lines
         shows as one marker, `[Pasted text #1, 20 lines]`, and is sent in
-        full. Backspace on a marker removes the whole marker
+        full. A marker is one unit: Backspace and Delete remove it whole,
+        Left and Right pass over it, and text typed in it goes after it.
+        Text that only looks like a marker is sent as typed
       * Enter sends the composer as a steer (a prompt when no turn runs)
       * Alt+Enter sends it as a follow-up. A rejected send (full queue, text
         that is not valid UTF-8) stays in the composer, and the status bar
@@ -76,6 +78,12 @@ if Helyx.TUI.Available.available?() do
 
     # A paste of more lines than this shows as one marker.
     @paste_lines 5
+
+    # The last character of a marker, a control character. A paste drops it.
+    # A key code with it goes nowhere. ExRatatui does not draw it. So only a
+    # marker that the composer made ends with it, and text that looks like a
+    # marker is sent as typed.
+    @marker_end "\u0001"
 
     # East Asian Wide and Fullwidth blocks, the emoji blocks, and other ranges
     # that ExRatatui draws as two columns.
@@ -269,8 +277,8 @@ if Helyx.TUI.Available.available?() do
     def handle_event(%Key{code: "enter"}, state), do: {:noreply, state}
 
     # Everything else goes to the input widget, which inserts printable
-    # characters and handles its own editing keys. Backspace on a paste
-    # marker removes the whole marker.
+    # characters and handles its own editing keys. A paste marker is one
+    # unit for every key.
     def handle_event(%Key{} = key, state) do
       if key.kind in ["press", "repeat"] and key.modifiers -- ["shift"] == [] do
         {:noreply, edit(state, key.code, &widget_key/2)}
@@ -300,43 +308,95 @@ if Helyx.TUI.Available.available?() do
       end
     end
 
+    # Text never goes inside a marker: it goes after it.
     defp insert(state, text) do
+      state = out_of_marker(state)
       ExRatatui.textarea_insert_str(state.input, text)
       state
     end
 
-    # Backspace with the cursor inside a marker or right after it removes the
-    # whole marker. ExRatatui has no call to delete a range, so the cursor
-    # moves to the end of the marker and deletes it one character at a time.
-    # The cursor column counts code points; a linear walk turns it into a byte
-    # offset, so the search is linear in the line.
-    defp widget_key(%{pastes: pastes} = state, "backspace") when map_size(pastes) > 0 do
-      {row, column} = ExRatatui.textarea_cursor(state.input)
-      line = state.input |> ExRatatui.textarea_get_value() |> String.split("\n") |> Enum.at(row)
+    # A marker is one unit for every key. Backspace in a marker or right
+    # after it, and Delete at a marker or in it, remove the whole marker.
+    # Left and Right pass over it in one step. Any other key with the cursor
+    # inside a marker acts at its end.
+    defp widget_key(state, code) when code in ["backspace", "delete", "left", "right"] do
+      case marker_at(state, code) do
+        nil ->
+          key(state, code)
 
-      cursor =
-        line |> String.to_charlist() |> Enum.take(column) |> List.to_string() |> byte_size()
+        {value, {start, stop}} when code in ["backspace", "delete"] ->
+          cut(state, value, start, stop)
 
-      # Right keys, then Backspaces. Off a marker: none, then one.
-      {right, count} = Enum.find_value(Map.keys(pastes), {0, 1}, &on_marker(line, cursor, &1))
+        {value, {_start, stop}} when code == "right" ->
+          cut(state, value, stop, stop)
 
-      for _ <- 1..right//1, do: ExRatatui.textarea_handle_key(state.input, "right", [])
-      for _ <- 1..count, do: ExRatatui.textarea_handle_key(state.input, "backspace", [])
-      state
+        {value, {start, _stop}} ->
+          cut(state, value, start, start)
+      end
     end
 
+    # A key code with a control character could forge the end of a marker.
     defp widget_key(state, code) do
+      if drop_controls(code) == code,
+        do: state |> out_of_marker() |> key(code),
+        else: state
+    end
+
+    defp hit?(code, cursor, {start, stop}) when code in ["backspace", "left"],
+      do: start < cursor and cursor <= stop
+
+    defp hit?(code, cursor, {start, stop}) when code in ["delete", "right"],
+      do: start <= cursor and cursor < stop
+
+    defp hit?(:inside, cursor, {start, stop}), do: start < cursor and cursor < stop
+
+    defp out_of_marker(state) do
+      case marker_at(state, :inside) do
+        nil -> state
+        {value, {_start, stop}} -> cut(state, value, stop, stop)
+      end
+    end
+
+    defp key(state, code) do
       ExRatatui.textarea_handle_key(state.input, code, [])
       state
     end
 
-    # The Right keys and the Backspaces that remove the marker, when the
-    # cursor byte offset is inside a copy of it on the line or right after
-    # one. A marker is ASCII, so its bytes are its characters.
-    defp on_marker(line, cursor, marker) do
-      Enum.find_value(:binary.matches(line, marker), fn {at, size} ->
-        if cursor > at and cursor <= at + size, do: {at + size - cursor, size}
-      end)
+    # The composer becomes `value` without the bytes from `from` to `to`,
+    # with the cursor at `from`. ExRatatui has no call to set the cursor or to
+    # delete a range, and its Right key stops short of zero-width characters
+    # at the end of a line. `textarea_insert_str/2` leaves the cursor exactly
+    # at the end of the text it inserts, so the TUI sets the text after the
+    # cursor and inserts the text before it. Linear in the composer text.
+    defp cut(state, value, from, to) do
+      ExRatatui.textarea_set_value(state.input, binary_part(value, to, byte_size(value) - to))
+      ExRatatui.textarea_insert_str(state.input, binary_part(value, 0, from))
+      state
+    end
+
+    # The composer text and the byte span of the live marker that `hit?/3`
+    # finds for the cursor, or nil. The cursor column counts code points, so
+    # one walk of the cursor line turns it into a byte offset. One read of
+    # the composer and one search for all markers: linear in the composer
+    # text.
+    defp marker_at(%{pastes: pastes}, _code) when map_size(pastes) == 0, do: nil
+
+    defp marker_at(state, code) do
+      {row, column} = ExRatatui.textarea_cursor(state.input)
+      value = ExRatatui.textarea_get_value(state.input)
+      {above, [line | _]} = value |> String.split("\n", parts: row + 2) |> Enum.split(row)
+      line_start = Enum.reduce(above, 0, &(byte_size(&1) + 1 + &2))
+
+      cursor =
+        line |> String.to_charlist() |> Enum.take(column) |> List.to_string() |> byte_size()
+
+      spans =
+        for {at, size} <- :binary.matches(value, Map.keys(state.pastes)), do: {at, at + size}
+
+      case Enum.find(spans, &hit?(code, line_start + cursor, &1)) do
+        nil -> nil
+        span -> {value, span}
+      end
     end
 
     # A terminal can send a pasted new line as CR. Control characters other
@@ -346,7 +406,7 @@ if Helyx.TUI.Available.available?() do
 
       case line_count(text) do
         lines when lines > @paste_lines ->
-          marker = "[Pasted text ##{map_size(state.pastes) + 1}, #{lines} lines]"
+          marker = "[Pasted text ##{map_size(state.pastes) + 1}, #{lines} lines]" <> @marker_end
           insert(%{state | pastes: Map.put(state.pastes, marker, text)}, marker)
 
         _lines ->
