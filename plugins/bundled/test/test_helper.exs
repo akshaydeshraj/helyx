@@ -1,8 +1,9 @@
 ExUnit.start()
 
-defmodule Helyx.Tool.Bash.OSHelpers do
+defmodule Helyx.Test.OSHelpers do
   @moduledoc false
-  # OS-level polling assertions shared by the bash tool's tests.
+  # OS-level polling assertions shared by the tests of the bash tool and
+  # `Helyx.Watchdog`.
   import ExUnit.Assertions
 
   # Polls until the command has written its pid to `path`.

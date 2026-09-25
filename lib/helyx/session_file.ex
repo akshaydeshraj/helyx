@@ -40,6 +40,8 @@ defmodule Helyx.SessionFile do
   # The scan reads the header of this many files: the ones with the newest
   # modification time. Nothing deletes session files, so their count grows.
   @max_scanned_files 256
+  # Claude Code's ids are UUIDs; 256 bytes leaves room for another harness.
+  @harness_id_max_bytes 256
 
   @enforce_keys [:path]
   defstruct [:path, :leaf]
@@ -47,15 +49,20 @@ defmodule Helyx.SessionFile do
   @type t :: %__MODULE__{path: Path.t(), leaf: String.t() | nil}
 
   defmodule Resumed do
-    @moduledoc "What `resume/3` restores: the file, the session id, the model, and the transcript."
+    @moduledoc """
+    What `resume/3` restores: the file, the session id, the model, the
+    transcript, and the last harness session of each harness provider: its
+    id and the number of messages before its entry.
+    """
     @enforce_keys [:file, :session_id, :model, :messages]
-    defstruct [:file, :session_id, :model, :messages]
+    defstruct [:file, :session_id, :model, :messages, harness_sessions: %{}]
 
     @type t :: %__MODULE__{
             file: Helyx.SessionFile.t(),
             session_id: String.t(),
             model: String.t(),
-            messages: [Message.t()]
+            messages: [Message.t()],
+            harness_sessions: %{String.t() => {String.t(), non_neg_integer()}}
           }
   end
 
@@ -200,7 +207,8 @@ defmodule Helyx.SessionFile do
         file: %__MODULE__{path: path, leaf: List.last(entries)["id"]},
         session_id: Path.basename(path, ".jsonl"),
         model: current_model(header, entries),
-        messages: for(%{"type" => "message"} = entry <- entries, do: decode_message(entry))
+        messages: for(%{"type" => "message"} = entry <- entries, do: decode_message(entry)),
+        harness_sessions: harness_sessions(entries)
       }
 
       {:ok, resumed, {kept_bytes, tail}}
@@ -215,6 +223,22 @@ defmodule Helyx.SessionFile do
   @spec append_model_change(t(), String.t()) :: t()
   def append_model_change(%__MODULE__{} = file, model) when is_binary(model) do
     append(file, %{"type" => "model_change", "model" => model})
+  end
+
+  @doc """
+  Appends a harness session entry: the id that the external program of the
+  harness provider `provider_id` issued for its harness session. Like message text, both
+  strings must be valid UTF-8 when they reach the file; the caller checks
+  them where they enter the session.
+  """
+  @spec append_harness_session(t(), String.t(), String.t()) :: t()
+  def append_harness_session(%__MODULE__{} = file, provider_id, id)
+      when is_binary(provider_id) and is_binary(id) do
+    append(file, %{
+      "type" => "harness_session",
+      "provider" => provider_id,
+      "harness_session_id" => id
+    })
   end
 
   @doc "Appends one completed message to the file."
@@ -324,13 +348,23 @@ defmodule Helyx.SessionFile do
     %Message.Image{mime_type: mime_type, data: data}
   end
 
+  @doc """
+  Whether `id` is a harness session id this file holds: valid UTF-8 of 1 to
+  #{@harness_id_max_bytes} bytes. The session checks an id from a provider
+  with it before the id is written, and a resume rejects a file whose entry
+  fails it.
+  """
+  @spec harness_id?(term()) :: boolean()
+  def harness_id?(id),
+    do: is_binary(id) and byte_size(id) in 1..@harness_id_max_bytes and Message.valid_utf8?(id)
+
   defp check_version(%{"version" => @version}), do: :ok
   defp check_version(header), do: {:error, {:unknown_version, header["version"]}}
 
-  # The writer only produces a header on line one, then messages and model
-  # changes, every one with an id, every model a string. Anything else is
-  # on-disk corruption, never silently dropped, and never laundered by a
-  # later entry that overrides it.
+  # The writer only produces a header on line one, then messages, model
+  # changes, and harness sessions, every one with an id, every model and
+  # harness field a string. Anything else is on-disk corruption, never
+  # silently dropped, and never laundered by a later entry that overrides it.
   defp check_entries([%{"type" => "session", "id" => id, "model" => model} | rest])
        when is_binary(id) and is_binary(model) do
     case Enum.find(rest, &(not valid_entry?(&1))) do
@@ -346,6 +380,14 @@ defmodule Helyx.SessionFile do
   defp valid_entry?(%{"type" => "model_change", "id" => id, "model" => model}),
     do: is_binary(id) and is_binary(model)
 
+  defp valid_entry?(%{
+         "type" => "harness_session",
+         "id" => id,
+         "provider" => provider,
+         "harness_session_id" => harness_id
+       }),
+       do: is_binary(id) and is_binary(provider) and harness_id?(harness_id)
+
   defp valid_entry?(_entry), do: false
 
   # The last model change wins, else the header's model. Both are strings:
@@ -355,6 +397,26 @@ defmodule Helyx.SessionFile do
       %{"type" => "model_change"} = entry, _acc -> entry["model"]
       _entry, acc -> acc
     end)
+  end
+
+  # The last harness session entry of each provider wins: a lost harness
+  # session is followed by a new entry for the same provider. Each keeps the
+  # number of messages before it, so the session can tell whether the
+  # harness session has made a message since.
+  defp harness_sessions(entries) do
+    {sessions, _count} =
+      Enum.reduce(entries, {%{}, 0}, fn
+        %{"type" => "message"}, {sessions, count} ->
+          {sessions, count + 1}
+
+        %{"type" => "harness_session"} = entry, {sessions, count} ->
+          {Map.put(sessions, entry["provider"], {entry["harness_session_id"], count}), count}
+
+        _entry, acc ->
+          acc
+      end)
+
+    sessions
   end
 
   # The most recently started session whose header matches the working

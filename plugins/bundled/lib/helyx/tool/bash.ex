@@ -13,130 +13,18 @@ defmodule Helyx.Tool.Bash do
   The call returns when stdout closes, so a background child that keeps
   stdout open holds the call until it exits.
 
-  The command runs in its own process group under a perl watchdog. The tool
-  holds the group with the hands before the command is allowed to execute.
-  The watchdog ties the command's life to the port: when the port closes,
-  because anything above the command died, the watchdog kills the group.
-  perl is required; `check/0` reports a system without it when the hands
-  start.
+  The command runs in its own process group under a perl watchdog, started
+  by `Helyx.Watchdog`, which holds the group with the hands before the
+  command is allowed to execute. The watchdog ties the command's life to
+  the port: when the port closes, because anything above the command died,
+  the watchdog kills the group. perl is required; `check/0` reports a
+  system without it when the hands start.
   """
 
   @behaviour Helyx.Tool
 
-  # The watchdog forks the command into its own process group and stays in
-  # the launcher's own group, so the port's OS process is the watchdog. It
-  # writes the command's group id as the stdout marker and holds the command
-  # until the go-ahead line arrives on stdin, so either the hands hold the
-  # group id before the command runs, or the command never ran. Then it
-  # watches: when its stdin ends, because the port closed, it TERMs the
-  # group, waits the grace period, KILLs it, and reaps the command before it
-  # exits (a read that fails gives undef, which is also `== 0`, so a read
-  # error kills the group too); when the command ends first, it exits with
-  # the command's status
-  # (128 plus the signal for a signal death). The watchdog ignores TERM in
-  # the parent only, after the fork, so a release can TERM every held
-  # group without cutting the cleanup short; ignored dispositions survive
-  # exec, so the child must not inherit one. The 50 ms select tick is the
-  # poll for both stdin and the child.
-  #
-  # The watchdog enters the working directory itself, before the fork. The
-  # port's cd option has no failure signal: the emulator's child exits with
-  # status 2, which a real command can also do. A chdir, pipe, or fork that
-  # fails writes the marker with `0`, which is never a group id, then the
-  # reason, and no command exists.
-  #
-  # A marker line is "<nonce> <number>". The nonce is random for each call
-  # and reaches the watchdog in its arguments only. The command is held
-  # until the go-ahead, so no command output can come before the marker.
-  # perl's own startup output can, because stderr is merged: a bad locale
-  # warning prints environment values, which can hold any line. It cannot
-  # hold the nonce, so no text can pass for a marker; `read_marker/4` reads
-  # past the rest.
-  #
-  # The start report (#70). The held child writes the start line,
-  # "<nonce> 1", as its last act before the `exec`, so the line is in front
-  # of all command output, and a result is ok only with it: a watchdog that
-  # dies before it passes the go-ahead on, or a child that dies while held,
-  # leaves no start line. The child reports a failed `exec`, or its own
-  # death by `die`, through a second pipe that closes on `exec` (perl sets
-  # close-on-exec on every descriptor above 2): the watchdog reads end of
-  # file when the `exec` worked, and the error when it did not. It reads
-  # the pipe only after the child ended, so the read never waits: the write
-  # end is closed by then, by the `exec` or by the exit, and the watchdog's
-  # poll of stdin is never held. It then writes "<go> 0" and the error.
-  # `<go>` is a second random word, which arrives on stdin as the go-ahead
-  # line, after the fork: it is in no argument list and not in the child, so
-  # a command that ran cannot write a failure report, and the report counts
-  # wherever it is in the output, so text of perl in front of it cannot
-  # hide it. The command can read the nonce from the process table, but a
-  # start line is only true of a command that ran.
-  #
-  # The perl environment (#71). Variables of the environment change the
-  # interpreter: `PERL_UNICODE` puts a `:utf8` layer on handles, and a
-  # `sysread` or `syswrite` on such a handle is fatal; `PERL5OPT=-d` starts
-  # the debugger on the watchdog's stdin; `PERL5LIB` can replace the POSIX
-  # module. So the port starts perl without every variable whose name
-  # starts with `PERL` (`launcher/3`), except `PERL_BADLANG`. That one only
-  # stops the locale warning. A user with a locale that the system does not
-  # have sets it to 0, and without it that user gets the warning in front of
-  # every result.
-  #
-  # The values are the user's, and the command can be perl. So each value
-  # stays in the environment under the name `HELYX_KEEP_<name>`, which perl
-  # does not read, and the watchdog gives it its name back in `%ENV` before
-  # the fork. `%ENV` does not change an interpreter that runs already. The
-  # prefix `HELYX_KEEP_PERL` is reserved: the watchdog takes every such name
-  # for one of its own. A kept value has a `=` in front, which the watchdog
-  # takes off: the port takes an empty value for "remove", and an empty
-  # `PERL_UNICODE` is not the same as none.
-  @watchdog ~S"""
-  use POSIX ":sys_wait_h";
-  my $nonce = shift @ARGV;
-  sub fail { syswrite(STDOUT, "$nonce 0\n$_[0]: $!"); exit 0 }
-  my $dir = shift @ARGV;
-  for (keys %ENV) { $ENV{$1} = substr(delete $ENV{$_}, 1) if /^HELYX_KEEP_(PERL.*)/s }
-  chdir($dir) or fail("cannot enter the working directory $dir");
-  pipe(my $r, my $w) or fail("pipe failed");
-  pipe(my $er, my $ew) or fail("report pipe failed");
-  my $child = fork() // fail("fork failed");
-  if ($child == 0) {
-    close($w); close($er);
-    setpgrp(0, 0);
-    eval {
-      sysread($r, my $go, 1) or exit 0;
-      open(STDIN, "<", "/dev/null");
-      syswrite(STDOUT, "$nonce 1\n");
-      exec @ARGV;
-      die "cannot run $ARGV[0]: $!\n";
-    };
-    syswrite($ew, $@);
-    exit 0;
-  }
-  $SIG{TERM} = "IGNORE";
-  close($r); close($ew);
-  syswrite(STDOUT, "$nonce $child\n");
-  my $go = readline(STDIN);
-  if (defined($go)) { syswrite($w, "g"); close($w) }
-  else { close($w); kill("KILL", -$child); waitpid($child, 0); exit 0 }
-  chomp($go);
-  while (1) {
-    my $rin = ""; vec($rin, fileno(STDIN), 1) = 1;
-    my $n = select(my $rout = $rin, undef, undef, 0.05);
-    if ($n and sysread(STDIN, my $buf, 4096) == 0) {
-      kill("TERM", -$child);
-      my $t = 0;
-      while (waitpid($child, WNOHANG) == 0 and $t < 0.5) { select(undef, undef, undef, 0.05); $t += 0.05 }
-      kill("KILL", -$child);
-      waitpid($child, 0);
-      exit 0;
-    }
-    if (waitpid($child, WNOHANG) > 0) {
-      my $s = $?;
-      if (sysread($er, my $err, 4096)) { syswrite(STDOUT, "$go 0\n$err"); exit 0 }
-      exit(($s & 127) ? 128 + ($s & 127) : $s >> 8);
-    }
-  }
-  """
+  # The launcher, the handshake, and the release live in `Helyx.Watchdog`,
+  # which the Claude Code provider shares (ADR 0005).
 
   @impl true
   def name, do: "bash"
@@ -191,24 +79,12 @@ defmodule Helyx.Tool.Bash do
   def run(_args, _cwd), do: {:error, "bash needs a command"}
 
   @impl true
-  defdelegate release(handles, mode, deadline), to: Helyx.Tool.Bash.Group
+  defdelegate release(handles, mode, deadline), to: Helyx.Watchdog
 
   defp run_command(command, cwd) do
-    nonce = random_word()
-    {exe, options} = launcher(command, cwd, nonce)
-    port = Port.open({:spawn_executable, exe}, options)
+    bash = System.find_executable("bash") || "/bin/bash"
 
-    # The runtime detaches port programs into their own process group, so
-    # the port's OS pid is the watchdog's group. Held as :watchdog: the
-    # release waits for it, so an abort cannot return while the command is
-    # a zombie, and KILLs it only after the command group is gone, so a
-    # KILL can never cut the reap short.
-    case Port.info(port, :os_pid) do
-      {:os_pid, os_pid} -> Helyx.Tool.hold({:watchdog, os_pid})
-      nil -> :ok
-    end
-
-    case consume(port, nonce) do
+    case consume(Helyx.Watchdog.start([bash, "-c", command], cwd, nil)) do
       {:not_started, reason} ->
         {:error, "the command did not start: " <> Helyx.Tool.truncate(reason, :tail)}
 
@@ -217,59 +93,15 @@ defmodule Helyx.Tool.Bash do
     end
   end
 
-  @doc false
-  # Public for the watchdog's direct tests.
-  def launcher(command, cwd, nonce) do
-    bash = System.find_executable("bash") || "/bin/bash"
-    perl = System.find_executable("perl") || "/usr/bin/perl"
-    # ponytail: the VM decodes a name or a value that is not UTF-8 as
-    # Latin-1. Such a `PERL*` value reaches the command with other bytes,
-    # and such a name is not removed. Raw bytes need another transport, if
-    # a user has such a variable.
-    perl_env =
-      for {"PERL" <> _ = name, _value} = variable <- System.get_env(),
-          name != "PERL_BADLANG",
-          do: variable
-
-    unset = for {name, _value} <- perl_env, do: {String.to_charlist(name), false}
-
-    keep =
-      for {name, value} <- perl_env,
-          do: {String.to_charlist("HELYX_KEEP_" <> name), String.to_charlist("=" <> value)}
-
-    # No cd option: the watchdog enters `cwd`, so a failure has a signal.
-    {perl,
-     [
-       :binary,
-       :exit_status,
-       :stderr_to_stdout,
-       {:env, unset ++ keep},
-       {:args, ["-e", @watchdog, "--", nonce, cwd, bash, "-c", command]}
-     ]}
+  defp consume({:not_started, port, acc}) do
+    {reason, _dropped?, _status} = collect(port, acc, false)
+    {:not_started, reason}
   end
 
-  # Takes the marker off the stream. Only a group marker leads to the
-  # go-ahead, after the group is held: a command never runs without
-  # its group in the hands, and there is no ok result without a group marker.
-  # With no marker, the closed port is the watchdog's signal to kill the
-  # child it holds, if it got that far.
-  defp consume(port, nonce) do
-    case read_marker(port, nonce, "", "") do
-      {:not_started, acc} ->
-        {reason, _dropped?, _status} = collect(port, acc, false)
-        {:not_started, reason}
+  defp consume({:no_marker, text}), do: {:not_started, "the watchdog gave no marker: " <> text}
 
-      {:no_marker, text} ->
-        close(port)
-        {:not_started, "the watchdog gave no marker: " <> text}
-
-      {group, pre} ->
-        Helyx.Tool.hold({:command, group})
-        go = random_word()
-        go_ahead(port, go)
-        start_report(collect(port, pre, false), pre, nonce <> " 1\n", go <> " 0\n")
-    end
-  end
+  defp consume({:started, port, pre, nonce, go}),
+    do: start_report(collect(port, pre, false), pre, nonce <> " 1\n", go <> " 0\n")
 
   # Reads the start report off the collected output (see the watchdog).
   # `pre` is what came before the group marker, perl's own startup output.
@@ -291,23 +123,6 @@ defmodule Helyx.Tool.Bash do
       [_no_start_line] ->
         {:not_started, "the command gave no start line: " <> output}
     end
-  end
-
-  defp random_word, do: Base.encode16(:crypto.strong_rand_bytes(8))
-
-  # A port whose watchdog already died is closed and the write raises; the
-  # exit status is still in the mailbox for the collect.
-  defp go_ahead(port, go) do
-    Port.command(port, go <> "\n")
-  rescue
-    ArgumentError -> false
-  end
-
-  # The same for a close: after an exit the port is already closed.
-  defp close(port) do
-    Port.close(port)
-  rescue
-    ArgumentError -> false
   end
 
   defp render(output, dropped?, status) do
@@ -358,56 +173,4 @@ defmodule Helyx.Tool.Bash do
     do: drop_continuation(rest, n - 1)
 
   defp drop_continuation(bin, _n), do: bin
-
-  # The marker line must end within this many bytes of the stream. Lines
-  # that perl itself may write before it take the room; a locale warning is
-  # about 400 bytes.
-  @max_preamble_bytes 4096
-
-  # Finds the marker line (see the watchdog). Lines that are not a marker
-  # are read past, within `@max_preamble_bytes`, and kept in front of the
-  # output. The marker exists however fast the command exited, because the
-  # watchdog writes it before the command may run. Returns the group
-  # (or `:not_started`, see the watchdog) and the output so far. A stream
-  # that ends, or reaches the limit, with no marker is `:no_marker` with its
-  # text: perl did not get as far as the watchdog, or wrote too much. Only
-  # a line that ends within the limit counts, marker or not, so which
-  # marker is found, if any, does not depend on how the stream is cut into
-  # messages. The `:no_marker` text is what had arrived by then.
-  @doc false
-  # Public for the direct test of the preamble limit.
-  def read_marker(port, nonce, pre, acc) do
-    case String.split(acc, "\n", parts: 2) do
-      [line, rest] when byte_size(pre) + byte_size(line) < @max_preamble_bytes ->
-        case parse_marker(line, nonce) do
-          nil -> read_marker(port, nonce, pre <> line <> "\n", rest)
-          marker -> {marker, pre <> rest}
-        end
-
-      [_] when byte_size(pre) + byte_size(acc) < @max_preamble_bytes ->
-        receive do
-          {^port, {:data, data}} -> read_marker(port, nonce, pre, acc <> data)
-          {^port, {:exit_status, _status}} -> {:no_marker, pre <> acc}
-        end
-
-      _ ->
-        {:no_marker, pre <> acc}
-    end
-  end
-
-  # `kill -- -1` would signal every process the user may signal, so nothing
-  # below 2 is ever accepted as a group. 0 is the watchdog's word for a
-  # command it could not start.
-  defp parse_marker(line, nonce) do
-    with [^nonce, number] <- String.split(line, " "),
-         {number, ""} <- Integer.parse(number) do
-      case number do
-        0 -> :not_started
-        group when group > 1 -> group
-        _ -> nil
-      end
-    else
-      _ -> nil
-    end
-  end
 end

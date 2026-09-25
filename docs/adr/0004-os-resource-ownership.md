@@ -14,7 +14,7 @@ A process group, port, file handle, or other OS resource that a tool creates is 
 
 ## Consequences
 
-- The bash launcher carries a handshake: the perl watchdog writes the group id, the tool holds it with `Helyx.Tool.hold/1`, and only then sends the go-ahead line that lets the command exec.
+- The bash launcher carries a handshake: the perl watchdog writes the group id, the tool (since #10, `Helyx.Watchdog.start/3` for it) holds it with `Helyx.Tool.hold/1`, and only then sends the go-ahead line that lets the command exec.
 - Every feature doc lists its external resources in an ownership table (`docs/features/TEMPLATE.md`); a row whose release path dies with its owner is a design flag the spec axis raises before implementation.
 - Harness providers that spawn processes follow the same rule: they are spawned on the hands side (ADR 0003), and their processes are held with the hands before use.
 - perl is required for the bash tool; a system without it is a clear error when the hands start.
@@ -24,3 +24,5 @@ A process group, port, file handle, or other OS resource that a tool creates is 
 2026-09-18, ticket #37. The original decision, "OS resources are owned by long-lived processes, never by Tasks", was too broad: a long-lived holder still fails when the holder itself dies first. The rule is restated as above, and links plus the port watchdog replaced the port scan, the perl-less launcher mode, and the kill of late registrations.
 
 2026-09-25, `docs/features/tool-resource-release.md`. The hands held process group ids and did the OS work to release them, so Core knew about signals, group kinds, and perl. The hold stays, but the handle is opaque, and the plugin that holds it releases it through `release/3`. The cleanup and refusal contract does not change.
+
+2026-09-25, ticket #10. The Claude Code provider is the first harness provider. Its stream runs as a Task of the hands, so it can hold its groups with `Helyx.Tool.hold/1`, and the hands call the provider's `release/3` when the stream ends or its turn is aborted. The watchdog and the release moved from the bash tool to `Helyx.Watchdog`, which both plugins share (ADR 0005, revision of 2026-09-25). The watchdog can now give the command a counted input on stdin; the kill on a closed port does not change.

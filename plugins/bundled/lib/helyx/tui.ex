@@ -624,9 +624,8 @@ if Helyx.TUI.Available.available?() do
       block_lines(message.content, width)
     end
 
-    defp cell_lines({:tool, call, result}, width) do
-      call_line = styled_lines("⚙ #{call.name} #{compact_arguments(call)}", width, @tool)
-      call_line ++ result_lines(result, width)
+    defp cell_lines({:tool, _call, line, result}, width) do
+      styled_lines(line, width, @tool) ++ result_lines(result, width)
     end
 
     defp cell_lines({:notice, text}, width), do: styled_lines("✕ #{text}", width, @bad)
@@ -656,12 +655,6 @@ if Helyx.TUI.Available.available?() do
         _ ->
           shown
       end
-    end
-
-    defp compact_arguments(%Message.ToolCall{arguments: arguments}) do
-      arguments
-      |> Enum.map_join(" ", fn {key, value} -> "#{key}=#{inspect(value)}" end)
-      |> String.replace("\n", "␤")
     end
 
     # One styled Line per screen row: split on newlines, then wrap to width.

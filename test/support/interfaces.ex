@@ -102,6 +102,123 @@ defmodule Helyx.Test.ProviderOther do
   end
 end
 
+defmodule Helyx.Test.BadKind do
+  @moduledoc false
+  # A provider whose `kind/0` is not `:model` or `:harness`.
+  @behaviour Helyx.Provider
+
+  @impl true
+  def id, do: "bad_kind"
+
+  # The bad return is the point of this provider.
+  @dialyzer {:nowarn_function, kind: 0}
+  @impl true
+  def kind, do: :bogus
+
+  @impl true
+  def stream(_model, _context, _opts), do: {:ok, []}
+end
+
+defmodule Helyx.Test.RaisingKind do
+  @moduledoc false
+  @behaviour Helyx.Provider
+
+  @impl true
+  def id, do: "raising_kind"
+
+  @impl true
+  def kind, do: raise("no kind")
+
+  @impl true
+  def stream(_model, _context, _opts), do: {:ok, []}
+end
+
+defmodule Helyx.Test.Harness do
+  @moduledoc false
+  # A harness provider whose model name selects its harness events. Each
+  # stream ends with a text delta and done.
+  #
+  #   "id1"     a harness session id of 1 byte
+  #   "id256"   a harness session id of 256 bytes, multibyte
+  #   "id257"   an id of 257 bytes
+  #   "id0"     an empty id
+  #   "raw_id"  an id that is not valid UTF-8
+  #   "orphan"  a tool result for a call of no completed message
+  #   "big_cut" a cut of 101 digits, over the digit limit
+  #   "max_cut" a cut of 100 digits, at the digit limit
+  #   "neg_cut" a cut of -1
+  #   "big_result" a tool call and its result of 3,000 lines
+  #   "dup_id"  two tool calls with one id, then two results
+  #   "open_call"  "dup_id" with no second result and no text after it
+  #   "late_result"  a call, a text message, then the call's result
+  @behaviour Helyx.Provider
+
+  @impl true
+  def id, do: "harness"
+
+  @impl true
+  def kind, do: :harness
+
+  @impl true
+  def stream("open_call", _context, _opts),
+    do:
+      {:ok,
+       events("dup_id")
+       |> Enum.drop(-1)
+       |> Enum.concat([{:done, %{stop_reason: :end_turn, usage: %{}}}])}
+
+  def stream(model, _context, _opts),
+    do:
+      {:ok,
+       events(model) ++ [{:text_delta, "ok"}, {:done, %{stop_reason: :end_turn, usage: %{}}}]}
+
+  defp events("id1"), do: [{:harness_session, "a", 0}]
+  defp events("big_cut"), do: [{:harness_session, "a", Integer.pow(10, 100)}]
+  defp events("max_cut"), do: [{:harness_session, "a", Integer.pow(10, 100) - 1}]
+  defp events("neg_cut"), do: [{:harness_session, "a", -1}]
+
+  defp events("late_result") do
+    call = %Helyx.Message.ToolCall{id: "t", name: "read", arguments: %{}}
+
+    [
+      {:tool_call, call},
+      {:message_end, :tool_use, %{}},
+      {:text_delta, "x"},
+      {:message_end, :end_turn, %{}},
+      {:tool_result, "t", {:ok, "late"}}
+    ]
+  end
+
+  defp events("dup_id") do
+    read = %Helyx.Message.ToolCall{id: "t", name: "read", arguments: %{}}
+    bash = %Helyx.Message.ToolCall{id: "t", name: "bash", arguments: %{}}
+
+    [
+      {:tool_call, read},
+      {:tool_call, bash},
+      {:message_end, :tool_use, %{}},
+      {:tool_result, "t", {:ok, "one"}},
+      {:tool_result, "t", {:ok, "two"}}
+    ]
+  end
+
+  defp events("big_result") do
+    call = %Helyx.Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
+
+    [
+      {:tool_call, call},
+      {:message_end, :tool_use, %{}},
+      {:tool_result, "c1", {:ok, String.duplicate("x\n", 3_000)}}
+    ]
+  end
+
+  defp events("id256"), do: [{:harness_session, String.duplicate("é", 128), 0}]
+  defp events("id257"), do: [{:harness_session, "a" <> String.duplicate("é", 128), 0}]
+  defp events("id0"), do: [{:harness_session, "", 0}]
+  defp events("raw_id"), do: [{:harness_session, <<255>>, 0}]
+  defp events("orphan"), do: [{:tool_result, "nope", {:ok, "lost"}}]
+end
+
 defmodule Helyx.Test.Provider do
   @moduledoc false
   # A provider whose model name selects a stream shape, so session tests can
@@ -117,6 +234,7 @@ defmodule Helyx.Test.Provider do
   #   "raw_bytes"  a text delta that is not valid UTF-8
   #   "raw_call"   a tool call whose name is not valid UTF-8
   #   "bad_stop"   done with a stop reason outside the file format's set
+  #   "harness_event" a message end, which only a harness may send
   #   "bad_args"   a tool call whose arguments the file format cannot hold
   #   "recover"    a first turn the file cannot hold, then a clean "again" turn
   #   "wide"       a delta tuple with an extra element
@@ -307,6 +425,9 @@ defmodule Helyx.Test.Provider do
 
   def stream("bad_stop", _context, _opts),
     do: {:ok, [{:text_delta, "hi"}, {:done, %{stop_reason: :refusal, usage: %{}}}]}
+
+  def stream("harness_event", _context, _opts),
+    do: {:ok, [{:text_delta, "hi"}, {:message_end, :end_turn, %{}}, done()]}
 
   def stream("bad_args", _context, _opts) do
     call = %Helyx.Message.ToolCall{id: "c", name: "bash", arguments: %{"text" => {1, 2}}}

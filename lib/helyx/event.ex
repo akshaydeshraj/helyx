@@ -29,6 +29,12 @@ defmodule Helyx.Event do
       normal turn end goes out between turns, with a nil turn id
     * `:model_change` – `%{model: String.t()}`, the new `provider/model` ref;
       the switch belongs to no turn, so the turn id is always nil
+    * `:harness_session` – `%{provider: String.t(), harness_session_id:
+      String.t(), lost: boolean, cut: non_neg_integer}`: a harness turn
+      started a fresh harness session. `lost` is true when the turn asked
+      to resume another one that the harness no longer has; `cut` is the
+      number of transcript messages the provider left out of what it sent
+      to the fresh session
   """
 
   @enforce_keys [:type, :session_id, :turn_id, :seq, :data]
@@ -46,6 +52,7 @@ defmodule Helyx.Event do
           | :tool_execution_end
           | :queue_update
           | :model_change
+          | :harness_session
 
   @type t :: %__MODULE__{
           type: type(),

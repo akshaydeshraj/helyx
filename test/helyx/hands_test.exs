@@ -57,6 +57,56 @@ defmodule Helyx.HandsTest do
     assert upcase(hands, "c3") == {:ok, "HI"}
   end
 
+  describe "a harness stream (#10)" do
+    # The Hold tool stands in for a provider module: the hands need only its
+    # `release/3`.
+    defp stream(hands, fun), do: :ok = Helyx.Hands.stream(hands, "t1", Helyx.Test.Tool.Hold, fun)
+
+    test "its handles are released before its terminal goes to the session", %{core: core} do
+      hands = start_hands(core)
+      test = self()
+
+      stream(hands, fn ->
+        Helyx.Tool.hold({:report, test})
+        {:done, %{stop_reason: :end_turn, usage: %{}}}
+      end)
+
+      assert_receive {:release, :deliver, [{:report, _}]}, 2_000
+      assert_receive {:stream_end, "t1", {:done, %{stop_reason: :end_turn}}}, 2_000
+    end
+
+    @tag :capture_log
+    test "a crash is a task exit, and an unconfirmed handle refuses the next stream",
+         %{core: core} do
+      hands = start_hands(core)
+      stream(hands, fn -> exit(:boom) end)
+      assert_receive {:stream_end, "t1", {:error, {:task_exit, :boom}}}, 2_000
+
+      stream(hands, fn -> Helyx.Tool.hold(:keep) end)
+      assert_receive {:stream_end, "t1", {:error, text}}, 2_000
+      assert text =~ "could not be released"
+
+      stream(hands, fn -> flunk("the stream ran") end)
+      assert_receive {:stream_end, "t1", {:error, text}}, 2_000
+      assert text =~ "earlier call"
+    end
+
+    test "cancel kills it and releases its handles with :cancel", %{core: core} do
+      hands = start_hands(core)
+      test = self()
+
+      stream(hands, fn ->
+        Helyx.Tool.hold({:report, test})
+        Process.sleep(60_000)
+      end)
+
+      await_held(hands, 1)
+      assert Helyx.Hands.cancel(hands, "t1") == :ok
+      assert_received {:release, :cancel, [{:report, _}]}
+      refute_receive {:stream_end, _, _}, 100
+    end
+  end
+
   test "cancel releases with :cancel and reports an unconfirmed handle", %{core: core} do
     hands = start_hands(core)
     handles = [:keep, {:report, self()}]

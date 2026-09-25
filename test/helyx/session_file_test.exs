@@ -62,6 +62,76 @@ defmodule Helyx.SessionFileTest do
     assert resumed.model == "test/other"
   end
 
+  test "harness session entries are written, and the last one per provider is restored with the messages before it",
+       %{tmp_dir: dir} do
+    {:ok, file} = SessionFile.create(dir, "sess1", "/repo", "claude-code/opus")
+    assert {:ok, %{harness_sessions: sessions}} = SessionFile.resume(dir, "/repo")
+    assert sessions == %{}
+
+    file
+    |> SessionFile.append_harness_session("claude-code", "first")
+    |> SessionFile.append_harness_session("codex", "codex-1")
+    |> SessionFile.append_message(Helyx.Message.user("hello"))
+    |> SessionFile.append_harness_session("claude-code", "sécond")
+
+    assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
+
+    assert resumed.harness_sessions == %{
+             "claude-code" => {"sécond", 1},
+             "codex" => {"codex-1", 0}
+           }
+
+    # The entry has the shape the feature doc gives, and it moves the leaf.
+    entries =
+      file.path |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&JSON.decode!/1)
+
+    assert [_header, first, _codex, _message, last] = entries
+
+    assert %{
+             "type" => "harness_session",
+             "provider" => "claude-code",
+             "harness_session_id" => "first",
+             "parent_id" => parent,
+             "ts" => _
+           } = first
+
+    assert parent == hd(entries)["id"]
+    assert resumed.file.leaf == last["id"]
+  end
+
+  test "a harness session entry with a missing or bad field is rejected",
+       %{tmp_dir: dir} do
+    bad = [
+      ~s({"id":"x","type":"harness_session","provider":"claude-code"}),
+      ~s({"id":"x","type":"harness_session","harness_session_id":"a"}),
+      ~s({"id":"x","type":"harness_session","provider":1,"harness_session_id":"a"}),
+      ~s({"id":"x","type":"harness_session","provider":"claude-code","harness_session_id":null}),
+      # The id is 1 to 256 bytes; 257 bytes, multibyte, and empty are bad.
+      ~s({"id":"x","type":"harness_session","provider":"claude-code","harness_session_id":"a#{String.duplicate("é", 128)}"}),
+      ~s({"id":"x","type":"harness_session","provider":"claude-code","harness_session_id":""}),
+      ~s({"type":"harness_session","provider":"claude-code","harness_session_id":"a"})
+    ]
+
+    for {line, n} <- Enum.with_index(bad) do
+      {:ok, file} = SessionFile.create(dir, "sess#{n}", "/repo#{n}", "test/ok")
+      File.write!(file.path, line <> "\n", [:append])
+      # A later valid entry does not launder a bad one mid-file.
+      SessionFile.append_harness_session(file, "claude-code", "good")
+
+      assert {:error, {:invalid_file, _}} = SessionFile.resume(dir, "/repo#{n}")
+    end
+
+    # 256 bytes, multibyte, is the longest id kept; 255 bytes is kept too.
+    for id <- [String.duplicate("é", 128), "a" <> String.duplicate("é", 127)] do
+      cwd = "/long#{byte_size(id)}"
+      {:ok, file} = SessionFile.create(dir, "long#{byte_size(id)}", cwd, "test/ok")
+      SessionFile.append_harness_session(file, "claude-code", id)
+
+      assert {:ok, %{harness_sessions: %{"claude-code" => {^id, 0}}}} =
+               SessionFile.resume(dir, cwd)
+    end
+  end
+
   test "a header with an unknown or missing version is rejected", %{tmp_dir: dir} do
     {:ok, file} = SessionFile.create(dir, "sess1", "/repo", "test/ok")
     header = File.read!(file.path)
