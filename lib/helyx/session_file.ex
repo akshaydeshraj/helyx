@@ -40,6 +40,8 @@ defmodule Helyx.SessionFile do
   # The scan reads the header of this many files: the ones with the newest
   # modification time. Nothing deletes session files, so their count grows.
   @max_scanned_files 256
+  # Claude Code's ids are UUIDs; 256 bytes leaves room for another harness.
+  @harness_id_max_bytes 256
 
   @enforce_keys [:path]
   defstruct [:path, :leaf]
@@ -345,6 +347,16 @@ defmodule Helyx.SessionFile do
     %Message.Image{mime_type: mime_type, data: data}
   end
 
+  @doc """
+  Whether `id` is a harness session id this file holds: valid UTF-8 of 1 to
+  #{@harness_id_max_bytes} bytes. The session checks an id from a provider
+  with it before the id is written, and a resume rejects a file whose entry
+  fails it.
+  """
+  @spec harness_id?(term()) :: boolean()
+  def harness_id?(id),
+    do: is_binary(id) and byte_size(id) in 1..@harness_id_max_bytes and Message.valid_utf8?(id)
+
   defp check_version(%{"version" => @version}), do: :ok
   defp check_version(header), do: {:error, {:unknown_version, header["version"]}}
 
@@ -373,7 +385,7 @@ defmodule Helyx.SessionFile do
          "provider" => provider,
          "harness_session_id" => harness_id
        }),
-       do: is_binary(id) and is_binary(provider) and is_binary(harness_id)
+       do: is_binary(id) and is_binary(provider) and harness_id?(harness_id)
 
   defp valid_entry?(_entry), do: false
 

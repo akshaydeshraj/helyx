@@ -69,12 +69,30 @@ The last line. On success: `"subtype":"success"`, `"is_error":false`, `"result"`
 
 The only machine-readable sign is the text in `errors`. `error_during_execution` is a general subtype.
 
+## Replay into a fresh session (2026-09-25)
+
+Runs on 2026-09-25 with version `2.1.282`, `--model haiku`, `--input-format stream-json`, the input piped on stdin, and no `--resume`. Each run started a fresh harness session.
+
+- **A `user` line starts a model call; an `assistant` line does not.** With the history `assistant` (text and a `tool_use`), `user` (the `tool_result`), `assistant` (text), `user` (the question), the first `user` line made a model call of its own (it answered `Ready. What's next?`, with its own `init` and `result`), and the question got a second call that knew the replayed history.
+- **`"shouldQuery": false` on a `user` line records it with no model call.** Each such line gives one `init` line and one `result` line with `"subtype":"success"`, `"num_turns":0`, `"result":""`, and no `stop_reason`. The `assistant` lines give no output. The last `user` line, without the key, ran one model call that knew every replayed line: a user text, an earlier reply quoted word for word, a `tool_use` with its `tool_result`, and a `tool_result` with `"is_error": true`.
+- **The `init` line repeats once per query of the run**, with the same `session_id`.
+- **Tool ids.** `toolu_01AAAAAAAAAAAAAAAAAAAAAA` and `call_1` were both accepted as `tool_use` ids with their `tool_result`. The Messages API documents the pattern `^[a-zA-Z0-9_-]+$`; ids with other characters were not tried.
+- **A leading `assistant` line** (the replay starts with an assistant reply, with no user line before it) was accepted, and the model used its text.
+- **Thinking** was not replayed. The `thinking` blocks of these runs had empty text and a signature bound to the model that made them.
+
+## Signals and resume (2026-09-25)
+
+- **SIGTERM** to a run that had written `init` and started its reply ended it with exit status 143 and no `result` line.
+- **A harness session whose run was killed can be resumed.** `--resume <id>` of that session ran the next prompt, and the model knew the prompt of the killed run (a code word given there).
+- **The `=` forms `--model=haiku` and `--resume=<id>` work** like the two-word forms. With a lost id, the output is the same as the lost case above: one `result` line, `error_during_execution`, `num_turns` 0, `errors` `["No conversation found with session ID: <id>"]`, and the same text on stderr.
+- **`--permission-mode bypassPermissions`**: the `Write` tool ran with no prompt in a `-p` run through `Helyx.Provider.ClaudeCode`, and a `--resume=` turn after it knew the file's content.
+
 ## Sizes
 
 No limit is documented for a line. A line holds a whole tool result or a whole hook output, so its size is set by the tool, not by the protocol. The largest line in these runs was 11,016 bytes. The program may write to stderr at any time.
 
 ## Not verified
 
-- Behaviour on `SIGTERM`, and whether a harness session whose run was killed can be resumed.
 - The `result` line of a run that hits an API error or a usage limit.
-- Sub-agent lines (`parent_tool_use_id`), image tool results, and `is_error` tool results.
+- Sub-agent lines (`parent_tool_use_id`), image tool results, and `is_error` tool results in the output (an `is_error` result in the replay was accepted).
+- Tool ids with characters outside `[a-zA-Z0-9_-]` in the replay.

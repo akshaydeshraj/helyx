@@ -8,6 +8,7 @@ defmodule CodingAgent do
     Helyx.Provider.OpenAI.Go,
     Helyx.Provider.OpenAI.Zen,
     Helyx.Provider.Fake,
+    Helyx.Provider.ClaudeCode,
     Helyx.ModelContext.Default,
     Helyx.Compaction.None,
     Helyx.Tool.Read,

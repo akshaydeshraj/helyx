@@ -89,7 +89,7 @@ defmodule Helyx.TUI.ViewModelTest do
         {:tool_execution_start, %{tool_call: call}}
       ])
 
-    assert List.last(started.cells) == {:tool, call, nil}
+    assert List.last(started.cells) == {:tool, call, ViewModel.call_line(call), nil}
 
     finished =
       ViewModel.apply(started, %Event{
@@ -100,7 +100,7 @@ defmodule Helyx.TUI.ViewModelTest do
         data: %{message: result}
       })
 
-    assert List.last(finished.cells) == {:tool, call, result}
+    assert List.last(finished.cells) == {:tool, call, ViewModel.call_line(call), result}
   end
 
   # A rejected `/model` command adds a notice while the tool runs (#83).
@@ -115,7 +115,10 @@ defmodule Helyx.TUI.ViewModelTest do
         |> ViewModel.notice("usage: /model provider/model")
         |> ViewModel.apply(hd(events([tool_end(result)])))
 
-      assert vm.cells == [{:tool, call, result}, {:notice, "usage: /model provider/model"}]
+      assert vm.cells == [
+               {:tool, call, ViewModel.call_line(call), result},
+               {:notice, "usage: /model provider/model"}
+             ]
     end
   end
 
@@ -133,13 +136,13 @@ defmodule Helyx.TUI.ViewModelTest do
     ]
 
     assert fold(starts ++ [tool_end(r1), tool_end(r2)]).cells == [
-             {:tool, c1, r1},
-             {:tool, c2, r2}
+             {:tool, c1, ViewModel.call_line(c1), r1},
+             {:tool, c2, ViewModel.call_line(c2), r2}
            ]
 
     assert fold(starts ++ [tool_end(r2), tool_end(r1)]).cells == [
-             {:tool, c1, r1},
-             {:tool, c2, r2}
+             {:tool, c1, ViewModel.call_line(c1), r1},
+             {:tool, c2, ViewModel.call_line(c2), r2}
            ]
   end
 
@@ -157,7 +160,10 @@ defmodule Helyx.TUI.ViewModelTest do
         tool_end(r2)
       ])
 
-    assert vm.cells == [{:tool, c1, r1}, {:tool, c2, r2}]
+    assert vm.cells == [
+             {:tool, c1, ViewModel.call_line(c1), r1},
+             {:tool, c2, ViewModel.call_line(c2), r2}
+           ]
   end
 
   test "a result goes to the newest open cell and never replaces a result" do
@@ -168,30 +174,41 @@ defmodule Helyx.TUI.ViewModelTest do
 
     # A provider can use the same id again in a later turn.
     assert fold([start, tool_end(first), start, tool_end(second)]).cells ==
-             [{:tool, call, first}, {:tool, call, second}]
+             [
+               {:tool, call, ViewModel.call_line(call), first},
+               {:tool, call, ViewModel.call_line(call), second}
+             ]
 
     # A second result for a closed cell changes nothing.
-    assert fold([start, tool_end(first), tool_end(second)]).cells == [{:tool, call, first}]
+    assert fold([start, tool_end(first), tool_end(second)]).cells == [
+             {:tool, call, ViewModel.call_line(call), first}
+           ]
 
     # An old cell that stayed open does not take the result of a new call.
     assert fold([start, start, tool_end(second)]).cells ==
-             [{:tool, call, nil}, {:tool, call, second}]
+             [
+               {:tool, call, ViewModel.call_line(call), nil},
+               {:tool, call, ViewModel.call_line(call), second}
+             ]
   end
 
   test "only a tool result message with a binary call id attaches" do
     no_id = %Message.ToolCall{id: nil, name: "bash", arguments: %{}}
     specs = [{:tool_execution_start, %{tool_call: no_id}}]
-    assert fold(specs ++ [tool_end(user("hi"))]).cells == [{:tool, no_id, nil}]
+
+    assert fold(specs ++ [tool_end(user("hi"))]).cells == [
+             {:tool, no_id, ViewModel.call_line(no_id), nil}
+           ]
 
     assert fold(specs ++ [tool_end(Message.tool_result(no_id, {:ok, "x"}))]).cells == [
-             {:tool, no_id, nil}
+             {:tool, no_id, ViewModel.call_line(no_id), nil}
            ]
 
     call = %Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
     specs = [{:tool_execution_start, %{tool_call: call}}]
 
     assert fold(specs ++ [tool_end(%{user("hi") | tool_call_id: "c1"})]).cells == [
-             {:tool, call, nil}
+             {:tool, call, ViewModel.call_line(call), nil}
            ]
   end
 
@@ -237,6 +254,36 @@ defmodule Helyx.TUI.ViewModelTest do
 
     refute vm.running?
     assert List.last(vm.cells) == {:notice, "error: :stream_ended"}
+  end
+
+  test "a tool call line of newlines is cut after they become ␤" do
+    # A name and a key of newlines, each far over the cut: "␤" is 3 bytes
+    # for 1, and neither is copied whole.
+    lines = String.duplicate("\n", 1_000_000)
+    call = %Message.ToolCall{id: "c", name: lines, arguments: %{lines => 1}}
+
+    line = ViewModel.call_line(call)
+    assert byte_size(line) in 8_190..8_192
+    assert String.starts_with?(line, "⚙ ␤␤")
+    refute line =~ "\n"
+  end
+
+  test "an error renders in at most 8,192 bytes, with no character cut in half" do
+    # U+00A0 renders as `\u00A0`, three times its bytes; a nested term has
+    # no total `inspect/1` limit; `{:xy, "` puts the cut inside an "é".
+    nbsp = String.duplicate("\u00A0", 1_000)
+    nested = Map.new(1..50, &{&1, String.duplicate("\e", 4_096)})
+
+    for error <- [
+          {:claude_code, nbsp, nbsp},
+          {:bad_stream_event, nested},
+          {:xy, String.duplicate("é", 5_000)}
+        ] do
+      vm = fold([{:agent_end, %{stop_reason: :error, error: error}}])
+      assert {:notice, "error: " <> text} = List.last(vm.cells)
+      assert byte_size(text) in 8_190..8_192
+      assert String.valid?(text)
+    end
   end
 
   test "queue updates change the counts, including the nil-turn drain" do
@@ -296,6 +343,18 @@ defmodule Helyx.TUI.ViewModelTest do
     assert vm.model == "other/model"
     assert fold(model_change: %{model: 42}).model == "test/model"
     assert fold(model_change: %{}).model == "test/model"
+  end
+
+  test "a harness session shows a notice when the harness lost its session or got a cut transcript" do
+    fresh = %{provider: "claude-code", harness_session_id: "s", lost: false, cut: 0}
+    assert fold(harness_session: fresh).cells == []
+
+    assert fold(harness_session: %{fresh | lost: true, cut: 4}).cells == [
+             {:notice, "claude-code lost its own session; a fresh one got the transcript"},
+             {:notice, "claude-code got the transcript without its 4 oldest messages"}
+           ]
+
+    assert fold(harness_session: %{lost: true}).cells == []
   end
 
   test "a reject sets the reason, events keep it, and clear_reason/1 removes it" do

@@ -94,13 +94,16 @@ defmodule Helyx.SessionFileTest do
     assert resumed.file.leaf == last["id"]
   end
 
-  test "a harness session entry with a missing or non-string field is rejected",
+  test "a harness session entry with a missing or bad field is rejected",
        %{tmp_dir: dir} do
     bad = [
       ~s({"id":"x","type":"harness_session","provider":"claude-code"}),
       ~s({"id":"x","type":"harness_session","harness_session_id":"a"}),
       ~s({"id":"x","type":"harness_session","provider":1,"harness_session_id":"a"}),
       ~s({"id":"x","type":"harness_session","provider":"claude-code","harness_session_id":null}),
+      # The id is 1 to 256 bytes; 257 bytes, multibyte, and empty are bad.
+      ~s({"id":"x","type":"harness_session","provider":"claude-code","harness_session_id":"a#{String.duplicate("é", 128)}"}),
+      ~s({"id":"x","type":"harness_session","provider":"claude-code","harness_session_id":""}),
       ~s({"type":"harness_session","provider":"claude-code","harness_session_id":"a"})
     ]
 
@@ -111,6 +114,14 @@ defmodule Helyx.SessionFileTest do
       SessionFile.append_harness_session(file, "claude-code", "good")
 
       assert {:error, {:invalid_file, _}} = SessionFile.resume(dir, "/repo#{n}")
+    end
+
+    # 256 bytes, multibyte, is the longest id kept; 255 bytes is kept too.
+    for id <- [String.duplicate("é", 128), "a" <> String.duplicate("é", 127)] do
+      cwd = "/long#{byte_size(id)}"
+      {:ok, file} = SessionFile.create(dir, "long#{byte_size(id)}", cwd, "test/ok")
+      SessionFile.append_harness_session(file, "claude-code", id)
+      assert {:ok, %{harness_sessions: %{"claude-code" => ^id}}} = SessionFile.resume(dir, cwd)
     end
   end
 

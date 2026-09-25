@@ -247,7 +247,8 @@ defmodule Helyx.Watchdog do
   end
 
   # A close of a port that may be closed already: after an exit it is.
-  defp close(port) do
+  @doc false
+  def close(port) do
     Port.close(port)
   rescue
     ArgumentError -> false

@@ -263,7 +263,12 @@ defmodule Helyx.TUITest do
 
     texts = fn output ->
       result = Helyx.Message.tool_result(call, {:ok, output})
-      vm = %ViewModel{ViewModel.new("fake/m") | cells: [{:tool, call, result}]}
+
+      vm = %ViewModel{
+        ViewModel.new("fake/m")
+        | cells: [{:tool, call, ViewModel.call_line(call), result}]
+      }
+
       for line <- TUI.transcript_lines(vm, 80), span <- line.spans, do: span.content
     end
 
@@ -397,7 +402,10 @@ defmodule Helyx.TUITest do
 
     vm = %ViewModel{
       ViewModel.new("fake/m")
-      | cells: [Helyx.Message.user("hi\e[31m there"), {:tool, call, result}]
+      | cells: [
+          Helyx.Message.user("hi\e[31m there"),
+          {:tool, call, ViewModel.call_line(call), result}
+        ]
     }
 
     texts = for line <- TUI.transcript_lines(vm, 80), span <- line.spans, do: span.content
@@ -410,7 +418,12 @@ defmodule Helyx.TUITest do
     # must render, not crash. Message.tool_result scrubs the byte to the
     # replacement character before the TUI sees it.
     broken = Helyx.Message.tool_result(call, {:ok, <<"a", 0x9B, "b">>})
-    vm = %ViewModel{ViewModel.new("fake/m") | cells: [{:tool, call, broken}]}
+
+    vm = %ViewModel{
+      ViewModel.new("fake/m")
+      | cells: [{:tool, call, ViewModel.call_line(call), broken}]
+    }
+
     texts = for line <- TUI.transcript_lines(vm, 80), span <- line.spans, do: span.content
     assert "  a�b" in texts
   end
@@ -421,7 +434,10 @@ defmodule Helyx.TUITest do
 
     vm = %ViewModel{
       ViewModel.new("fake/m")
-      | cells: [Helyx.Message.user("hello world"), {:tool, call, result}],
+      | cells: [
+          Helyx.Message.user("hello world"),
+          {:tool, call, ViewModel.call_line(call), result}
+        ],
         streaming: [%Helyx.Message.Text{text: String.duplicate("s", 35)}]
     }
 
@@ -434,6 +450,24 @@ defmodule Helyx.TUITest do
     assert String.duplicate("s", 30) in texts
     assert String.duplicate("s", 5) in texts
     assert Enum.all?(texts, &(String.length(&1) <= 30))
+  end
+
+  test "a tool call line is cut at 8,192 bytes" do
+    # U+00A0 renders as `\u00A0` through `inspect/1`, and the keys are raw.
+    arguments = Map.new(1..2_000, &{"k#{&1}", String.duplicate("\u00A0", 100)})
+    call = %Helyx.Message.ToolCall{id: "c", name: "bash", arguments: arguments}
+
+    vm = %ViewModel{
+      ViewModel.new("fake/m")
+      | cells: [{:tool, call, ViewModel.call_line(call), nil}]
+    }
+
+    texts = for line <- TUI.transcript_lines(vm, 80), span <- line.spans, do: span.content
+    {call_rows, ["… running"]} = Enum.split(texts, -1)
+    call_line = Enum.join(call_rows)
+
+    assert byte_size(call_line) in 8_190..8_192
+    assert String.starts_with?(call_line, "⚙ bash k")
   end
 
   describe "scrollback" do

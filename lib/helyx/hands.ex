@@ -32,7 +32,15 @@ defmodule Helyx.Hands do
   hands with `{:tool_unavailable, name, reason}`, so the session fails to
   start with a clear error.
 
-  `cancel/2` aborts a turn: it kills the turn's tool Tasks and calls
+  `stream/4` runs the stream of a harness provider call the same way, as
+  a Task of the hands with the provider module in the place of the tool,
+  because the harness program is the turn's tool runner (ADR 0004). Its
+  terminal goes to the session as `{:stream_end, turn_id, terminal}` after
+  the release. A crash gives `{:error, {:task_exit, reason}}`, and an
+  unconfirmed handle an error terminal. While a handle is unconfirmed the
+  stream is refused with an error terminal, like a tool call.
+
+  `cancel/2` aborts a turn: it kills the turn's tool and stream Tasks and calls
   `release/3` with `:cancel` for their handles, one release Task per tool,
   in parallel, with one deadline. It returns only when every release has
   returned or timed out. An unconfirmed handle is reported as an error.
@@ -76,6 +84,16 @@ defmodule Helyx.Hands do
   @doc "Starts a tool call. The result is sent to the session."
   @spec run(pid(), String.t(), ToolCall.t()) :: :ok
   def run(hands, turn_id, %ToolCall{} = call), do: GenServer.call(hands, {:run, turn_id, call})
+
+  @doc """
+  Starts the stream of a harness provider call: `fun` runs in a Task of the
+  hands and returns the terminal stream event, which is sent to the session
+  as `{:stream_end, turn_id, terminal}` after the release of the provider's
+  handles.
+  """
+  @spec stream(pid(), String.t(), module(), (-> term())) :: :ok
+  def stream(hands, turn_id, provider, fun) when is_function(fun, 0),
+    do: GenServer.call(hands, {:stream, turn_id, provider, fun})
 
   @doc """
   Cancels the turn's tool Tasks and releases their handles. Returns when
@@ -137,7 +155,17 @@ defmodule Helyx.Hands do
     if state.unconfirmed == %{} do
       {:reply, :ok, start_task(state, turn_id, call)}
     else
-      {:reply, :ok, refuse(state, turn_id, call)}
+      {:reply, :ok, refuse(state, turn_id, call.id)}
+    end
+  end
+
+  def handle_call({:stream, turn_id, provider, fun}, _from, state) do
+    state = retry(state)
+
+    if state.unconfirmed == %{} do
+      {:reply, :ok, spawn_task(state, turn_id, :stream, provider, fun)}
+    else
+      {:reply, :ok, refuse(state, turn_id, :stream)}
     end
   end
 
@@ -187,7 +215,7 @@ defmodule Helyx.Hands do
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, %State{tasks: tasks} = state)
       when is_map_key(tasks, ref) do
-    {:noreply, deliver(ref, {:error, "tool crashed: #{inspect(reason)}"}, state)}
+    {:noreply, deliver(ref, {:exit, reason}, state)}
   end
 
   # A Task's exit signal (its reply or :DOWN carries the outcome), or a
@@ -214,31 +242,46 @@ defmodule Helyx.Hands do
     {handles, held} = Map.pop(state.held, task.pid, [])
     left = release(%{tool => handles}, :deliver, state.release_ms, state.core)
 
-    result = unconfirmed_error(left) || result
-    send(state.session, {:tool_result, turn_id, call_id, scrub(result)})
+    send(state.session, outcome(turn_id, call_id, unconfirmed_error(left) || result))
     %{state | tasks: tasks, held: held, unconfirmed: add_handles(state.unconfirmed, left)}
   end
+
+  defp outcome(turn_id, :stream, {:exit, reason}),
+    do: {:stream_end, turn_id, {:error, {:task_exit, reason}}}
+
+  defp outcome(turn_id, :stream, terminal), do: {:stream_end, turn_id, terminal}
+
+  defp outcome(turn_id, call_id, {:exit, reason}),
+    do: outcome(turn_id, call_id, {:error, "tool crashed: #{inspect(reason)}"})
+
+  defp outcome(turn_id, call_id, result), do: {:tool_result, turn_id, call_id, scrub(result)}
 
   defp start_task(state, turn_id, call) do
     tool = if File.dir?(state.cwd), do: Map.get(state.tools, call.name, :unknown), else: :no_cwd
     cwd = state.cwd
+    spawn_task(state, turn_id, call.id, tool, fn -> run_tool(tool, call, cwd) end)
+  end
+
+  # `id` is the call id, or `:stream` for a provider stream; `module` is the
+  # tool or the provider whose `release/3` gets the Task's handles.
+  defp spawn_task(state, turn_id, id, module, fun) do
     hands = self()
 
     task =
       Task.Supervisor.async(Helyx.Core.task_supervisor(state.core), fn ->
         Process.put(:helyx_hands, hands)
-        run_tool(tool, call, cwd)
+        fun.()
       end)
 
-    %{state | tasks: Map.put(state.tasks, task.ref, {task, turn_id, call.id, tool})}
+    %{state | tasks: Map.put(state.tasks, task.ref, {task, turn_id, id, module})}
   end
 
-  defp refuse(state, turn_id, call) do
+  defp refuse(state, turn_id, id) do
     error =
       "a resource from an earlier call could not be released " <>
         "(#{handles_text(state.unconfirmed)}); the call was not run"
 
-    send(state.session, {:tool_result, turn_id, call.id, {:error, error}})
+    send(state.session, outcome(turn_id, id, {:error, error}))
     state
   end
 

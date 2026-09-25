@@ -9,10 +9,13 @@ defmodule Helyx.TUI.ViewModel do
   `cells` is the transcript, oldest first. A cell is one of:
 
     * `%Helyx.Message{}` – a completed user or assistant message
-    * `{:tool, call, result}` – a tool call; `result` is nil while it runs,
-      then the tool result message
-    * `{:notice, text}` – an aborted or failed turn, or a command the
-      client rejected (`notice/2`)
+    * `{:tool, call, line, result}` – a tool call and its line
+      (`call_line/1`), made once when the call starts, so a frame does not
+      pay for the size of the call; `result` is nil while it runs, then the
+      tool result message
+    * `{:notice, text}` – an aborted or failed turn, a harness that lost
+      its session or got a cut transcript, or a command the client rejected
+      (`notice/2`)
 
   `reason` is why the client rejected the last input, or nil. It is
   client-local, like a notice: `reject/2` sets it and `clear_reason/1`
@@ -25,6 +28,9 @@ defmodule Helyx.TUI.ViewModel do
 
   alias Helyx.{Event, Message}
 
+  # The cut of an error notice or a tool call line (`cut_line/1`).
+  @render_max_bytes 8_192
+
   defstruct model: nil,
             cells: [],
             streaming: nil,
@@ -34,7 +40,7 @@ defmodule Helyx.TUI.ViewModel do
 
   @type cell ::
           Message.t()
-          | {:tool, Message.ToolCall.t(), Message.t() | nil}
+          | {:tool, Message.ToolCall.t(), String.t(), Message.t() | nil}
           | {:notice, String.t()}
 
   @type t :: %__MODULE__{
@@ -58,9 +64,14 @@ defmodule Helyx.TUI.ViewModel do
     vm = %{vm | running?: false, streaming: nil}
 
     case data do
-      %{stop_reason: :aborted} -> add_cell(vm, {:notice, "aborted"})
-      %{stop_reason: :error, error: error} -> add_cell(vm, {:notice, "error: #{inspect(error)}"})
-      _ -> vm
+      %{stop_reason: :aborted} ->
+        add_cell(vm, {:notice, "aborted"})
+
+      %{stop_reason: :error, error: error} ->
+        add_cell(vm, {:notice, "error: " <> error_text(error)})
+
+      _ ->
+        vm
     end
   end
 
@@ -96,7 +107,7 @@ defmodule Helyx.TUI.ViewModel do
         type: :tool_execution_start,
         data: %{tool_call: %Message.ToolCall{} = call}
       }) do
-    add_cell(vm, {:tool, call, nil})
+    add_cell(vm, {:tool, call, call_line(call), nil})
   end
 
   # Only a message with the role and a binary call id attaches, as
@@ -120,6 +131,22 @@ defmodule Helyx.TUI.ViewModel do
     %{vm | model: model}
   end
 
+  def apply(vm, %Event{type: :harness_session, data: %{provider: provider} = data})
+      when is_binary(provider) do
+    vm = if data[:lost] == true, do: add_cell(vm, {:notice, lost_text(provider)}), else: vm
+
+    case data[:cut] do
+      cut when is_integer(cut) and cut > 0 ->
+        add_cell(
+          vm,
+          {:notice, "#{provider} got the transcript without its #{cut} oldest messages"}
+        )
+
+      _ ->
+        vm
+    end
+  end
+
   def apply(vm, %Event{}), do: vm
 
   @doc "Adds a notice from the client itself, such as a rejected command."
@@ -134,6 +161,43 @@ defmodule Helyx.TUI.ViewModel do
   @spec clear_reason(t()) :: t()
   def clear_reason(vm), do: %{vm | reason: nil}
 
+  defp lost_text(provider),
+    do: "#{provider} lost its own session; a fresh one got the transcript"
+
+  @doc """
+  The line of a tool call: its name, then each argument as `key=value`,
+  with the key raw and the value through `inspect/1`, cut at
+  #{@render_max_bytes} bytes. The name and each key are cut before they join
+  the line, the walk over the arguments stops once the line is over the cut,
+  and the line is cut before its newlines become "␤". The fold makes the line
+  once, when the call starts, and not on each frame.
+  """
+  @spec call_line(Message.ToolCall.t()) :: String.t()
+  def call_line(%Message.ToolCall{name: name, arguments: arguments}) do
+    ("⚙ " <> cut_line(name))
+    |> join_arguments(arguments |> :maps.iterator() |> :maps.next())
+    |> cut_line()
+    |> String.replace("\n", "␤")
+    |> cut_line()
+  end
+
+  # `:maps.next/1` walks the map lazily, so a call of many keys costs no
+  # more than the keys up to the cut.
+  defp join_arguments(line, :none), do: line
+  defp join_arguments(line, _next) when byte_size(line) > @render_max_bytes, do: line
+
+  defp join_arguments(line, {key, value, iterator}),
+    do: join_arguments("#{line} #{cut_line("#{key}")}=#{inspect(value)}", :maps.next(iterator))
+
+  # One rule for an error notice or a tool call line that holds provider or
+  # model text: `inspect/1` escapes a character to up to three times its
+  # bytes and has no total limit over nested terms, so the text is cut at
+  # `@render_max_bytes`; a character cut in half is dropped.
+  defp cut_line(text),
+    do: text |> binary_slice(0, @render_max_bytes) |> String.replace_invalid("")
+
+  defp error_text(error), do: error |> inspect() |> cut_line()
+
   defp stream(vm, delta), do: %{vm | streaming: Message.add_block(vm.streaming || [], delta)}
 
   defp add_cell(vm, cell), do: %{vm | cells: vm.cells ++ [cell]}
@@ -144,14 +208,16 @@ defmodule Helyx.TUI.ViewModel do
   # abort answering a call that never started) changes nothing. The search
   # is one pass over the cells for each result.
   defp attach_result(cells, %Message{tool_call_id: id} = result) do
-    open? = &match?({:tool, %Message.ToolCall{id: ^id}, nil}, &1)
+    open? = &match?({:tool, %Message.ToolCall{id: ^id}, _line, nil}, &1)
 
     case Enum.find_index(Enum.reverse(cells), open?) do
       nil ->
         cells
 
       index ->
-        List.update_at(cells, -1 - index, fn {:tool, call, nil} -> {:tool, call, result} end)
+        List.update_at(cells, -1 - index, fn {:tool, call, line, nil} ->
+          {:tool, call, line, result}
+        end)
     end
   end
 end

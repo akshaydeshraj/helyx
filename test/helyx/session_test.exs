@@ -11,6 +11,9 @@ defmodule Helyx.SessionTest do
     plugins = [
       Helyx.Test.Provider,
       Helyx.Test.ProviderOther,
+      Helyx.Test.Harness,
+      Helyx.Test.BadKind,
+      Helyx.Test.RaisingKind,
       Helyx.Test.Tool.Upcase,
       Helyx.Test.Tool.Kill,
       Helyx.Test.Tool.Slow,
@@ -171,6 +174,140 @@ defmodule Helyx.SessionTest do
              %{text_delta: "."},
              %{tool_call: List.last(message.content)}
            ]
+  end
+
+  describe "harness events (#10)" do
+    defp harness_turn(core, model) do
+      {:ok, session} = Session.start(core, model: "harness/#{model}")
+      :ok = Session.subscribe(session)
+      :ok = Session.prompt(session, "hello")
+      collect_until(:agent_end)
+    end
+
+    test "a provider kind other than :model or :harness is refused at start and switch",
+         %{core: core} do
+      assert {:error, {:bad_provider_kind, "bad_kind"}} =
+               Session.start(core, model: "bad_kind/m")
+
+      assert {:error, {:bad_provider_kind, "raising_kind"}} =
+               Session.start(core, model: "raising_kind/m")
+
+      {:ok, session} = Session.start(core, model: "test/ok")
+
+      assert {:error, {:bad_provider_kind, "raising_kind"}} =
+               Session.set_model(session, "raising_kind/m")
+    end
+
+    @tag :tmp_dir
+    test "a provider kind that raises is refused at resume", %{core: core, tmp_dir: dir} do
+      {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
+      [path] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl"))
+      GenServer.stop(Session.pid(session))
+
+      line = %{type: "model_change", id: "m1", parent_id: nil, ts: "t", model: "raising_kind/m"}
+      File.write!(path, [JSON.encode!(line), "\n"], [:append])
+
+      assert {:error, {:bad_provider_kind, "raising_kind"}} =
+               Session.resume(core, sessions_dir: dir)
+    end
+
+    test "a harness session id of 1 byte is kept", %{core: core} do
+      events = harness_turn(core, "id1")
+
+      assert [%{harness_session_id: "a"}] =
+               for(%Event{type: :harness_session, data: d} <- events, do: d)
+    end
+
+    test "a harness session id of 256 bytes is kept", %{core: core} do
+      events = harness_turn(core, "id256")
+
+      assert [%{harness_session_id: id}] =
+               for(%Event{type: :harness_session, data: d} <- events, do: d)
+
+      assert byte_size(id) == 256
+      assert stop_reason(events) == :end_turn
+    end
+
+    test "a cut of 100 digits is kept", %{core: core} do
+      events = harness_turn(core, "max_cut")
+      cut = Integer.pow(10, 100) - 1
+
+      assert [%{cut: ^cut}] = for(%Event{type: :harness_session, data: d} <- events, do: d)
+      assert stop_reason(events) == :end_turn
+    end
+
+    test "an id of 257 bytes, 0 bytes, or not UTF-8, or a cut over the digit limit or below 0 fails the turn",
+         %{core: core} do
+      for model <- ["id257", "id0", "raw_id", "big_cut", "neg_cut"] do
+        assert {:bad_stream_event, {:harness_session, _, _}} =
+                 List.last(harness_turn(core, model)).data.error,
+               model
+      end
+    end
+
+    test "a harness tool result is cut like a tool result", %{core: core} do
+      events = harness_turn(core, "big_result")
+      big = String.duplicate("x\n", 3_000)
+
+      assert [%{message: result}] =
+               for(%Event{type: :tool_execution_end, data: d} <- events, do: d)
+
+      assert Helyx.Message.text(result) == Helyx.Tool.truncate(big, :tail)
+      assert Helyx.Message.text(result) != big
+    end
+
+    test "a result goes to the first open call with its id", %{core: core} do
+      events = harness_turn(core, "dup_id")
+      ends = for %Event{type: :tool_execution_end, data: d} <- events, do: d.message
+
+      assert [{"read", "one"}, {"bash", "two"}] =
+               Enum.map(ends, &{&1.tool_name, Helyx.Message.text(&1)})
+    end
+
+    test "a call with no result at done gets its aborted result before the last message",
+         %{core: core} do
+      {:ok, session} = Session.start(core, model: "harness/open_call")
+      :ok = Session.subscribe(session)
+      :ok = Session.prompt(session, "hello")
+      collect_until(:agent_end)
+
+      transcript = :sys.get_state(Session.pid(session)).transcript
+
+      assert [:user, :assistant, :tool_result, :tool_result, :assistant] =
+               Enum.map(transcript, & &1.role)
+
+      assert [{"read", "one"}, {"bash", "aborted"}] =
+               for(m <- Enum.slice(transcript, 2, 2), do: {m.tool_name, Helyx.Message.text(m)})
+    end
+
+    test "a new message gives the open calls their aborted results, and a late result is dropped",
+         %{core: core} do
+      {:ok, session} = Session.start(core, model: "harness/late_result")
+      :ok = Session.subscribe(session)
+      :ok = Session.prompt(session, "hello")
+      collect_until(:agent_end)
+      transcript = :sys.get_state(Session.pid(session)).transcript
+
+      assert [:user, :assistant, :tool_result, :assistant, :assistant] =
+               Enum.map(transcript, & &1.role)
+
+      assert Helyx.Message.text(Enum.at(transcript, 2)) == "aborted"
+    end
+
+    test "a result for a call of no completed message is dropped", %{core: core} do
+      events = harness_turn(core, "orphan")
+      refute Enum.any?(events, &(&1.type == :tool_execution_end))
+      assert final_text(events) == "ok"
+    end
+
+    test "a model provider that sends a harness event fails the turn", %{core: core} do
+      {:ok, session} = Session.start(core, model: "test/harness_event")
+      :ok = Session.subscribe(session)
+      :ok = Session.prompt(session, "hello")
+
+      assert {:bad_stream_event, {:message_end, :end_turn, %{}}} =
+               List.last(collect_until(:agent_end)).data.error
+    end
   end
 
   test "a malformed stream event fails the turn and the session lives", %{core: core} do

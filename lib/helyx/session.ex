@@ -34,6 +34,16 @@ defmodule Helyx.Session do
   Queues live in the session process only and are not persisted. Every
   change emits a `:queue_update` event.
 
+  A harness provider (`Helyx.Provider.kind/1`) runs its own loop and its
+  own tools inside one provider call (ADR 0002). Its stream runs as a Task
+  of the hands, so an abort waits until its program is gone. It reports
+  each completed assistant message and each tool result, which join the
+  transcript as they arrive, and the turn ends when the call ends. A tool
+  call with no result at the end of the call gets an `aborted` error
+  result. A steer aborts the harness turn and starts a new turn with the
+  queued messages. The id of each fresh harness session is written to the
+  session file and goes out as a `:harness_session` event.
+
   An abort does not block the session. The session ends the turn at once and
   asks the hands to release the turn's resources. This can take many
   seconds when a resource stays. Until the hands answer, the session
@@ -50,6 +60,10 @@ defmodule Helyx.Session do
   alias Helyx.{Context, Event, Message, ModelRef, SessionFile}
 
   @queue_limit 32
+
+  # The stop reasons of a message end: the set of `Helyx.Provider.stop_reason`
+  # and of the session file (`SessionFile`).
+  @stop_reasons [:end_turn, :tool_use, :max_tokens]
 
   @rejected_call_text "tool call not run: an integer in the arguments has more than " <>
                         "#{Message.max_integer_digits()} digits"
@@ -71,19 +85,23 @@ defmodule Helyx.Session do
     # rejected call after the cap is also rejected. One turn has many provider
     # calls, so each provider call starts with an empty list.
     # `model` and `provider` are fixed when the turn starts, so a model switch
-    # during the turn takes effect on the next one.
-    @enforce_keys [:id, :model, :provider]
-    defstruct [:id, :model, :provider, :task, :partial, calls: [], rejected: []]
+    # during the turn takes effect on the next one, and so does `kind`
+    # (`Helyx.Provider.kind/1`). `resumed` is the harness session id the
+    # turn passed to a harness provider, or nil.
+    @enforce_keys [:id, :model, :provider, :kind]
+    defstruct [:id, :model, :provider, :kind, :task, :partial, :resumed, calls: [], rejected: []]
   end
 
   defmodule State do
     @moduledoc false
-    @enforce_keys [:id, :core, :model, :provider, :cwd]
+    @enforce_keys [:id, :core, :model, :provider, :kind, :cwd]
     defstruct [
       :id,
       :core,
       :model,
       :provider,
+      # The kind of `provider` (`Helyx.Provider.kind/1`).
+      :kind,
       :cwd,
       :hands,
       :file,
@@ -94,6 +112,8 @@ defmodule Helyx.Session do
       steers: [],
       follow_ups: [],
       provider_pids: MapSet.new(),
+      # The last harness session id per harness provider id.
+      harness_sessions: %{},
       # `{request, callers}` while the hands cancel an aborted turn: the
       # request of `Helyx.Hands.request_cancel/2` and the abort callers that
       # wait for its answer.
@@ -117,7 +137,7 @@ defmodule Helyx.Session do
     # The file is created only after the plugins resolve, which narrows the
     # window for an orphan file from a failed start. A supervisor failure
     # after this point still leaves one; the feature doc records that hole.
-    with {:ok, {ref, provider}} <- resolve_model(core, Keyword.fetch!(opts, :model)),
+    with {:ok, {ref, provider, kind}} <- resolve_model(core, Keyword.fetch!(opts, :model)),
          {:ok, _tools} <- Helyx.Tool.by_name(core),
          {:ok, file} <- create_file(opts[:sessions_dir], id, cwd, ref) do
       start_child(%State{
@@ -125,6 +145,7 @@ defmodule Helyx.Session do
         core: core,
         model: ref,
         provider: provider,
+        kind: kind,
         cwd: cwd,
         file: file
       })
@@ -148,26 +169,32 @@ defmodule Helyx.Session do
     cwd = Keyword.get_lazy(opts, :cwd, &File.cwd!/0)
 
     with {:ok, resumed} <- SessionFile.resume(dir, cwd),
-         {:ok, {ref, provider}} <- resolve_model(core, resumed.model),
+         {:ok, {ref, provider, kind}} <- resolve_model(core, resumed.model),
          {:ok, _tools} <- Helyx.Tool.by_name(core) do
       start_child(%State{
         id: resumed.session_id,
         core: core,
         model: ref,
         provider: provider,
+        kind: kind,
         cwd: cwd,
         file: resumed.file,
-        transcript: resumed.messages
+        transcript: resumed.messages,
+        harness_sessions: resumed.harness_sessions
       })
     end
   end
 
-  # A model ref string to its parsed ref and its provider plugin, for start,
-  # resume, and a switch alike.
+  # A model ref string to its parsed ref, its provider plugin, and the kind
+  # of that plugin, for start, resume, and a switch alike. It runs in the
+  # caller, so a plugin that raises here never stops a session.
   defp resolve_model(core, string) do
     with {:ok, ref} <- ModelRef.parse(string),
          {:ok, provider} <- Helyx.Provider.find(core, ref.provider) do
-      {:ok, {ref, provider}}
+      case Helyx.Provider.kind(provider) do
+        {:ok, kind} -> {:ok, {ref, provider, kind}}
+        :error -> {:error, {:bad_provider_kind, ref.provider}}
+      end
     end
   end
 
@@ -258,10 +285,11 @@ defmodule Helyx.Session do
           | {:error,
              {:invalid_model_ref, String.t()}
              | {:unknown_provider, String.t()}
-             | {:ambiguous_provider, String.t()}}
+             | {:ambiguous_provider, String.t()}
+             | {:bad_provider_kind, String.t()}}
   def set_model(%__MODULE__{id: id, core: core}, string) when is_binary(string) do
-    with {:ok, {ref, provider}} <- resolve_model(core, string) do
-      GenServer.call(via(core, id), {:set_model, ref, provider})
+    with {:ok, {ref, provider, kind}} <- resolve_model(core, string) do
+      GenServer.call(via(core, id), {:set_model, ref, provider, kind})
     end
   end
 
@@ -332,8 +360,13 @@ defmodule Helyx.Session do
     {:reply, {:error, :turn_running}, state}
   end
 
-  def handle_call({:steer, text}, _from, %State{turn: %Turn{}} = state) do
-    queue_reply(state, :steers, text)
+  # A harness takes no message inside its call: the steer aborts the turn,
+  # and the queues start the next one when the hands answer.
+  def handle_call({:steer, text}, _from, %State{turn: %Turn{} = turn} = state) do
+    case {queue_reply(state, :steers, text), turn.kind} do
+      {{:reply, :ok, state}, :harness} -> {:reply, :ok, abort_turn(state, [], & &1)}
+      {reply, _kind} -> reply
+    end
   end
 
   def handle_call({:follow_up, text}, _from, %State{turn: %Turn{}} = state) do
@@ -353,10 +386,10 @@ defmodule Helyx.Session do
     {:reply, ModelRef.to_string(ref), state}
   end
 
-  def handle_call({:set_model, %ModelRef{} = ref, provider}, _from, %State{} = state) do
+  def handle_call({:set_model, %ModelRef{} = ref, provider, kind}, _from, %State{} = state) do
     model = ModelRef.to_string(ref)
     file = persist(state.file, &SessionFile.append_model_change(&1, model))
-    state = %{state | model: ref, provider: provider, file: file}
+    state = %{state | model: ref, provider: provider, kind: kind, file: file}
     {:reply, :ok, do_emit(state, nil, :model_change, %{model: model})}
   end
 
@@ -365,22 +398,53 @@ defmodule Helyx.Session do
   # The release of the hands can take longer than the timeout of a client call
   # (issue #93), so the session does not wait in a call: the answer of the
   # hands arrives as a message, and the abort callers get their reply then.
-  def handle_call(:abort, from, %State{turn: %Turn{} = turn} = state) do
-    if turn.task, do: Task.shutdown(turn.task, :brutal_kill)
-    request = Helyx.Hands.request_cancel(state.hands, turn.id)
-
-    state =
-      state
-      |> abort_open_calls()
-      |> close_partial_message(:aborted, :aborted)
-      |> drop_queues()
-      |> emit(:agent_end, %{stop_reason: :aborted})
-      |> close_turn()
-
-    {:noreply, %{state | aborting: {request, [from]}}}
+  def handle_call(:abort, from, %State{turn: %Turn{}} = state) do
+    {:noreply, abort_turn(state, [from], &drop_queues/1)}
   end
 
   @impl true
+  def handle_info(
+        {:stream_event, turn_id, {:message_end, stop_reason, usage}},
+        %State{turn: %Turn{id: turn_id}} = state
+      ) do
+    {state, _assistant, calls} = close_assistant(state, stop_reason, usage)
+    state = Enum.reduce(calls, state, &emit(&2, :tool_execution_start, %{tool_call: &1}))
+    %State{turn: turn} = state
+    {:noreply, %{state | turn: %{turn | partial: nil, calls: calls}}}
+  end
+
+  # A result for a call of no completed message, or for a call that a
+  # later message already closed, is dropped. A result goes
+  # to the first open call with its id, the rule of `open_calls/1`, so the
+  # transcript, the file, and the replay agree.
+  def handle_info(
+        {:stream_event, turn_id, {:tool_result, call_id, result}},
+        %State{turn: %Turn{id: turn_id} = turn} = state
+      ) do
+    case Enum.find(turn.calls, &(&1.id == call_id)) do
+      nil ->
+        {:noreply, state}
+
+      call ->
+        state = %{state | turn: %{turn | calls: List.delete(turn.calls, call)}}
+        {:noreply, record_result(call, result, state)}
+    end
+  end
+
+  def handle_info(
+        {:stream_event, turn_id, {:harness_session, id, cut}},
+        %State{turn: %Turn{id: turn_id} = turn} = state
+      ) do
+    # The provider id is the prefix of the turn's model ref: `find/2`
+    # matched it, so the session runs no plugin code for it.
+    provider = turn.model.provider
+    file = persist(state.file, &SessionFile.append_harness_session(&1, provider, id))
+    sessions = Map.put(state.harness_sessions, provider, id)
+    state = %{state | file: file, harness_sessions: sessions}
+    data = %{provider: provider, harness_session_id: id, lost: turn.resumed != nil, cut: cut}
+    {:noreply, emit(state, :harness_session, data)}
+  end
+
   def handle_info({:stream_event, turn_id, event}, %State{turn: %Turn{id: turn_id}} = state) do
     %State{turn: turn} = state = start_assistant_message(state)
 
@@ -409,6 +473,11 @@ defmodule Helyx.Session do
     {:noreply, fail_turn({:task_exit, Message.cap_integers(reason)}, state)}
   end
 
+  # The terminal of a harness stream, from the hands after the release.
+  def handle_info({:stream_end, turn_id, terminal}, %State{turn: %Turn{id: turn_id}} = state) do
+    {:noreply, end_turn(Message.cap_integers(terminal), state)}
+  end
+
   def handle_info(
         {:tool_result, turn_id, call_id, result},
         %State{
@@ -427,6 +496,7 @@ defmodule Helyx.Session do
   # A message for a turn, or a call, that is no longer current.
   def handle_info({:tool_result, _turn_id, _call_id, _result}, state), do: {:noreply, state}
   def handle_info({:stream_event, _turn_id, _event}, state), do: {:noreply, state}
+  def handle_info({:stream_end, _turn_id, _terminal}, state), do: {:noreply, state}
   def handle_info({:rejected_call, _turn_id, _call}, state), do: {:noreply, state}
 
   # The hands are linked and vital: their death takes the session with it.
@@ -501,9 +571,33 @@ defmodule Helyx.Session do
 
   # Turn machinery
 
+  # Ends the turn at once and asks the hands to release its resources; the
+  # `callers` get their reply when the hands answer. `queues` drops the
+  # queues for an abort and keeps them for the steer of a harness turn.
+  defp abort_turn(%State{turn: turn} = state, callers, queues) do
+    if turn.task, do: Task.shutdown(turn.task, :brutal_kill)
+    request = Helyx.Hands.request_cancel(state.hands, turn.id)
+
+    state =
+      state
+      |> abort_open_calls()
+      |> close_partial_message(:aborted, :aborted)
+      |> queues.()
+      |> emit(:agent_end, %{stop_reason: :aborted})
+      |> close_turn()
+
+    %{state | aborting: {request, callers}}
+  end
+
   # Starts a turn with one user message per text, in order.
   defp begin_turn(%State{} = state, texts) do
-    turn = %Turn{id: Helyx.Id.new(), model: state.model, provider: state.provider}
+    turn = %Turn{
+      id: Helyx.Id.new(),
+      model: state.model,
+      provider: state.provider,
+      kind: state.kind
+    }
+
     state = %{state | turn: turn}
     state = state |> emit(:agent_start, %{}) |> emit(:turn_start, %{})
     start_provider_call(Enum.reduce(texts, state, &append_user(&2, &1)))
@@ -560,36 +654,73 @@ defmodule Helyx.Session do
     core = state.core
     provider = turn.provider
     model = turn.model.model
+    kind = turn.kind
+    resumed = if kind == :harness, do: resumable(state, turn.model.provider)
     base = %Context{messages: state.transcript, tools: state.tools}
     opts = [core: core, session_id: state.id, turn_id: turn_id, cwd: state.cwd]
+    opts = if kind == :harness, do: opts ++ [harness_session_id: resumed], else: opts
 
     # Context building runs inside the Task so plugin code never blocks the
-    # session and a plugin that raises fails the turn, not the session. The
-    # Task is linked: the session traps exits, so a crash stays a message,
-    # and a death of the session kills the stream.
-    task =
-      Task.Supervisor.async(Helyx.Core.task_supervisor(core), fn ->
-        context = Helyx.ModelContext.build(core, base, opts)
-        context = Helyx.Compaction.compact(core, context, opts)
+    # session and a plugin that raises fails the turn, not the session.
+    run = fn ->
+      context = Helyx.ModelContext.build(core, base, opts)
+      context = Helyx.Compaction.compact(core, context, opts)
 
-        result =
-          case provider.stream(model, context, opts) do
-            {:ok, stream} -> consume(stream, session, turn_id)
-            {:error, reason} -> {:error, reason}
-          end
+      result =
+        case provider.stream(model, context, opts) do
+          {:ok, stream} -> consume(stream, session, turn_id, kind == :harness)
+          {:error, reason} -> {:error, reason}
+        end
 
-        # Every terminal leaves the Task through this cap, so no error reason
-        # and no malformed event in one brings an integer over the digit
-        # limit to the session (see `Helyx.Message.cap_integers/1`). A raise
-        # or an exit is not a terminal: the `:DOWN` handler caps its reason.
-        Message.cap_integers(result)
-      end)
+      # Every terminal leaves the Task through this cap, so no error reason
+      # and no malformed event in one brings an integer over the digit
+      # limit to the session (see `Helyx.Message.cap_integers/1`). A raise
+      # or an exit is not a terminal: the `:DOWN` handler, or the hands for
+      # a harness stream, report it.
+      Message.cap_integers(result)
+    end
+
+    start_stream(kind, run, %{state | turn: %{turn | rejected: [], resumed: resumed}})
+  end
+
+  # The Task is linked: the session traps exits, so a crash stays a message,
+  # and a death of the session kills the stream.
+  defp start_stream(:model, run, %State{turn: turn} = state) do
+    task = Task.Supervisor.async(Helyx.Core.task_supervisor(state.core), run)
 
     %{
       state
-      | turn: %{turn | task: task, rejected: []},
+      | turn: %{turn | task: task},
         provider_pids: MapSet.put(state.provider_pids, task.pid)
     }
+  end
+
+  # A harness stream is a Task of the hands (see the moduledoc).
+  defp start_stream(:harness, run, %State{turn: turn} = state) do
+    :ok = Helyx.Hands.stream(state.hands, turn.id, turn.provider, run)
+    state
+  end
+
+  # The harness session to resume: the provider's last one, when the last
+  # assistant message of the transcript came from this provider. Otherwise
+  # the harness does not have the transcript's end, and a fresh session gets
+  # it from the provider.
+  defp resumable(state, id) do
+    with {:ok, stored} <- Map.fetch(state.harness_sessions, id),
+         %Message{model: model} when is_binary(model) <- last_assistant(state.transcript),
+         {:ok, %ModelRef{provider: ^id}} <- ModelRef.parse(model) do
+      stored
+    else
+      _other -> nil
+    end
+  end
+
+  # The last assistant message, with no reversed copy of the transcript.
+  defp last_assistant(transcript) do
+    Enum.reduce(transcript, nil, fn
+      %Message{role: :assistant} = message, _last -> message
+      _message, last -> last
+    end)
   end
 
   # Forwards well-formed stream events to the session and returns the first
@@ -599,7 +730,7 @@ defmodule Helyx.Session do
   # tool call that is not valid UTF-8 is malformed: transcript text is
   # valid from the moment it exists, so the file and the providers never
   # see raw bytes.
-  defp consume(stream, session, turn_id) do
+  defp consume(stream, session, turn_id, harness?) do
     Enum.reduce_while(stream, :stream_ended, fn
       {kind, payload} = event, acc
       when kind in [:text_delta, :thinking_delta] and is_binary(payload) ->
@@ -624,27 +755,62 @@ defmodule Helyx.Session do
       # whose usage the file cannot encode, fails the turn here, before the
       # message exists, instead of raising in persist and silently turning
       # persistence off for the rest of the session.
-      {:done, %{stop_reason: reason, usage: usage}}, _acc
-      when reason in [:end_turn, :tool_use, :max_tokens] and is_non_struct_map(usage) ->
-        # The usage gets the same encodes as the arguments, so the same cap.
-        usage = Message.cap_integers(usage)
+      {:done, %{stop_reason: reason, usage: usage}} = terminal, _acc
+      when reason in @stop_reasons and is_non_struct_map(usage) ->
         # A new plain map: the pattern also matches a struct and a map with
         # more keys, and `end_turn/2` needs this shape after the cap at the
         # Task exit.
-        terminal = {:done, %{stop_reason: reason, usage: usage}}
-
-        {:halt,
-         if(Message.encodable?(usage),
-           do: terminal,
-           else: {:error, {:bad_stream_event, terminal}}
-         )}
+        {:halt, done_terminal(reason, capped_usage(usage), terminal)}
 
       {:error, _} = terminal, _acc ->
         {:halt, terminal}
 
+      # Only a harness sends these; from a model provider they are malformed.
+      {tag, _, _} = event, acc
+      when harness? and tag in [:message_end, :tool_result, :harness_session] ->
+        case harness_event(event) do
+          {:ok, event} -> forward(true, event, session, turn_id, acc)
+          :error -> {:halt, {:error, {:bad_stream_event, event}}}
+        end
+
       other, _acc ->
         {:halt, {:error, {:bad_stream_event, other}}}
     end)
+  end
+
+  # The events of a harness provider. A message end is checked like the
+  # `done` terminal; a result is cut like a tool result.
+  defp harness_event({:message_end, reason, usage})
+       when reason in @stop_reasons and is_non_struct_map(usage) do
+    with {:ok, usage} <- capped_usage(usage), do: {:ok, {:message_end, reason, usage}}
+  end
+
+  defp harness_event({:tool_result, id, {status, text}})
+       when is_binary(id) and status in [:ok, :error] and is_binary(text) do
+    if Message.valid_utf8?(id),
+      do: {:ok, {:tool_result, id, {status, Helyx.Tool.truncate(text, :tail)}}},
+      else: :error
+  end
+
+  defp harness_event({:harness_session, id, cut} = event) when is_integer(cut) and cut >= 0 do
+    # No integer over the digit limit reaches the session (see
+    # `Helyx.Message.cap_integers/1`).
+    if SessionFile.harness_id?(id) and Message.cap_integers(cut) == cut,
+      do: {:ok, event},
+      else: :error
+  end
+
+  defp harness_event(_event), do: :error
+
+  defp done_terminal(reason, {:ok, usage}, _terminal),
+    do: {:done, %{stop_reason: reason, usage: usage}}
+
+  defp done_terminal(_reason, :error, terminal), do: {:error, {:bad_stream_event, terminal}}
+
+  # The usage gets the same encodes as the arguments, so the same cap.
+  defp capped_usage(usage) do
+    usage = Message.cap_integers(usage)
+    if Message.encodable?(usage), do: {:ok, usage}, else: :error
   end
 
   defp forward(true = _valid, event, session, turn_id, acc) do
@@ -656,28 +822,39 @@ defmodule Helyx.Session do
     do: {:halt, {:error, {:bad_stream_event, event}}}
 
   defp end_turn({:done, %{stop_reason: stop_reason, usage: usage}}, state) do
-    %State{turn: turn} = state = start_assistant_message(state)
-    assistant = assistant_message(state, stop_reason: stop_reason, usage: usage)
+    {%State{turn: turn} = state, assistant, calls} = close_assistant(state, stop_reason, usage)
 
-    state = emit(append_message(state, assistant), :message_end, %{message: assistant})
+    case {calls, turn.kind} do
+      {[first | _], :model} ->
+        run_tool(first, %{state | turn: %{turn | task: nil, partial: nil, calls: calls}})
 
-    calls = for %Message.ToolCall{} = call <- assistant.content, do: call
-
-    case calls do
-      [] ->
+      # A harness ran its calls itself; one in the last message gets no
+      # result.
+      _no_calls_or_harness ->
         state
+        |> abort_open_calls()
         |> emit(:turn_end, %{message: assistant})
         |> emit(:agent_end, %{stop_reason: stop_reason})
         |> close_turn()
         |> start_queued()
-
-      [first | _] = calls ->
-        run_tool(first, %{state | turn: %{turn | task: nil, partial: nil, calls: calls}})
     end
   end
 
   defp end_turn({:error, reason}, state), do: fail_turn(reason, state)
   defp end_turn(:stream_ended, state), do: fail_turn(:stream_ended, state)
+
+  # Appends the assistant message of the stream so far and emits its
+  # message_end. Returns it and its tool calls. No message goes between a
+  # call and its result: the calls still open (only a harness turn has any
+  # here) get their aborted results first, and a later result is dropped.
+  defp close_assistant(%State{turn: turn} = state, stop_reason, usage) do
+    state = put_in(state.turn.calls, [])
+    state = Enum.reduce(turn.calls, state, &record_result(&1, {:error, "aborted"}, &2))
+    state = start_assistant_message(state)
+    assistant = assistant_message(state, stop_reason: stop_reason, usage: usage)
+    state = emit(append_message(state, assistant), :message_end, %{message: assistant})
+    {state, assistant, for(%Message.ToolCall{} = call <- assistant.content, do: call)}
+  end
 
   defp run_tool(call, %State{turn: turn} = state) do
     if call in turn.rejected do
@@ -751,8 +928,10 @@ defmodule Helyx.Session do
 
   # A partial assistant message is closed with a failure stop reason so
   # clients do not keep it open. It is not added to the transcript.
+  # A harness can fail after a message whose calls have no result yet.
   defp fail_turn(reason, state) do
     state
+    |> abort_open_calls()
     |> close_partial_message(:error, reason)
     |> drop_queues()
     |> emit(:agent_end, %{stop_reason: :error, error: reason})
