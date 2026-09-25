@@ -368,11 +368,71 @@ defmodule Helyx.SessionFileTest do
     assert text == "unparsable line 2"
   end
 
+  describe "the heap cap of the decode" do
+    test "a file whose decode passes the cap is rejected and not mutated", %{tmp_dir: dir} do
+      {:ok, file} = SessionFile.create(dir, "sess1", "/repo", "test/ok")
+      SessionFile.append_message(file, Message.user("hi"))
+      assert {:ok, _} = SessionFile.resume(dir, "/repo", max_heap_bytes: 16 * 1024 * 1024)
+
+      # 1 MiB of `[` with a torn last line: the decode of deep nesting takes
+      # tens of bytes of heap per file byte. The torn tail would be repaired
+      # on an accepted file; here it must stay.
+      File.write!(file.path, String.duplicate("[", 1024 * 1024), [:append])
+      before = File.read!(file.path)
+
+      assert {:error, {:too_large, text}} =
+               SessionFile.resume(dir, "/repo", max_heap_bytes: 16 * 1024 * 1024)
+
+      assert text =~ "#{16 * 1024 * 1024} bytes of memory"
+      assert text =~ "start a new session"
+      assert File.read!(file.path) == before
+    end
+
+    test "a text-heavy session near the file limit fits the default cap", %{tmp_dir: dir} do
+      {:ok, file} = SessionFile.create(dir, "sess1", "/repo", "test/ok")
+
+      file =
+        SessionFile.append_message(file, Message.user(String.duplicate("line of output\n", 4000)))
+
+      [_header, line] = String.split(File.read!(file.path), "\n", trim: true)
+      count = div(63 * 1024 * 1024, byte_size(line) + 1)
+      File.write!(file.path, String.duplicate(line <> "\n", count - 1), [:append])
+
+      assert {:ok, resumed} = SessionFile.resume(dir, "/repo")
+      assert length(resumed.messages) == count
+    end
+
+    test "the caller's heap does not hold the decode", %{tmp_dir: dir} do
+      {:ok, file} = SessionFile.create(dir, "sess1", "/repo", "test/ok")
+      File.write!(file.path, String.duplicate("[", 1024 * 1024) <> "\n", [:append])
+
+      # The caller dies if its heap passes 16 MiB; the decode alone needs more.
+      {pid, ref} =
+        spawn_monitor(fn ->
+          Process.flag(:max_heap_size, %{size: div(16 * 1024 * 1024, 8), kill: true})
+          exit({:result, SessionFile.resume(dir, "/repo")})
+        end)
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, {:result, result}}, 10_000
+      assert {:error, {:invalid_file, "unparsable line 2"}} = result
+    end
+  end
+
   test "a limit that is not a positive integer raises; the file is not blamed", %{tmp_dir: dir} do
     {:ok, _file} = SessionFile.create(dir, "sess1", "/repo", "test/ok")
 
     for bad <- [0, -1, 1.5, nil, 64 * 1024 * 1024 + 1] do
       assert_raise FunctionClauseError, fn -> SessionFile.resume(dir, "/repo", max_bytes: bad) end
+    end
+
+    for bad <- [0, -1, 1.5, nil, 8, 1024 * 1024 - 1, 1024 * 1024 * 1024 + 1] do
+      assert_raise FunctionClauseError, fn ->
+        SessionFile.resume(dir, "/repo", max_heap_bytes: bad)
+      end
+    end
+
+    for good <- [1024 * 1024, 1024 * 1024 * 1024] do
+      assert {:ok, _} = SessionFile.resume(dir, "/repo", max_heap_bytes: good)
     end
 
     for bad <- [0, -1, 1.5, nil, 257] do
