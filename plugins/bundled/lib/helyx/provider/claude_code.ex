@@ -1,6 +1,5 @@
 defmodule Helyx.Provider.ClaudeCode do
-  @replay_max_bytes 400_000
-  @line_max_bytes 16 * 1024 * 1024
+  alias Helyx.HarnessIO
 
   @moduledoc """
   A harness provider that drives the unmodified Claude Code program,
@@ -22,14 +21,14 @@ defmodule Helyx.Provider.ClaudeCode do
   the transcript. Without it, or when the program no longer has that
   session, the run starts a fresh harness session and first sends the rest
   of the transcript as lines that start no model call. The replay keeps the
-  newest messages within #{@replay_max_bytes} bytes of lines, and it never
+  newest messages within #{HarnessIO.replay_max_bytes()} bytes of lines, and it never
   starts at a tool result, so no result loses its call. The
   `{:harness_session, id, cut}` event of a fresh session gives its id and
   the number of messages left out.
 
   Assistant text and thinking stream as deltas. Tool calls and their
   results arrive whole, and a `message_end` closes each assistant message
-  whose tool calls the program ran. A stdout line over #{@line_max_bytes}
+  whose tool calls the program ran. A stdout line over #{HarnessIO.line_max_bytes()}
   bytes ends the stream with an error. The protocol facts are in
   `docs/research/claude-code-stream-json.md`.
   """
@@ -68,13 +67,7 @@ defmodule Helyx.Provider.ClaudeCode do
     ]
   end
 
-  # The wait for the exit after a terminal while the port is open: the
-  # `result` line, so the program ends by itself at the end of its input and
-  # finishes writing its own session, or a program that did not start.
-  @exit_wait_ms 5_000
   @lost "No conversation found with session ID"
-  # The longest program error text that goes into the terminal error.
-  @error_max_bytes 2_000
 
   @impl true
   def id, do: "claude-code"
@@ -94,7 +87,7 @@ defmodule Helyx.Provider.ClaudeCode do
       exe ->
         run = %Run{exe: exe, model: model, cwd: Keyword.fetch!(opts, :cwd), messages: messages}
         resume = opts[:harness_session_id]
-        {:ok, Stream.resource(fn -> start(run, resume) end, &next/1, &stop/1)}
+        {:ok, Stream.resource(fn -> start(run, resume) end, &next/1, &HarnessIO.stop/1)}
     end
   end
 
@@ -108,18 +101,7 @@ defmodule Helyx.Provider.ClaudeCode do
 
     state = %State{run: run, resume: resume, cut: cut}
 
-    # What came before the marker is perl's own output: the program runs
-    # only after the go-ahead.
-    case Helyx.Watchdog.start(argv, run.cwd, IO.iodata_to_binary(input)) do
-      {:started, port, _pre, _nonce, _go} ->
-        %{state | port: port}
-
-      {:not_started, port, acc} ->
-        arm_exit_wait(%{state | port: port}, {:error, {:not_started, cap_error(acc)}})
-
-      {:no_marker, text} ->
-        %{state | done?: true, terminal: {:error, {:not_started, cap_error(text)}}}
-    end
+    HarnessIO.start(argv, run.cwd, IO.iodata_to_binary(input), state)
   end
 
   # `--model=` and `--resume=` keep a value that starts with a dash a value.
@@ -129,36 +111,19 @@ defmodule Helyx.Provider.ClaudeCode do
       ["--model=" <> model] ++ if(resume, do: ["--resume=" <> resume], else: [])
   end
 
-  defp stop(%{port: nil}), do: :ok
-  defp stop(%{port: port}), do: Helyx.Watchdog.close(port)
-
-  defp next(%{done?: true, terminal: nil} = state), do: {:halt, state}
-
-  defp next(%{done?: true, terminal: terminal} = state),
-    do: {[terminal], %{state | terminal: nil}}
+  defp next(%{done?: true} = state), do: HarnessIO.drain(state)
 
   # Before the result the wait is the program's own loop, which an abort
   # ends; after it, one exit wait from the terminal, whatever the program
   # still writes.
   defp next(%{port: port} = state) do
     receive do
-      {^port, {:data, data}} -> lines(data, state)
+      {^port, {:data, data}} -> HarnessIO.lines(data, state, &translate/2)
       {^port, {:exit_status, status}} -> exited(status, %{state | port: nil})
     after
-      wait(state) -> exit_timeout(state)
+      HarnessIO.wait(state) -> exit_timeout(state)
     end
   end
-
-  # Every terminal that waits for the exit sets its deadline here.
-  defp arm_exit_wait(state, terminal),
-    do: %{
-      state
-      | terminal: terminal,
-        deadline: System.monotonic_time(:millisecond) + @exit_wait_ms
-    }
-
-  defp wait(%{deadline: nil}), do: :infinity
-  defp wait(%{deadline: deadline}), do: max(deadline - System.monotonic_time(:millisecond), 0)
 
   # The program no longer has the session: the run starts again with a
   # fresh one. Nothing ran in the lost run (see the research note).
@@ -176,36 +141,6 @@ defmodule Helyx.Provider.ClaudeCode do
   end
 
   defp exit_timeout(state), do: {[], %{state | done?: true}}
-
-  # Only the new chunk is searched for a newline, so a long line costs one
-  # pass over its bytes.
-  defp lines(_data, %{terminal: terminal} = state) when terminal != nil, do: {[], state}
-
-  defp lines(data, state) do
-    case :binary.split(data, "\n") do
-      # A line over the cap, with its newline in this chunk or not.
-      [part | _] when state.size + byte_size(part) > @line_max_bytes ->
-        {[], %{state | done?: true, terminal: {:error, {:line_over_limit, @line_max_bytes}}}}
-
-      [part] ->
-        {[], %{state | buffer: [state.buffer, part], size: state.size + byte_size(part)}}
-
-      [part, rest] ->
-        line = IO.iodata_to_binary([state.buffer, part])
-        {events, state} = decode(line, %{state | buffer: [], size: 0})
-        {more, state} = lines(rest, state)
-        {events ++ more, state}
-    end
-  end
-
-  # Lines that are not a JSON object (the watchdog's start line, perl's own
-  # text) are skipped. Output after the result is not read (`lines/2`).
-  defp decode(line, state) do
-    case JSON.decode(line) do
-      {:ok, %{} = object} -> translate(object, state)
-      _ -> {[], state}
-    end
-  end
 
   # A sub-agent's own messages stay inside the harness.
   defp translate(%{"parent_tool_use_id" => parent}, state) when parent != nil, do: {[], state}
@@ -271,7 +206,7 @@ defmodule Helyx.Provider.ClaudeCode do
     do: {[], state}
 
   defp translate(%{"type" => "result"} = result, state),
-    do: {[], arm_exit_wait(state, terminal(result, state))}
+    do: {[], HarnessIO.arm_exit_wait(state, terminal(result, state))}
 
   defp translate(_object, state), do: {[], state}
 
@@ -294,8 +229,11 @@ defmodule Helyx.Provider.ClaudeCode do
     else
       text = Enum.join(errors, "; ")
       text = if text == "" and is_binary(result["result"]), do: result["result"], else: text
-      subtype = if is_binary(result["subtype"]), do: cap_error(result["subtype"]), else: ""
-      {:error, {:claude_code, subtype, cap_error(text)}}
+
+      subtype =
+        HarnessIO.cap_error(result["subtype"])
+
+      {:error, {:claude_code, subtype, HarnessIO.cap_error(text)}}
     end
   end
 
@@ -311,23 +249,19 @@ defmodule Helyx.Provider.ClaudeCode do
 
   defp result_text(_content), do: ""
 
-  defp cap_error(text) when byte_size(text) <= @error_max_bytes, do: text
-  # A character cut in half is dropped, so the text stays within the cap.
-  defp cap_error(text), do: text |> binary_part(0, @error_max_bytes) |> String.replace_invalid("")
-
   # Input
 
   # The prompt is the user messages at the end of the transcript. A resumed
   # harness session has the rest; a fresh one gets the rest first.
   defp input(messages, resume) do
-    {prompt, history} = messages |> Enum.reverse() |> Enum.split_while(&(&1.role == :user))
-    content = Enum.flat_map(Enum.reverse(prompt), &user_content/1)
+    {prompt, history} = HarnessIO.split_prompt(messages)
+    content = Enum.flat_map(prompt, &user_content/1)
     prompt_line = line(%{type: "user", message: %{role: "user", content: content}})
 
     if resume do
       {prompt_line, 0}
     else
-      {lines, cut} = replay(Enum.reverse(history))
+      {lines, cut} = replay(history)
       {[lines, prompt_line], cut}
     end
   end
@@ -346,7 +280,7 @@ defmodule Helyx.Provider.ClaudeCode do
         messages -> [user_entry(messages)]
       end)
 
-    cap_replay(entries, length(history))
+    HarnessIO.cap_replay(entries, length(history))
   end
 
   defp assistant_entry(%Message{content: blocks}) do
@@ -387,27 +321,6 @@ defmodule Helyx.Provider.ClaudeCode do
 
   defp user_content(%Message{content: blocks}) do
     for %Message.Text{text: text} <- blocks, text != "", do: %{type: "text", text: text}
-  end
-
-  # Keeps the newest entries within the byte cap, then drops kept entries
-  # up to the first one the replay may start at. Returns the lines and the
-  # number of messages left out.
-  defp cap_replay(entries, total) do
-    {kept, _bytes} =
-      entries
-      |> Enum.reverse()
-      |> Enum.reduce_while({[], 0}, fn {line, _n, _start?} = entry, {kept, bytes} ->
-        bytes = bytes + if(line, do: IO.iodata_length(line), else: 0)
-
-        if bytes > @replay_max_bytes,
-          do: {:halt, {kept, bytes}},
-          else: {:cont, {[entry | kept], bytes}}
-      end)
-
-    kept = Enum.drop_while(kept, fn {_line, _n, start?} -> not start? end)
-
-    {for({line, _n, _start?} <- kept, line, do: line),
-     total - Enum.sum(for {_, n, _} <- kept, do: n)}
   end
 
   # The Messages API takes tool ids of `[a-zA-Z0-9_-]` only; another

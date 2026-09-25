@@ -16,7 +16,13 @@ defmodule Helyx.Provider do
   loop and its own tools inside one call, so its stream can also carry:
 
     * `{:message_end, stop_reason, usage}`: the assistant message so far is
-      complete; its tool calls ran inside the harness
+      complete; its tool calls ran inside the harness. Send it once per
+      message, only after content (a delta or a tool call) that no earlier
+      `message_end` closed, and only when every call of the messages before
+      it has its result: the session gives every call that is still open an
+      `aborted` result at each `message_end` and drops a later result. At
+      the end of the call, a provider sends every `message_end` that it did
+      not send yet, and the session aborts the calls with no result
     * `{:tool_result, call_id, {:ok | :error, binary}}`: the result of a
       tool call of a completed message; the session cuts the text like a
       tool result (`Helyx.Tool.truncate/2`, `:tail`)

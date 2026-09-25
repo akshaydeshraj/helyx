@@ -162,6 +162,25 @@ defmodule Helyx.WatchdogTest do
       assert group_gone_within?(group, 200)
     end
 
+    test "open input: parts arrive until a NUL byte, then the command reads end of file" do
+      argv = ["bash", "-c", "cat; echo done"]
+      assert {:started, port, "", nonce, _go} = Helyx.Watchdog.start(argv, File.cwd!(), :open)
+      Helyx.Watchdog.write(port, "one\n")
+      assert "" = await(port, "", "#{nonce} 1\none\n")
+      Helyx.Watchdog.write(port, ["two\n", <<0>>, "dropped\n"])
+      assert {"two\ndone\n", 0} = collect(port, "")
+    end
+
+    test "open input: a closed port kills the group, with the input still open" do
+      port = open("cat; sleep 30", "bash", -2)
+      {group, rest} = read_marker(port)
+      true = Port.command(port, "go\nready\n")
+      assert "" = await(port, rest, "nonce 1\nready\n")
+
+      Port.close(port)
+      assert group_gone_within?(group, 200)
+    end
+
     test "start/3 counts the input in bytes, multibyte included" do
       input = "h\u00e9llo \u2713\n"
       argv = ["bash", "-c", "wc -c"]

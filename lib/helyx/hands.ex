@@ -1,4 +1,7 @@
 defmodule Helyx.Hands do
+  # The time a cancelled stream Task gets to end by itself.
+  @stream_stop_ms 2_000
+
   @moduledoc """
   Runs tool calls for one session in one working directory. See ADR 0003
   and ADR 0004.
@@ -44,6 +47,9 @@ defmodule Helyx.Hands do
   `release/3` with `:cancel` for their handles, one release Task per tool,
   in parallel, with one deadline. It returns only when every release has
   returned or timed out. An unconfirmed handle is reported as an error.
+  A tool Task is killed at once. A stream Task gets a `:shutdown` exit
+  signal and #{@stream_stop_ms} ms before the kill: a provider whose Task
+  traps exits can use them to ask its program to stop the turn.
   """
 
   use GenServer
@@ -193,7 +199,11 @@ defmodule Helyx.Hands do
       Map.split_with(state.tasks, fn {_ref, {_task, id, _call_id, _tool}} -> id == turn_id end)
 
     cancelled = Map.values(cancelled)
-    Enum.each(cancelled, fn {task, _, _, _} -> Task.shutdown(task, :brutal_kill) end)
+
+    Enum.each(cancelled, fn {task, _turn, call_id, _tool} ->
+      Task.shutdown(task, shutdown_mode(call_id))
+    end)
+
     {taken, held} = Map.split(state.held, Enum.map(cancelled, fn {task, _, _, _} -> task.pid end))
 
     by_tool =
@@ -284,6 +294,9 @@ defmodule Helyx.Hands do
     send(state.session, outcome(turn_id, id, {:error, error}))
     state
   end
+
+  defp shutdown_mode(:stream), do: @stream_stop_ms
+  defp shutdown_mode(_call_id), do: :brutal_kill
 
   # Gives every unconfirmed handle to its tool again, with one short
   # deadline for all tools, and keeps the ones still held.

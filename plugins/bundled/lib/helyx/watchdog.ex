@@ -35,7 +35,11 @@ defmodule Helyx.Watchdog do
   # select reports it writable, so a command that does not read cannot stop
   # the watch of stdin. A write that fails for any other reason than a full
   # pipe (the command closed its stdin) drops the rest of the input. SIGPIPE
-  # is ignored in the parent only, after the fork, like TERM.
+  # is ignored in the parent only, after the fork, like TERM. At -2 the
+  # input is open (#11): the watchdog forwards everything that follows the
+  # go-ahead line up to the first NUL byte, then closes the pipe. A protocol
+  # of JSON lines never holds a raw NUL, so a NUL ends the input and the
+  # command reads end of file while the watch of stdin goes on.
   #
   # The watchdog enters the working directory itself, before the fork. The
   # port's cd option has no failure signal: the emulator's child exits with
@@ -99,7 +103,7 @@ defmodule Helyx.Watchdog do
   pipe(my $r, my $w) or fail("pipe failed");
   pipe(my $er, my $ew) or fail("report pipe failed");
   my ($ir, $iw);
-  if ($feed >= 0) { pipe($ir, $iw) or fail("input pipe failed") }
+  if ($feed != -1) { pipe($ir, $iw) or fail("input pipe failed") }
   my $child = fork() // fail("fork failed");
   if ($child == 0) {
     close($w); close($er); close($iw) if $iw;
@@ -139,7 +143,10 @@ defmodule Helyx.Watchdog do
         waitpid($child, 0);
         exit 0;
       }
-      if ($iw) { my $take = substr($buf, 0, $feed); $out .= $take; $feed -= length($take) }
+      if ($iw and $feed < 0) {
+        my $end = index($buf, "\0");
+        if ($end < 0) { $out .= $buf } else { $out .= substr($buf, 0, $end); $feed = 0 }
+      } elsif ($iw) { my $take = substr($buf, 0, $feed); $out .= $take; $feed -= length($take) }
     }
     if ($n > 0 and $win and vec($win, fileno($iw), 1)) {
       my $put = syswrite($iw, $out);
@@ -156,7 +163,8 @@ defmodule Helyx.Watchdog do
   @doc false
   # Opens the port for `argv` in `cwd` and runs the handshake. With `input`
   # nil the command's stdin is /dev/null; with a binary the command reads
-  # exactly that binary, then end of file. Returns:
+  # exactly that binary, then end of file. With `:open` the command reads
+  # what `write/2` sends until `write(port, <<0>>)` or the close. Returns:
   #
   #   * `{:started, port, pre, nonce, go}`: the go-ahead is sent. `pre` is
   #     what came before the marker, perl's own startup output. The output
@@ -172,7 +180,7 @@ defmodule Helyx.Watchdog do
   # got that far.
   def start(argv, cwd, input) do
     nonce = random_word()
-    {exe, options} = launcher(argv, cwd, nonce, if(input, do: byte_size(input), else: -1))
+    {exe, options} = launcher(argv, cwd, nonce, feed(input))
     port = Port.open({:spawn_executable, exe}, options)
 
     # The runtime detaches port programs into their own process group, so
@@ -196,7 +204,7 @@ defmodule Helyx.Watchdog do
       {group, pre} ->
         Helyx.Tool.hold({:command, group})
         go = random_word()
-        go_ahead(port, [go, "\n", input || ""])
+        write(port, [go, "\n", if(is_binary(input), do: input, else: "")])
         {:started, port, pre, nonce, go}
     end
   end
@@ -207,7 +215,7 @@ defmodule Helyx.Watchdog do
 
   @doc false
   # Public for the watchdog's direct tests. `feed` is the input byte count,
-  # or -1 for none (see the watchdog).
+  # -1 for none, or -2 for open input (see the watchdog).
   def launcher(argv, cwd, nonce, feed) do
     perl = System.find_executable("perl") || "/usr/bin/perl"
     # ponytail: the VM decodes a name or a value that is not UTF-8 as
@@ -238,9 +246,15 @@ defmodule Helyx.Watchdog do
 
   defp random_word, do: Base.encode16(:crypto.strong_rand_bytes(8))
 
-  # A port whose watchdog already died is closed and the write raises; the
-  # exit status is still in the mailbox for the caller's read.
-  defp go_ahead(port, data) do
+  defp feed(nil), do: -1
+  defp feed(:open), do: -2
+  defp feed(input), do: byte_size(input)
+
+  @doc false
+  # Writes to the watchdog's stdin. A port whose watchdog already died is
+  # closed and the write raises; the exit status is still in the mailbox for
+  # the caller's read.
+  def write(port, data) do
     Port.command(port, data)
   rescue
     ArgumentError -> false
