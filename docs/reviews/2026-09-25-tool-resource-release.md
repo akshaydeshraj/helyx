@@ -101,3 +101,7 @@ Round 4 is a reduced round: the code fix is a rename of 2 lines in one code file
 A reduced round: spec and failure path. No findings. A copy with the gate checked only at entry fails the new test (172 ms past the deadline). Real groups in each state (running, of another user, a zombie, gone) cross the deadline and the three modes as the docs state. Not reproduced, recorded as gaps: a scheduler delay between the time check and the `kill` run, and the `:retry` KILL of a watchdog on a Linux host where PID 1 does not reap orphans (the handle stays held, never released by mistake).
 
 Precommit: Credo found a fake `kill` nested too deep in the group test, and Dialyzer found the improper list that the `Hold` test tool returns on purpose. The probe of the fake is its own function, and `Hold.release/3` has `@dialyzer {:nowarn_function, release: 3}`. Both are test files, so no review round follows.
+
+## Codex review, round 1
+
+Adversarial review against `origin/master`, 2026-09-25: approve, no findings. Its probe of an abort race kept the unconfirmed handles, gave an error result, and refused the next call.
