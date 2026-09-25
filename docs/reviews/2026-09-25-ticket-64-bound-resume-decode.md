@@ -60,3 +60,7 @@ Fix diff: a comment of 2 lines in one code file, and the bounds row. Reduced rou
 | Failure path | The session supervisor keeps the start message as garbage until it allocates again: 226 MB in the supervisor after a resume of a 48 MB file of 300,000 one-word messages; a forced GC frees it. The row said "for a moment". | The bounds row states the retained copy as open, on master before #64. A fix (the session reads the file in its own `init`, or a GC after the start) changes the start path of `Helyx.Session`, outside #64. Ticket #103. |
 
 The round 3 fix is Markdown only, so no further code round.
+
+## Codex review, round 1
+
+Adversarial review against `origin/master`, 2026-09-25: approve, no findings.
