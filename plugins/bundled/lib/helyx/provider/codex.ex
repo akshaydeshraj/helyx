@@ -1,4 +1,7 @@
 defmodule Helyx.Provider.Codex do
+  # The TERM grace of the release: codex ends its commands itself on TERM.
+  @term_grace_ms 5_000
+
   alias Helyx.HarnessIO
 
   @moduledoc """
@@ -14,7 +17,12 @@ defmodule Helyx.Provider.Codex do
   `Helyx.Tool.hold/1`, and the hands release them through `release/3`, so
   an abort returns only when the program's group is gone (ADR 0004). The
   Task traps exits: on the hands' `:shutdown` it sends `turn/interrupt`
-  and waits up to 1,000 ms for the turn to end before it exits. Threads
+  and waits up to 1,000 ms for the turn to end before it exits. The
+  watchdog, when the port closes, and every release but a retry TERM the
+  program's group and wait up to #{@term_grace_ms} ms for it to go before
+  the KILL:
+  codex runs every command in a process group of its own and ends them
+  itself on TERM, but a KILL leaves them running. Threads
   run with the approval policy `never` and the sandbox
   `danger-full-access`, the same trust as the bash tool. A command or
   file change approval request is accepted all the same; every other
@@ -107,8 +115,13 @@ defmodule Helyx.Provider.Codex do
   @impl true
   def kind, do: :harness
 
+  # A delivery TERMs first too: the stream can end (a line over the cap,
+  # the exit wait) while codex still runs a command.
   @impl true
-  defdelegate release(handles, mode, deadline), to: Helyx.Watchdog
+  def release(handles, :deliver, deadline), do: release(handles, :cancel, deadline)
+
+  def release(handles, mode, deadline),
+    do: Helyx.Watchdog.release(handles, mode, deadline, grace_ms: @term_grace_ms)
 
   @impl true
   def stream(model, %Helyx.Context{messages: messages}, opts) do
@@ -135,7 +148,7 @@ defmodule Helyx.Provider.Codex do
     Process.flag(:trap_exit, true)
     argv = ["/bin/sh", "-c", ~S(exec "$0" "$@" 2>/dev/null), exe, "app-server"]
 
-    state = HarnessIO.start(argv, state.cwd, :open, state)
+    state = HarnessIO.start(argv, state.cwd, :open, state, grace_ms: @term_grace_ms)
 
     if state.terminal == nil,
       do: request(state, @initialize, %{clientInfo: %{name: "helyx", version: "0"}})

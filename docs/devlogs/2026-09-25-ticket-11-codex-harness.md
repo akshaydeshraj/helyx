@@ -19,4 +19,5 @@ Date: 2026-09-25. Branch `ticket/11-codex-harness`.
 
 ## Next
 
-- Codex command groups are not held by Helyx (accepted hole, ADR 0004 revision of 2026-09-25, #11).
+- Codex command groups are not held by Helyx. The watchdog and the release give codex 5,000 ms after the TERM to end them; a codex stuck past that can leave them running (accepted hole, ADR 0004 revision of 2026-09-25, #11).
+- An abort or a steer drops the held Codex events, finished results included: the session closes the turn when the abort starts. Keeping them needs a session change (#111).

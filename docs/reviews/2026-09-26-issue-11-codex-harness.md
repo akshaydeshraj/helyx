@@ -96,3 +96,51 @@ Not taken: a struct for the `{:close, ids, event}` marker and a list in place of
 Fix size: comments and docs only, no code line changed. No further round.
 
 Precommit fixes after round 5: Credo asked for `-32_601`, and Dialyzer found an improper list in the go-ahead write of `Helyx.Watchdog.start/3` (now a proper list). Two lines, no behaviour change.
+
+## Round 6 (full): orchestrator review after the first commit
+
+The orchestrator found a blocking gap (O1) and asked for three more changes. Invariant: in the normal case (codex responsive), no command that codex started outlives the abort release.
+
+| # | Source | Finding | Resolution |
+| - | ------ | ------- | ---------- |
+| O1 | orchestrator | Codex runs every command in a process group of its own and ends them itself on TERM in about 0.5 s; a KILL leaves them running. A 500 ms grace before the KILL races that cleanup. Two KILLs raced: the perl watchdog's, when the stream Task's exit closes the port, and the release's | A `:grace_ms` option reaches the perl watchdog (`Helyx.Watchdog.start/4`, `launcher/5`) and `Helyx.Watchdog.Group.release/4`. Codex passes 5,000 ms to both. Tests: "an abort gives the program time to end its commands" (a fake that ends its own-group command after the TERM; it fails with a 500 ms grace), and a test at the grace limit for the watchdog and for the release |
+| O2 | orchestrator | An abort or a steer drops the held events, finished results included | Not built. `abort_turn/3` closes the turn when the abort starts, and the session drops every later event of that turn, so a flush from the provider cannot reach the transcript. A fix needs the session to keep a harness turn open until the hands answer, which moves `agent_end` and changes Claude Code too. A design decision; stated as a hole with ticket #111 |
+| O3 | orchestrator | The reading of "code lines" | Confirmed: no comments, no blank lines |
+| O4 | orchestrator | The unbounded rows had no ticket | The rows "Codex held events" and "Harness tool calls and messages per harness turn" point at #111 |
+
+Simplify (one agent, four lenses) applied: stale arity names, and the release test at a 1,000 ms grace (it saves 4 s). Skipped: one mechanism for both graces (wait for the watchdog before the KILL of the command groups; a redesign of the sweep, and it changes bash).
+
+Bounds sensor: `bounds sensor skipped: TYPESAFE_API_KEY is not set`.
+
+| # | Axis | Finding | Resolution |
+| - | ---- | ------- | ---------- |
+| F25 | failure path, spec | A `:deliver` release KILLs at once. The stream can end by itself while codex runs a command (a line over the cap, the exit wait timeout), and the KILL then leaves the command running. Reproduced for both; the test covers the path of the line over the cap | `Codex.release/3` treats `:deliver` as `:cancel`: TERM, the 5,000 ms grace, KILL. Test "a stream that ends while a command runs gives the program the same time" (fails without the clause) |
+| F26 | spec, standards | No test pinned the 5,000 ms: a 500 ms value passed every test | The fake now ends its command 3 s after the TERM; a 2,000 ms grace fails both Codex tests |
+| F27 | spec, standards | The row "Codex interrupt wait" still said "500 ms grace" | 5,000 ms |
+| F28 | standards | A tuple `{deadline, grace}` only to keep the arity of `sweep`, named `_times` | Two arguments |
+| F29 | standards | `@grace_ms` above `@moduledoc false` in `Helyx.Watchdog`, and a comment line of 110 characters | Moved below; wrapped |
+
+Not taken: one attribute for the 500 ms default of `Helyx.Watchdog` and `Helyx.Watchdog.Group` (each module keeps its own default); `start/3` in the rows of bash and Claude Code (still true through the default argument); a note on #111 that it now also tracks the dropped events (for the orchestrator).
+
+Fix size, without tests and Markdown: about 12 lines in 3 code files, one function clause added. Round 7 is a full round.
+
+## Round 7 (full)
+
+Base: the round 6 tree (`refs/review/t11-round6`). Simplify ran with the standards axis (one agent): `own_group_command/2` takes `after_pid`, not `then`, and the line over the cap is built from `HarnessIO.line_max_bytes/0`. Skipped: moving the helper up to the other helpers (layout only).
+
+Bounds sensor: `bounds sensor skipped: TYPESAFE_API_KEY is not set`.
+
+The failure-path axis found nothing it could reproduce: a turn error while a command runs, and a session killed while a command runs, both ended the command. `:retry` runs only on handles that a release did not confirm, after its KILL, so it falls in the stuck-codex hole.
+
+| # | Axis | Finding | Resolution |
+| - | ---- | ------- | ---------- |
+| F30 | spec | The perl watchdog's grace ends when its direct child exits, not when the group is empty; if the Node wrapper exited before the native binary, the KILL would cut the cleanup short | Checked in the wrapper source (`bin/codex.js` of 0.155.0): it forwards TERM once and exits only after the binary. Recorded in the research note and the "Codex program" row; the watchdog comment states that the wait is for the direct child |
+| F31 | spec | The row "wait for a killed process group" still said `:deliver` KILLs at once, with no Codex exception | States that `Codex.release/3` gives a delivery the `:cancel` sequence |
+| F32 | failure path | A codex that exits by itself without ending its commands leaves them running | Stated as an accepted hole in the "Codex program" row |
+| F33 | spec | The effect of the second TERM (the watchdog's and the release's) on the native binary is not verified | Recorded as not verified in the research note |
+| F34 | standards | The rewrapped watchdog comment broke lines early | Rewrapped |
+| F35 | standards | `then` shadows the name of `Kernel.then/2`; the cap was a literal | `after_pid`; `HarnessIO.line_max_bytes() + 1` |
+
+Not taken: a note on #111 that it also tracks the events that an abort or a steer drops (the ticket body names only the unbounded rows; for the orchestrator).
+
+Fix size: comments, docs, and tests only; no code line changed. No further round.

@@ -9,7 +9,7 @@ defmodule Helyx.Provider.CodexTest do
 
   import Helyx.Test.OSHelpers
 
-  alias Helyx.{Event, Message, Session, SessionFile}
+  alias Helyx.{Event, HarnessIO, Message, Session, SessionFile}
   alias Helyx.Provider.{Codex, Fake}
 
   @tid "019a0000-0000-7000-8000-000000000001"
@@ -408,6 +408,50 @@ defmodule Helyx.Provider.CodexTest do
              request(bin, 1, "turn/interrupt")
 
     assert [%{stop_reason: :aborted}] = of_type(collect_until(:agent_end), :agent_end)
+  end
+
+  # Like codex: a command in a process group of its own, which the program
+  # ends 3 s after the first TERM (the watchdog and the release each send
+  # one); a KILL of the program's group would leave it running.
+  defp own_group_command(pidfile, after_pid) do
+    """
+    perl -e 'setpgrp(0, 0); exec "sleep", "30"' </dev/null >/dev/null 2>&1 &
+    c=$!
+    trap 'trap "" TERM; sleep 3; kill -9 $c; exit 0' TERM
+    echo $c > "#{pidfile}"
+    #{after_pid}
+    while :; do sleep 0.1; done
+    """
+  end
+
+  test "an abort gives the program time to end its commands", %{bin: bin} = ctx do
+    pidfile = Path.join(bin, "pid")
+    running = [started(@tid, command("exec-1", %{status: "inProgress"}))]
+    fresh(bin, 1, @tid, running, own_group_command(pidfile, ""))
+
+    session = start(ctx)
+    :ok = Session.prompt(session, "wait")
+    collect_until(:message_update)
+    pid = wait_for_pid(pidfile)
+
+    :ok = Session.abort(session)
+    refute os_alive?(pid)
+    assert [%{stop_reason: :aborted}] = of_type(collect_until(:agent_end), :agent_end)
+  end
+
+  test "a stream that ends while a command runs gives the program the same time",
+       %{bin: bin} = ctx do
+    pidfile = Path.join(bin, "pid")
+    over_cap = ~s{perl -e 'print "x" x #{HarnessIO.line_max_bytes() + 1}, "\\n"'}
+    running = [started(@tid, command("exec-1", %{status: "inProgress"}))]
+    fresh(bin, 1, @tid, running, own_group_command(pidfile, over_cap))
+
+    session = start(ctx)
+    :ok = Session.prompt(session, "wait")
+
+    # The delivery release returns before the session gets the terminal.
+    assert [%{stop_reason: :error}] = of_type(collect_until(:agent_end), :agent_end)
+    refute os_alive?(wait_for_pid(pidfile))
   end
 
   test "a steer aborts the turn and starts a new one with the prompts", %{bin: bin} = ctx do

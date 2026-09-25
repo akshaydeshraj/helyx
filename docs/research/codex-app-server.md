@@ -69,6 +69,7 @@ The program on `PATH` is a Node wrapper (`~/.bun/bin/codex`) that runs the nativ
 
 - `SIGTERM` to the wrapper's group while `sleep 30` ran: 0.5 s later no process of the tree was left. The program ends its commands itself.
 - `SIGKILL` to the same group: `sleep 30` survived with parent 1 in its own group. The helpers ended.
+- The wrapper source (`@openai/codex` 0.155.0, `bin/codex.js`, lines 255 to 295) forwards `SIGINT`, `SIGTERM`, and `SIGHUP` to the native binary once (a later signal finds `child.killed` set and does nothing), and exits only after the binary exits, with its status. So the wrapper's pid lives until the binary has ended its commands. Not verified: what the native binary does with a second `SIGTERM` sent to the group during its cleanup.
 
 ## Approvals
 

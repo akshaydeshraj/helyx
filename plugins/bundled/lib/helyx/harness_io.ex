@@ -22,8 +22,8 @@ defmodule Helyx.HarnessIO do
   # state. What came before the marker is perl's own output: the program
   # runs only after the go-ahead. A program that did not start gives the
   # terminal error.
-  def start(argv, cwd, input, state) do
-    case Helyx.Watchdog.start(argv, cwd, input) do
+  def start(argv, cwd, input, state, opts \\ []) do
+    case Helyx.Watchdog.start(argv, cwd, input, opts) do
       {:started, port, _pre, _nonce, _go} ->
         %{state | port: port}
 

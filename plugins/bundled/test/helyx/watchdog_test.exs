@@ -82,6 +82,19 @@ defmodule Helyx.WatchdogTest do
     assert group_gone_within?(group, 300)
   end
 
+  test "a longer grace holds the KILL until its limit" do
+    argv = ["bash", "-c", "trap '' TERM; echo ready; sleep 30"]
+    {exe, options} = Helyx.Watchdog.launcher(argv, File.cwd!(), "nonce", -1, 1_000)
+    port = Port.open({:spawn_executable, exe}, options)
+    {group, ""} = read_marker(port)
+    assert "" = go(port, "", "nonce 1\nready\n")
+
+    Port.close(port)
+    Process.sleep(800)
+    assert os_alive?("-#{group}")
+    assert group_gone_within?(group, 50)
+  end
+
   test "a failed exec: the start line, then the report under the go-ahead word (issue #70)" do
     port = open("echo ran", "/nonexistent/bash")
     {_group, rest} = read_marker(port)
