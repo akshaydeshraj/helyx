@@ -22,6 +22,17 @@ defmodule Helyx.SessionFile do
   # limit. Compaction is out of scope, so a session past it starts anew.
   @max_bytes 64 * 1024 * 1024
 
+  # The decode of a file under @max_bytes can still grow the heap by 12 to 42
+  # bytes per file byte (#64). The parse runs in its own process with this
+  # heap cap, so a hostile or corrupt file kills only that process. A real
+  # session near @max_bytes must still fit.
+  @max_heap_bytes 1024 * 1024 * 1024
+
+  # The floor of the heap cap option: the VM rejects a cap under the minimum
+  # heap of a process, and a cap of 0 words turns the cap off. It holds for a
+  # minimum heap under 1 MiB; a VM started with a larger `+hms` rejects it.
+  @min_heap_bytes 1024 * 1024
+
   # The scan for the most recent session reads this much of a file. A header
   # holds a cwd and a model ref.
   @max_header_bytes 65_536
@@ -102,46 +113,97 @@ defmodule Helyx.SessionFile do
   session older than those files is not found: the result is `:not_found`
   when none of them has the working directory.
 
-  `:max_bytes` lowers the file limit and `:max_scanned_files` lowers the
-  file count. They exist so that a test reaches a limit with small input.
+  The read and the decode run in their own process with a heap cap of
+  #{@max_heap_bytes} bytes. A file whose decode passes the cap is rejected
+  as `{:too_large, text}` and is not mutated. The transcript is copied to
+  the caller once.
+
+  `:max_bytes` lowers the file limit, `:max_heap_bytes` lowers the heap
+  cap to no less than #{@min_heap_bytes} bytes, and `:max_scanned_files`
+  lowers the file count. They exist so that a test reaches a limit with
+  small input.
   """
   @spec resume(Path.t(), String.t(),
           max_bytes: pos_integer(),
+          max_heap_bytes: pos_integer(),
           max_scanned_files: pos_integer()
         ) :: {:ok, Resumed.t()} | {:error, error()}
   def resume(dir, cwd, opts \\ []) do
-    # Outside the rescue below: a bad option is the caller's bug and raises,
-    # it is not reported as a bad file.
+    # A bad option is the caller's bug and raises, it is not reported as a
+    # bad file.
     resume_within(
       dir,
       cwd,
       Keyword.get(opts, :max_bytes, @max_bytes),
+      Keyword.get(opts, :max_heap_bytes, @max_heap_bytes),
       Keyword.get(opts, :max_scanned_files, @max_scanned_files)
     )
   end
 
   # The options only lower the limits, so the read count stays one the OS takes.
-  defp resume_within(dir, cwd, max_bytes, max_files)
-       when max_bytes in 1..@max_bytes//1 and max_files in 1..@max_scanned_files//1 do
+  defp resume_within(dir, cwd, max_bytes, max_heap_bytes, max_files)
+       when max_bytes in 1..@max_bytes//1 and
+              max_heap_bytes in @min_heap_bytes..@max_heap_bytes//1 and
+              max_files in 1..@max_scanned_files//1 do
     with {:ok, path, header} <- most_recent(project_dir(dir, cwd), cwd, max_files),
          :ok <- check_version(header),
-         {:ok, raw} <- read_up_to(path, max_bytes + 1),
-         :ok <- check_size(byte_size(raw), max_bytes),
-         {entries, kept_bytes, tail} = parse(raw, [], 0),
-         :ok <- check_size(repaired_size(kept_bytes, tail), max_bytes),
-         :ok <- check_entries(entries),
-         model = current_model(header, entries),
-         messages = for(%{"type" => "message"} = entry <- entries, do: decode_message(entry)),
+         {:ok, resumed, {kept_bytes, tail}} <-
+           load_bounded(path, header, max_bytes, max_heap_bytes),
          # The repair write comes last, after every check passed, so a
          # file this function rejects is never mutated.
          :ok <- repair(path, kept_bytes, tail) do
-      {:ok,
-       %Resumed{
-         file: %__MODULE__{path: path, leaf: List.last(entries)["id"]},
-         session_id: Path.basename(path, ".jsonl"),
-         model: model,
-         messages: messages
-       }}
+      {:ok, resumed}
+    end
+  end
+
+  # The wait has no timeout: the process reads at most max_bytes + 1 bytes
+  # and dies when its heap passes the cap, so its work is bounded. It is not
+  # linked, because the heap kill would take the caller with it; a caller
+  # that dies first leaves it to finish that bounded work alone.
+  defp load_bounded(path, header, max_bytes, max_heap_bytes) do
+    heap = %{
+      size: div(max_heap_bytes, :erlang.system_info(:wordsize)),
+      kill: true,
+      error_logger: false
+    }
+
+    {pid, ref} =
+      :erlang.spawn_opt(fn -> exit({:loaded, load(path, header, max_bytes)}) end, [
+        :monitor,
+        {:max_heap_size, heap}
+      ])
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, {:loaded, result}} ->
+        result
+
+      {:DOWN, ^ref, :process, ^pid, :killed} ->
+        {:error,
+         {:too_large,
+          "the session file needs more than #{max_heap_bytes} bytes of memory to load; " <>
+            "start a new session"}}
+
+      # A crash that load/3 does not rescue is a bug here, as it was when the
+      # parse ran in the caller.
+      {:DOWN, ^ref, :process, ^pid, reason} ->
+        exit(reason)
+    end
+  end
+
+  defp load(path, header, max_bytes) do
+    with {:ok, raw} <- read_up_to(path, max_bytes + 1),
+         :ok <- check_size(byte_size(raw), max_bytes),
+         {entries, kept_bytes, tail} = parse(raw, [], 0),
+         :ok <- check_size(repaired_size(kept_bytes, tail), max_bytes),
+         :ok <- check_entries(entries) do
+      resumed = %Resumed{
+        file: %__MODULE__{path: path, leaf: List.last(entries)["id"]},
+        session_id: Path.basename(path, ".jsonl"),
+        model: current_model(header, entries),
+        messages: for(%{"type" => "message"} = entry <- entries, do: decode_message(entry))
+      }
+
+      {:ok, resumed, {kept_bytes, tail}}
     end
   rescue
     # The file is on-disk data anyone can edit. An entry with a shape this
