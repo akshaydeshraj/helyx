@@ -1,6 +1,6 @@
-defmodule Helyx.Tool.Bash.Group do
+defmodule Helyx.Watchdog.Group do
   @moduledoc false
-  # The release of the bash tool's handles: `{:command, group}` for the
+  # The release of the handles of `Helyx.Watchdog`: `{:command, group}` for the
   # command's process group and `{:watchdog, os_pid}` for the watchdog, which
   # is its own group. Returns the handles whose group still has a process,
   # and every handle that is not one of these two forms, because nothing

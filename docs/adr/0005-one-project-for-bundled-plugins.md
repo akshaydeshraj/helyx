@@ -38,3 +38,7 @@ A small, pure Elixir dependency is a normal dependency. `req` is the first case.
 - When `__mix_recompile__?/0` answers true, Mix touches `lib/helyx/tui.ex` to force the compile, and the next Mix command prints a note that it reset the file's mtime. Content does not change.
 - Application env keys follow the app: the OpenAI provider's test seam moved from `:req_options` of `:helyx_provider_openai` to `:openai_req_options` of `:helyx_plugins`. All bundled plugins share that app, so a key names its plugin.
 - The per-plugin test helpers merged into one `test_helper.exs`.
+
+## Revision
+
+2026-09-25, ticket #10. The Claude Code provider spawns `claude` and must stop it with the same guarantees as the bash tool (ADR 0004): its own process group, held with the hands before it runs, killed when the port closes, and released through `release/3`. The rule "one bundled plugin does not call another" stays. Code that two bundled plugins need goes into a helper module of the bundled project that is not a plugin, and both call it. The first one is `Helyx.Watchdog` (`plugins/bundled/lib/helyx/watchdog.ex`): the perl watchdog, the launcher, the marker and go-ahead handshake, and the release of the groups (`Helyx.Watchdog.Group`, formerly `Helyx.Tool.Bash.Group`). The bash tool and `Helyx.Provider.ClaudeCode` both delegate their `release/3` to it. The OS work stays out of Core (ADR 0004, revision of 2026-09-25). A helper module has no registration entry and implements no interface; it is `@moduledoc false`.

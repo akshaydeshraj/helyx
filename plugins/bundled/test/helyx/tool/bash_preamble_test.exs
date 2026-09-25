@@ -4,7 +4,7 @@ defmodule Helyx.Tool.Bash.PreambleTest do
   # OS environment of the whole VM.
   use ExUnit.Case, async: false
 
-  import Helyx.Tool.Bash.OSHelpers
+  import Helyx.Test.OSHelpers
 
   @moduletag :tmp_dir
 
@@ -141,9 +141,12 @@ defmodule Helyx.Tool.Bash.PreambleTest do
     test "PERL_UNICODE=I and i: a closed port still kills the group", %{tmp_dir: dir} do
       for value <- ~w(I i) do
         put_env("PERL_UNICODE", value)
-        {exe, options} = Helyx.Tool.Bash.launcher("echo ready; sleep 30", dir, "nonce")
+
+        {exe, options} =
+          Helyx.Watchdog.launcher(["bash", "-c", "echo ready; sleep 30"], dir, "nonce", -1)
+
         port = Port.open({:spawn_executable, exe}, options)
-        assert {group, _pre} = Helyx.Tool.Bash.read_marker(port, "nonce", "", "")
+        assert {group, _pre} = Helyx.Watchdog.read_marker(port, "nonce", "", "")
         assert is_integer(group)
         true = Port.command(port, "go\n")
         assert_receive {^port, {:data, "nonce 1\n" <> _}}, 2_000

@@ -1,11 +1,11 @@
-defmodule Helyx.Tool.Bash.GroupTest do
-  # The release of the bash tool's handles. A fake kill(1) makes a group that
+defmodule Helyx.Watchdog.GroupTest do
+  # The release of the handles of `Helyx.Watchdog`. A fake kill(1) makes a group that
   # survives KILL testable without an unkillable OS process.
   use ExUnit.Case, async: true
 
-  import Helyx.Tool.Bash.OSHelpers, only: [group_gone_within?: 2]
+  import Helyx.Test.OSHelpers, only: [group_gone_within?: 2]
 
-  alias Helyx.Tool.Bash.Group
+  alias Helyx.Watchdog.Group
 
   defp deadline(ms), do: System.monotonic_time(:millisecond) + ms
 

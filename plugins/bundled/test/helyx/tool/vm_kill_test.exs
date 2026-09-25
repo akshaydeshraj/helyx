@@ -5,7 +5,7 @@ defmodule Helyx.Tool.Bash.VMKillTest do
   # session; the second boot takes seconds, so this file is not async.
   use ExUnit.Case, async: false
 
-  import Helyx.Tool.Bash.OSHelpers
+  import Helyx.Test.OSHelpers
 
   @moduletag timeout: 120_000
 
