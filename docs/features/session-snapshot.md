@@ -27,7 +27,7 @@ The server owns the state, and the client only renders it (`AGENTS.md`, Project)
   turn: nil | %{
     id: String.t(),
     partial: Helyx.Message.t() | nil,   # the assistant message so far, as Turn.assistant_message/2 builds it
-    running: [String.t()]               # tool call ids still to answer, the head running
+    running: [String.t()]               # ids of the tool calls that have started and have no result yet
   },
   model: String.t(),
   queue: %{steers: non_neg_integer(), follow_ups: non_neg_integer()}
@@ -44,7 +44,8 @@ The session sends its events from its own process in `seq` order, and the snapsh
 
 `Helyx.TUI.ViewModel`:
 
-- `ViewModel.from_snapshot(snapshot)` builds the cells from the messages with the same cell shapes as the live events: text, thinking, and each tool call with its result. A tool call with no result in `messages` (only possible in `turn`) is an open tool cell.
+- `ViewModel.from_snapshot(snapshot)` builds the cells from the messages with the same cell shapes as the live events: text, thinking, and each tool call with its result. An open tool cell is made only for a call in `turn.running`. A live client adds a tool cell at `tool_execution_start`, and a local turn starts its calls one at a time (an external turn starts them all at once), so a call that has not started has no cell in either client. It is still in the copied assistant message, and its cell comes with its start event.
+- The rule: the view model from a snapshot at `seq` equals the view model folded from every event up to `seq`. So a late client and a client that watched from the start show the same screen (owner decision, 2026-09-26).
 - When `messages` is not empty, a notice cell "resumed session" follows the history. The model comes from the snapshot.
 - The view model keeps `seq`, and `apply/2` drops an event with `seq <= seq`.
 
@@ -58,7 +59,7 @@ Callers of `subscribe/1` change from `:ok = ` to `{:ok, _} = ` or use the snapsh
 | snapshot call | `GenServer.call` with the default 5,000 ms timeout. The session never blocks on a call (#93), so the wait is the time to build and copy the reply | `Helyx.Session.subscribe/1` | the caller exits with a timeout, as for every other session call |
 | TUI render of the history | the same as live cells: one cell for each message, tool call, and notice. The render bounds of the TUI (wrap, scrollback) apply unchanged | `Helyx.TUI.ViewModel` | n/a |
 
-Tests: a subscribe during a running turn with events before and after the snapshot shows each event once; a subscribe after a resume shows the history cells; a subscribe to a session with no events has `seq` 0 and no notice.
+Tests: for a local turn with three tool calls, a subscribe while the first call runs gives the same view model as the fold of every event up to the snapshot, and each later call gets one cell when it starts; the same for an external turn; a subscribe during a running turn with events before and after the snapshot shows each event once; a subscribe after a resume shows the history cells; a subscribe to a session with no events has `seq` 0 and no notice.
 
 ## Ownership
 
