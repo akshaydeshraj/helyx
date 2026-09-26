@@ -82,3 +82,8 @@ No findings.
 ### Failure path
 
 One finding, reproduced and fixed. The added sentence "A call with no result at the end gets an `aborted` result" holds only when the call ends with `done`. When a turn fails, ends with no terminal, or is steered while a message is open, the partial message is dropped with its calls (the checklist line "A partial assistant message from a failed turn is not added to the transcript"). The sentence is removed. The `message_end` bullet of the same moduledoc states the exact rule. After the removal, `lib/helyx/interfaces/provider.ex` is the text that round 2 reviewed. The only change after round 2 is the test name, so no code needs a new review.
+
+## Orchestrator
+
+- Codex adversarial review, round 1: approve, 0 findings.
+- Accepted: the rejected round 1 finding (a provider with only `kind/0` gets a local turn), because the design removes the old names with no alias and no module in the repo defines `kind/0`.
