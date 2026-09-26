@@ -60,3 +60,10 @@ The fix diff without tests and Markdown: 0 lines. Reduced round: spec and failur
 
 - Spec: no findings. Nit, fixed: the measured figure depends on the module names, and the row gave no bound for the whole error. The row now names the case and states about 28,700 bytes for the whole error.
 - Failure path: no findings. Every code point was inspected: no string escape is longer than 6 bytes, and no module name character longer than 8 bytes. No output held a control byte.
+
+## Orchestrator
+
+- Codex adversarial review, round 1: no finding. The base did not change after the precommit run of the worker.
+- Accepted: the start errors are named `invalid_provider_id` and `duplicate_provider_id`, so the removed `bad_provider_id` does not come back with a new meaning.
+- Accepted: the new start errors print through the `inspect/1` fallback of `CodingAgent.error_text/1`, as the other Core start errors do. The tuple names the plugin.
+- Older than this change: a killed sessions Registry stops Core with `:shutdown`. Reproduced on master (27be8aa) and recorded on #116.
