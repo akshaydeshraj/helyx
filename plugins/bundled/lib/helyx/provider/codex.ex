@@ -157,8 +157,11 @@ defmodule Helyx.Provider.Codex do
 
   defp next(%{done?: true} = state), do: HarnessIO.drain(state)
 
-  # The port's own exit signal is not a stop: its exit status says it all.
-  # Any other exit signal is the hands' shutdown (or their death).
+  # The port's own `:normal` exit signal is not a stop: its exit status
+  # says it all. A port that closes on an error, such as `:epipe` from a
+  # write to a watchdog that died after the go-ahead (#167), sends no exit
+  # status, so that exit is the run's end. Any other exit signal is the
+  # hands' shutdown (or their death).
   defp next(%{port: port} = state) do
     if HarnessIO.overdue?(state),
       do: {[], %{state | done?: true}},
@@ -169,7 +172,8 @@ defmodule Helyx.Provider.Codex do
     receive do
       {^port, {:data, data}} -> data |> HarnessIO.lines(state, &in_order/2) |> settle()
       {^port, {:exit_status, status}} -> settle(exited(status, %{state | port: nil}))
-      {:EXIT, ^port, _reason} -> {[], state}
+      {:EXIT, ^port, :normal} -> {[], state}
+      {:EXIT, ^port, reason} -> settle(exited(reason, %{state | port: nil}))
       {:EXIT, _from, reason} -> interrupt(state, reason)
     after
       HarnessIO.wait(state) -> {[], %{state | done?: true}}

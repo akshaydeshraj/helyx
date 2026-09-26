@@ -91,13 +91,23 @@ defmodule Helyx.Provider.ClaudeCode do
   # or nil for a fresh one. `open?` is true while the current assistant
   # message has content that no `message_end` closed, and `calls?` when that
   # content has a tool call. `terminal` holds the result until the exit.
+  #
+  # The run does not trap exits, so a shutdown of the hands ends it at once
+  # in every phase. A write to a watchdog that died after the go-ahead
+  # closes the port with `:epipe` (#167), so the port's link moves to a
+  # keeper before the input goes (`HarnessIO.keep_port/1`). The input is
+  # its own write, ended by a NUL.
   defp start(run, resume) do
     {input, cut} = input(run.messages, resume)
     argv = ["/bin/sh", "-c", ~S(exec "$0" "$@" 2>/dev/null), run.exe | flags(run.model, resume)]
 
-    state = %State{run: run, resume: resume, cut: cut}
+    state =
+      argv
+      |> HarnessIO.start(run.cwd, :open, %State{run: run, resume: resume, cut: cut})
+      |> HarnessIO.keep_port()
 
-    HarnessIO.start(argv, run.cwd, IO.iodata_to_binary(input), state)
+    if state.terminal == nil, do: HarnessIO.write(state, [input, <<0>>])
+    state
   end
 
   # `--model=` and `--resume=` keep a value that starts with a dash a value.
@@ -111,7 +121,10 @@ defmodule Helyx.Provider.ClaudeCode do
 
   # Before the result the wait is the program's own loop, which an abort
   # ends; after it, one exit wait from the terminal, whatever the program
-  # still writes.
+  # still writes. A write to a watchdog that died after the go-ahead
+  # closes the port with `:epipe` and no exit status (#167), so the port's
+  # `:DOWN` is the run's end. A `:DOWN` of another port is from a lost
+  # run, whose port is closed.
   defp next(%{port: port} = state) do
     if HarnessIO.overdue?(state), do: exit_timeout(state), else: receive_next(port, state)
   end
@@ -120,6 +133,8 @@ defmodule Helyx.Provider.ClaudeCode do
     receive do
       {^port, {:data, data}} -> HarnessIO.lines(data, state, &translate/2)
       {^port, {:exit_status, status}} -> exited(status, %{state | port: nil})
+      {:DOWN, _ref, :port, ^port, reason} -> exited(reason, %{state | port: nil})
+      {:DOWN, _ref, :port, _port, _reason} -> {[], state}
     after
       HarnessIO.wait(state) -> exit_timeout(state)
     end

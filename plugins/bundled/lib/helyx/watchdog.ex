@@ -351,8 +351,8 @@ defmodule Helyx.Watchdog do
   # Writes to the watchdog's stdin. A port whose watchdog already died is
   # closed and the write raises; the exit status is still in the mailbox for
   # the caller's read. A watchdog that died while the port is open makes
-  # the write close the port with `:epipe`: the go-ahead handles that, a
-  # later write does not (#167).
+  # the write close the port with `:epipe`: the go-ahead handles that, and
+  # the harness providers' read loops handle a later write (#167).
   def write(port, data) do
     Port.command(port, data)
   rescue
