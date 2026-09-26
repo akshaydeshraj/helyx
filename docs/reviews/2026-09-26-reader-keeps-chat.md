@@ -44,3 +44,8 @@ No blocking findings. Fixed: the no-provider test now also asserts that `Helyx.S
 ### Failure path
 
 No reproduced findings. A throwaway probe through `Session.File.resume/2` checked a bad model after a valid label (resume of the harness session gives nil), a `provider: null` entry followed by valid entries (the labels come back with the right counts), a 257-byte multibyte id and ids of type integer, list, map, and boolean (each removes the stale label), and a usage integer of 400 digits (still capped). No duplicate check: the id rule now runs in one place.
+
+## Orchestrator
+
+- Codex adversarial review, round 1: approve, 0 findings.
+- Accepted: the test at the old `file_test.exs:335` stays a rejection test, because it tests `tool_call_id`, which keeps its check; the ticket listed it by mistake.
