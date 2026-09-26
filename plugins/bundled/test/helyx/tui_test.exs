@@ -76,7 +76,7 @@ defmodule Helyx.TUITest do
   alias ExRatatui.Layout.Rect
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.Paragraph
-  alias Helyx.{Event, Session}
+  alias Helyx.{Event, Message, Session}
   alias Helyx.Provider.Fake
   alias Helyx.TUI
   alias Helyx.TUI.ViewModel
@@ -99,7 +99,7 @@ defmodule Helyx.TUITest do
   defp mounted(core, model, responses) do
     :ok = Fake.script(core, model, responses)
     {:ok, session} = Session.start(core, model: "fake/#{model}")
-    {:ok, state} = TUI.mount(session: session, model: "fake/#{model}")
+    {:ok, state} = TUI.mount(session: session)
     state
   end
 
@@ -289,6 +289,44 @@ defmodule Helyx.TUITest do
     assert catch_exit(TUI.handle_info(down, state)) == {:session_down, :killed}
   end
 
+  @tag :tmp_dir
+  test "a resumed session shows its history, then the notice only with resumed: true", %{
+    core: core,
+    tmp_dir: dir
+  } do
+    call = %Message.ToolCall{id: "c1", name: "slow", arguments: %{"ms" => 0, "text" => "slept"}}
+    :ok = Fake.script(core, "history", [[call], ["hello there"]])
+    {:ok, session} = Session.start(core, model: "fake/history", sessions_dir: dir, cwd: dir)
+    {:ok, _} = Session.subscribe(session)
+    :ok = Session.prompt(session, "hi")
+    assert_receive {:helyx_event, %Event{type: :agent_end}}, 1_000
+
+    :ok =
+      DynamicSupervisor.terminate_child(Helyx.Core.session_supervisor(core), Session.pid(session))
+
+    eventually(fn -> Session.pid(session) == nil end)
+
+    {:ok, resumed} = Session.resume(core, sessions_dir: dir, cwd: dir)
+    {:ok, %{vm: vm}} = TUI.mount(session: resumed, resumed: true)
+
+    # The live cell shapes: the user message, the assistant message and its
+    # tool cell with the result, the reply, then the notice.
+    assert [
+             %Message{role: :user},
+             %Message{role: :assistant, content: [^call]},
+             {:tool, ^call, line, %Message{role: :tool_result} = result},
+             %Message{role: :assistant} = reply,
+             {:notice, "resumed session"}
+           ] = vm.cells
+
+    assert line == ViewModel.call_line(call)
+    assert Message.text(result) == "slept"
+    assert Message.text(reply) == "hello there"
+
+    {:ok, %{vm: live}} = TUI.mount(session: resumed)
+    assert live.cells == Enum.drop(vm.cells, -1)
+  end
+
   test "mounting on a dead session exits instead of hanging", %{core: core} do
     :ok = Fake.script(core, "dead", [])
     {:ok, session} = Session.start(core, model: "fake/dead")
@@ -301,7 +339,7 @@ defmodule Helyx.TUITest do
     # The Registry drops the dead entry asynchronously.
     eventually(fn -> Session.pid(session) == nil end)
 
-    assert catch_exit(TUI.mount(session: session, model: "fake/dead")) ==
+    assert catch_exit(TUI.mount(session: session)) ==
              {:session_down, :noproc}
   end
 
@@ -540,7 +578,7 @@ defmodule Helyx.TUITest do
     end
 
     defp fold(state, type, data) do
-      event = %Event{type: type, session_id: "s", turn_id: "t", seq: 0, data: data}
+      event = %Event{type: type, session_id: "s", turn_id: "t", seq: state.vm.seq + 1, data: data}
       {:noreply, state} = TUI.handle_info({:helyx_event, event}, state)
       state
     end
@@ -550,7 +588,7 @@ defmodule Helyx.TUITest do
       {:ok, session} = Session.start(core, model: "fake/scroll")
 
       {:ok, state} =
-        TUI.mount(session: session, model: "fake/scroll", terminal_size_fn: &size/0)
+        TUI.mount(session: session, terminal_size_fn: &size/0)
 
       Enum.reduce(1..count//1, state, &say(&2, "m#{&1}"))
     end

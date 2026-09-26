@@ -24,14 +24,20 @@ defmodule Helyx.TUI.ViewModel do
   `streaming` is the open assistant message as a reversed block list, newest
   first — the session's convention, shared through `Helyx.Message.add_block/2`
   — or nil when none is streaming.
+
+  `seq` is the seq of the last event in the view model: `apply/2` drops an
+  event at or below it, so an event that `from_snapshot/1` already holds
+  does not show twice.
   """
 
   alias Helyx.{Event, Message}
+  alias Helyx.Session.Snapshot
 
   # The cut of an error notice or a tool call line (`cut_line/1`).
   @render_max_bytes 8_192
 
   defstruct model: nil,
+            seq: 0,
             cells: [],
             streaming: nil,
             running?: false,
@@ -45,6 +51,7 @@ defmodule Helyx.TUI.ViewModel do
 
   @type t :: %__MODULE__{
           model: String.t(),
+          seq: non_neg_integer(),
           cells: [cell()],
           streaming: [Message.block()] | nil,
           running?: boolean(),
@@ -62,9 +69,12 @@ defmodule Helyx.TUI.ViewModel do
   shape is a bug in Core and crashes the TUI.
   """
   @spec apply(t(), Event.t()) :: t()
-  def apply(vm, %Event{type: :agent_start}), do: %{vm | running?: true}
+  def apply(%__MODULE__{seq: seq} = vm, %Event{seq: event_seq}) when event_seq <= seq, do: vm
+  def apply(vm, %Event{seq: seq} = event), do: fold(%{vm | seq: seq}, event)
 
-  def apply(vm, %Event{type: :agent_end, data: data}) do
+  defp fold(vm, %Event{type: :agent_start}), do: %{vm | running?: true}
+
+  defp fold(vm, %Event{type: :agent_end, data: data}) do
     vm = %{vm | running?: false, streaming: nil}
 
     case data do
@@ -81,57 +91,57 @@ defmodule Helyx.TUI.ViewModel do
 
   # The TUI shows a turn only through its messages, and a user message
   # when it ends.
-  def apply(vm, %Event{type: type}) when type in [:turn_start, :turn_end], do: vm
-  def apply(vm, %Event{type: :message_start, data: %{message: %Message{role: :user}}}), do: vm
+  defp fold(vm, %Event{type: type}) when type in [:turn_start, :turn_end], do: vm
+  defp fold(vm, %Event{type: :message_start, data: %{message: %Message{role: :user}}}), do: vm
 
-  def apply(vm, %Event{type: :message_start, data: %{message: %Message{role: :assistant}}}) do
+  defp fold(vm, %Event{type: :message_start, data: %{message: %Message{role: :assistant}}}) do
     %{vm | streaming: []}
   end
 
-  def apply(vm, %Event{type: :message_update, data: %{text_delta: delta}}) do
+  defp fold(vm, %Event{type: :message_update, data: %{text_delta: delta}}) do
     stream(vm, {:text_delta, delta})
   end
 
-  def apply(vm, %Event{type: :message_update, data: %{thinking_delta: delta}}) do
+  defp fold(vm, %Event{type: :message_update, data: %{thinking_delta: delta}}) do
     stream(vm, {:thinking_delta, delta})
   end
 
-  def apply(vm, %Event{type: :message_update, data: %{tool_call: %Message.ToolCall{} = call}}) do
+  defp fold(vm, %Event{type: :message_update, data: %{tool_call: %Message.ToolCall{} = call}}) do
     stream(vm, {:tool_call, call})
   end
 
-  def apply(vm, %Event{type: :message_end, data: %{message: %Message{role: :user} = message}}) do
+  defp fold(vm, %Event{type: :message_end, data: %{message: %Message{role: :user} = message}}) do
     add_cell(vm, message)
   end
 
-  def apply(vm, %Event{type: :message_end, data: %{message: %Message{role: :assistant} = message}}) do
+  defp fold(vm, %Event{type: :message_end, data: %{message: %Message{role: :assistant} = message}}) do
     add_cell(%{vm | streaming: nil}, message)
   end
 
-  def apply(vm, %Event{
-        type: :tool_execution_start,
-        data: %{tool_call: %Message.ToolCall{} = call}
-      }) do
+  defp fold(vm, %Event{
+         type: :tool_execution_start,
+         data: %{tool_call: %Message.ToolCall{} = call}
+       }) do
     add_cell(vm, {:tool, call, call_line(call), nil})
   end
 
-  def apply(vm, %Event{
-        type: :tool_execution_end,
-        data: %{message: %Message{role: :tool_result} = result}
-      }) do
+  defp fold(vm, %Event{
+         type: :tool_execution_end,
+         data: %{message: %Message{role: :tool_result} = result}
+       }) do
     %{vm | cells: attach_result(vm.cells, result)}
   end
 
-  def apply(vm, %Event{type: :queue_update, data: %{steers: steers, follow_ups: follow_ups}}) do
+  defp fold(vm, %Event{type: :queue_update, data: %{steers: steers, follow_ups: follow_ups}}) do
     %{vm | queue: %{steers: steers, follow_ups: follow_ups}}
   end
 
-  def apply(vm, %Event{type: :model_change, data: %{model: model}}), do: %{vm | model: model}
+  defp fold(vm, %Event{type: :model_change, data: %{model: model}}), do: %{vm | model: model}
 
-  def apply(vm, %Event{
-        type: :harness_session,
-        data: %{provider: provider, lost: lost, cut: cut}
-      }) do
+  defp fold(vm, %Event{
+         type: :harness_session,
+         data: %{provider: provider, lost: lost, cut: cut}
+       }) do
     vm = if lost, do: add_cell(vm, {:notice, lost_text(provider)}), else: vm
 
     if cut > 0,
@@ -141,6 +151,101 @@ defmodule Helyx.TUI.ViewModel do
           {:notice, "#{provider} got the transcript without its #{cut} oldest messages"}
         ),
       else: vm
+  end
+
+  @doc """
+  The view model of a session from its snapshot. Its cells are the
+  transcript cells that the fold of every event up to `snapshot.seq` makes:
+  each message makes the cell its events make live, and after an assistant
+  message comes a closed tool cell for each of its calls that has a
+  result. Notices and the partial reply of an aborted or failed turn are
+  not in the transcript, so a snapshot has none of them.
+
+  The started calls are the first calls with no result, in call order: a
+  local turn runs its calls one at a time, and an external turn starts
+  them all. So the first `length(turn.running)` calls with no result get
+  open cells, by position. A call that has not started has no cell yet,
+  also when it has the id of a running call; it gets one from its
+  `tool_execution_start`.
+
+  One accepted limit (`docs/features/session-snapshot.md`): a call that
+  never started has an `aborted` result in the transcript after an abort,
+  after a failed turn, or at the normal end of an external turn whose last
+  message has calls. So it shows a closed cell here, although a live
+  client showed none.
+  """
+  @spec from_snapshot(Snapshot.t()) :: t()
+  def from_snapshot(%Snapshot{messages: messages, turn: turn} = snapshot) do
+    %__MODULE__{
+      model: snapshot.model,
+      seq: snapshot.seq,
+      cells: history(messages, started(turn)),
+      streaming: streaming(turn),
+      running?: turn != nil,
+      queue: snapshot.queue
+    }
+  end
+
+  # The number of started calls with no result.
+  defp started(nil), do: 0
+  defp started(%{running: ids}), do: length(ids)
+
+  defp streaming(%{partial: %Message{content: content}}), do: Enum.reverse(content)
+  defp streaming(_no_partial), do: nil
+
+  defp history(messages, started) do
+    messages
+    |> Enum.flat_map_reduce({results_in_call_order(messages), started}, fn
+      %Message{role: :assistant, content: content} = message, {results, open_left} ->
+        calls = for %Message.ToolCall{} = call <- content, do: call
+        {mine, rest} = Enum.split(results, length(calls))
+        {cells, open_left} = tool_cells(calls, mine, open_left)
+        {[message | cells], {rest, open_left}}
+
+      %Message{role: :user} = message, acc ->
+        {[message], acc}
+
+      %Message{role: :tool_result}, acc ->
+        {[], acc}
+    end)
+    |> elem(0)
+  end
+
+  # The result of each tool call of the history, or nil, in call order: a
+  # result answers the first still-open earlier call with its id, the rule
+  # of `Helyx.Session.Transcript.open_calls/1`. One pass over the history,
+  # with one map entry per call.
+  defp results_in_call_order(messages) do
+    {results, _open, count} =
+      Enum.reduce(messages, {%{}, %{}, 0}, fn
+        %Message{role: :assistant, content: content}, acc ->
+          for %Message.ToolCall{id: id} <- content, reduce: acc do
+            {results, open, index} ->
+              {results, Map.update(open, id, [index], &(&1 ++ [index])), index + 1}
+          end
+
+        %Message{role: :tool_result, tool_call_id: id} = result, {results, open, index} ->
+          case Map.get(open, id, []) do
+            [] -> {results, open, index}
+            [call | rest] -> {Map.put(results, call, result), Map.put(open, id, rest), index}
+          end
+
+        %Message{role: :user}, acc ->
+          acc
+      end)
+
+    for index <- 0..(count - 1)//1, do: Map.get(results, index)
+  end
+
+  # A call with a result gets a closed cell; the next `open_left` calls
+  # with no result get open cells; a call that has not started gets none.
+  defp tool_cells(calls, results, open_left) do
+    Enum.zip(calls, results)
+    |> Enum.flat_map_reduce(open_left, fn
+      {_call, nil}, 0 -> {[], 0}
+      {call, nil}, open_left -> {[{:tool, call, call_line(call), nil}], open_left - 1}
+      {call, result}, open_left -> {[{:tool, call, call_line(call), result}], open_left}
+    end)
   end
 
   @doc "Adds a notice from the client itself, such as a rejected command."
@@ -199,20 +304,22 @@ defmodule Helyx.TUI.ViewModel do
 
   defp add_cell(vm, cell), do: %{vm | cells: vm.cells ++ [cell]}
 
-  # The result goes to the newest open tool cell with the same call id,
-  # wherever it is: a notice can arrive while the tool runs (#83). A cell
-  # that has a result never changes. A result that matches no open cell (an
-  # abort answering a call that never started) changes nothing. The search
-  # is one pass over the cells for each result.
+  # The result goes to the oldest open tool cell with the same call id,
+  # wherever it is: a notice can arrive while the tool runs (#83). This is
+  # the rule of the session and of `from_snapshot/1`: an external turn can
+  # start two calls with one id, and the first result answers the first
+  # call. A cell that has a result never changes. A result that matches no
+  # open cell (an `aborted` result for a call that never started) changes
+  # nothing. The search is one pass over the cells for each result.
   defp attach_result(cells, %Message{tool_call_id: id} = result) do
     open? = &match?({:tool, %Message.ToolCall{id: ^id}, _line, nil}, &1)
 
-    case Enum.find_index(Enum.reverse(cells), open?) do
+    case Enum.find_index(cells, open?) do
       nil ->
         cells
 
       index ->
-        List.update_at(cells, -1 - index, fn {:tool, call, line, nil} ->
+        List.update_at(cells, index, fn {:tool, call, line, nil} ->
           {:tool, call, line, result}
         end)
     end

@@ -63,9 +63,45 @@ defmodule Helyx.SessionTest do
     end
   end
 
+  test "subscribe returns the empty state of a new session", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/ok")
+
+    assert {:ok,
+            %Helyx.Session.Snapshot{
+              seq: 0,
+              messages: [],
+              turn: nil,
+              model: "test/ok",
+              queue: %{steers: 0, follow_ups: 0}
+            }} = Session.subscribe(session)
+  end
+
+  test "a snapshot of a local turn lists only the running call", %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/abort")
+    {:ok, _} = Session.subscribe(session)
+    :ok = Session.prompt(session, "go")
+
+    %Event{seq: seq} =
+      List.last(collect_until(:tool_execution_start))
+
+    # A second client subscribes during the turn; the test process already
+    # has its registration.
+    test = self()
+    pid = spawn(fn -> send(test, {:snapshot, self(), Session.subscribe(session)}) end)
+
+    assert_receive {:snapshot, ^pid, {:ok, snapshot}}
+    assert %{seq: ^seq, turn: %{partial: nil, running: ["1"]}} = snapshot
+
+    assert [%Helyx.Message{role: :user}, %Helyx.Message{role: :assistant, content: calls}] =
+             snapshot.messages
+
+    assert Enum.map(calls, & &1.id) == ["1", "2", "3"]
+    :ok = Session.abort(session)
+  end
+
   test "a stream that ends without a terminal event ends the turn with an error", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/empty")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -79,7 +115,7 @@ defmodule Helyx.SessionTest do
   @tag :capture_log
   test "a task crash fails the turn and the session accepts the next prompt", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/crash")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -94,7 +130,7 @@ defmodule Helyx.SessionTest do
   # pulls past the error; the fixture's tail raises on a drain.
   test "an error event fails the turn without pulling the stream further", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/error_tail")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -107,7 +143,7 @@ defmodule Helyx.SessionTest do
 
   test "consumption stops at the first terminal event", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/overrun")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -119,7 +155,7 @@ defmodule Helyx.SessionTest do
   @tag :capture_log
   test "a failure after deltas closes the partial message with an error", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/crash")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -141,7 +177,7 @@ defmodule Helyx.SessionTest do
 
   test "thinking, text, and tool call events build one assistant message in order", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/blocks")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -173,7 +209,7 @@ defmodule Helyx.SessionTest do
   describe "harness events (#10)" do
     defp harness_turn(core, model) do
       {:ok, session} = Session.start(core, model: "harness/#{model}")
-      :ok = Session.subscribe(session)
+      {:ok, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
       collect_until(:agent_end)
     end
@@ -267,7 +303,7 @@ defmodule Helyx.SessionTest do
          %{core: core} do
       for {model, bytes} <- [{"result_65537", 65_537}, {"result_multibyte", 65_537}] do
         {:ok, session} = Session.start(core, model: "harness/#{model}")
-        :ok = Session.subscribe(session)
+        {:ok, _} = Session.subscribe(session)
         :ok = Session.prompt(session, "hello")
         events = collect_until(:agent_end)
 
@@ -296,7 +332,7 @@ defmodule Helyx.SessionTest do
     test "a call with no result at done gets its aborted result before the last message",
          %{core: core} do
       {:ok, session} = Session.start(core, model: "harness/open_call")
-      :ok = Session.subscribe(session)
+      {:ok, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
       collect_until(:agent_end)
 
@@ -312,7 +348,7 @@ defmodule Helyx.SessionTest do
     test "a new message gives the open calls their aborted results, and a late result is dropped",
          %{core: core} do
       {:ok, session} = Session.start(core, model: "harness/late_result")
-      :ok = Session.subscribe(session)
+      {:ok, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
       collect_until(:agent_end)
       transcript = :sys.get_state(Session.pid(session)).transcript
@@ -345,7 +381,7 @@ defmodule Helyx.SessionTest do
 
     test "a model provider that sends a harness event fails the turn", %{core: core} do
       {:ok, session} = Session.start(core, model: "test/harness_event")
-      :ok = Session.subscribe(session)
+      {:ok, _} = Session.subscribe(session)
       :ok = Session.prompt(session, "hello")
 
       assert {:bad_stream_event, {:message_end, :end_turn, %{}}} =
@@ -361,7 +397,7 @@ defmodule Helyx.SessionTest do
           wide_int: {:text_delta, "hello", "integer of more than 100 digits removed"}
         ] do
       {:ok, session} = Session.start(core, model: "test/#{model}")
-      :ok = Session.subscribe(session)
+      {:ok, _} = Session.subscribe(session)
 
       :ok = Session.prompt(session, "hello")
       events = collect_until(:agent_end)
@@ -374,7 +410,7 @@ defmodule Helyx.SessionTest do
 
   test "a prompt during a turn is rejected", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/ok")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert {:error, :turn_running} = Session.prompt(session, "again")
@@ -384,7 +420,7 @@ defmodule Helyx.SessionTest do
   test "an error reason from a provider holds no integer over the digit limit", %{core: core} do
     for model <- ["error_int", "refuse_int"] do
       {:ok, session} = Session.start(core, model: "test/#{model}")
-      :ok = Session.subscribe(session)
+      {:ok, _} = Session.subscribe(session)
 
       :ok = Session.prompt(session, "hello")
       error = List.last(collect_until(:agent_end)).data.error
@@ -396,7 +432,7 @@ defmodule Helyx.SessionTest do
        %{core: core} do
     for model <- ["struct_usage", "struct_args"] do
       {:ok, session} = Session.start(core, model: "test/#{model}")
-      :ok = Session.subscribe(session)
+      {:ok, _} = Session.subscribe(session)
 
       :ok = Session.prompt(session, "hello")
       events = collect_until(:agent_end)
@@ -410,7 +446,7 @@ defmodule Helyx.SessionTest do
 
   test "a done payload that is a struct with the large integer ends the turn", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/struct_done")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -428,7 +464,7 @@ defmodule Helyx.SessionTest do
     start_supervised!({Helyx.Core, name: core, plugins: plugins})
 
     {:ok, session} = Session.start(core, model: "test/system")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert final_text(collect_until(:agent_end)) == "built for #{File.cwd!()}, compacted"
@@ -436,7 +472,7 @@ defmodule Helyx.SessionTest do
 
   test "without model context and compaction plugins the context is unchanged", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/system")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert final_text(collect_until(:agent_end)) == "no system"
@@ -444,7 +480,7 @@ defmodule Helyx.SessionTest do
 
   test "the hands report the registered tools and the provider sees them", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/tools")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert final_text(collect_until(:agent_end)) == "binary,hold,kill,slow,upcase"
@@ -454,7 +490,7 @@ defmodule Helyx.SessionTest do
     core: core
   } do
     {:ok, session} = Session.start(core, model: "test/loop")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -479,7 +515,7 @@ defmodule Helyx.SessionTest do
     dir = Path.join(System.tmp_dir!(), "helyx_big_int_#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm_rf!(dir) end)
     {:ok, session} = Session.start(core, model: "test/big_int", sessions_dir: dir)
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     # One encode of the 400,000 digits takes seconds. collect_until/1 waits
@@ -518,7 +554,7 @@ defmodule Helyx.SessionTest do
   test "a rejected call gets an error result with its reason; the text and the good call stay",
        %{core: core} do
     {:ok, session} = Session.start(core, model: "test/rejected")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -548,7 +584,7 @@ defmodule Helyx.SessionTest do
 
   test "tool calls run one at a time, in call order", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/serial")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -574,7 +610,7 @@ defmodule Helyx.SessionTest do
 
   test "a tool call with a bad field shape is a malformed stream event", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/bad_call")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -585,7 +621,7 @@ defmodule Helyx.SessionTest do
 
   test "a stop reason outside the format's set is a malformed stream event", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/bad_stop")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -598,7 +634,7 @@ defmodule Helyx.SessionTest do
     core: core
   } do
     {:ok, session} = Session.start(core, model: "test/bad_args")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -612,7 +648,7 @@ defmodule Helyx.SessionTest do
     tmp_dir: dir
   } do
     {:ok, session} = Session.start(core, model: "test/recover", sessions_dir: dir)
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -631,7 +667,7 @@ defmodule Helyx.SessionTest do
     core: core
   } do
     {:ok, session} = Session.start(core, model: "test/binary")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -647,7 +683,7 @@ defmodule Helyx.SessionTest do
 
   test "a tool Task that dies gives an error result and the loop continues", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/kill")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -665,7 +701,7 @@ defmodule Helyx.SessionTest do
 
   test "abort during tool calls ends the turn and answers every open call", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/abort")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert_receive {:helyx_event, %Event{type: :tool_execution_start} = started}, 1_000
@@ -692,7 +728,7 @@ defmodule Helyx.SessionTest do
 
   test "abort during the provider stream closes the partial message", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/hang")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert_receive {:helyx_event, %Event{type: :message_update}}, 1_000
@@ -712,7 +748,7 @@ defmodule Helyx.SessionTest do
 
   test "abort with no running turn is ok", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/ok")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     assert :ok = Session.abort(session)
     refute_receive {:helyx_event, _}, 50
@@ -737,7 +773,7 @@ defmodule Helyx.SessionTest do
   @tag :capture_log
   test "killing the session kills the provider Task", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/hang")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "hello")
     assert_receive {:helyx_event, %Event{type: :message_update}}, 1_000
 
@@ -750,7 +786,7 @@ defmodule Helyx.SessionTest do
   @tag :capture_log
   test "killing the session kills the hands and the tool Task", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/abort")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "go")
     assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
 
@@ -784,7 +820,7 @@ defmodule Helyx.SessionTest do
     core: core
   } do
     {:ok, session} = Session.start(core, model: "test/steer")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
@@ -816,7 +852,7 @@ defmodule Helyx.SessionTest do
 
   test "a follow-up during a turn starts a new turn after agent_end", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/ok")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     :ok = Session.follow_up(session, "next")
@@ -834,7 +870,7 @@ defmodule Helyx.SessionTest do
 
   test "a steer left at turn end starts a new turn", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/ok")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     :ok = Session.steer(session, "later")
@@ -846,7 +882,7 @@ defmodule Helyx.SessionTest do
 
   test "a steer or follow-up with no turn running starts a turn at once", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/ok")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.follow_up(session, "go")
     events = collect_until(:agent_end)
@@ -860,7 +896,7 @@ defmodule Helyx.SessionTest do
 
   test "abort drops queued steers and follow-ups", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/abort")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
@@ -880,7 +916,7 @@ defmodule Helyx.SessionTest do
 
   test "a full queue rejects the next steer or follow-up", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/abort")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
@@ -914,7 +950,7 @@ defmodule Helyx.SessionTest do
     tmp_dir: dir
   } do
     {:ok, session} = Session.start(core, model: "test/blocks", sessions_dir: dir)
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     collect_until(:agent_end)
@@ -945,7 +981,7 @@ defmodule Helyx.SessionTest do
     tmp_dir: dir
   } do
     {:ok, session} = Session.start(core, model: "test/transcript", sessions_dir: dir)
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert final_text(collect_until(:agent_end)) == "user:hello"
@@ -954,7 +990,7 @@ defmodule Helyx.SessionTest do
 
     {:ok, resumed} = Session.resume(core, sessions_dir: dir)
     assert resumed.id == session.id
-    :ok = Session.subscribe(resumed)
+    {:ok, _} = Session.subscribe(resumed)
 
     :ok = Session.prompt(resumed, "again")
 
@@ -1046,7 +1082,7 @@ defmodule Helyx.SessionTest do
   @tag :capture_log
   test "resume after a crash mid-turn answers every open tool call", %{core: core, tmp_dir: dir} do
     {:ok, session} = Session.start(core, model: "test/abort", sessions_dir: dir)
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
@@ -1054,7 +1090,7 @@ defmodule Helyx.SessionTest do
     stop_session(core, session, &Process.exit(&1, :kill))
 
     {:ok, resumed} = Session.resume(core, sessions_dir: dir)
-    :ok = Session.subscribe(resumed)
+    {:ok, _} = Session.subscribe(resumed)
 
     :ok = Session.prompt(resumed, "again")
     assert final_text(collect_until(:agent_end)) == "aborted|aborted|aborted"
@@ -1062,7 +1098,7 @@ defmodule Helyx.SessionTest do
 
   test "a delta that is not valid UTF-8 is a malformed stream event", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/raw_bytes")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -1071,7 +1107,7 @@ defmodule Helyx.SessionTest do
 
   test "a tool call that is not valid UTF-8 is a malformed stream event", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/raw_call")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -1080,7 +1116,7 @@ defmodule Helyx.SessionTest do
 
   test "a prompt that is not valid UTF-8 is rejected and the session lives", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/ok")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     assert {:error, :invalid_utf8} = Session.prompt(session, <<255, 254>>)
 
@@ -1092,7 +1128,7 @@ defmodule Helyx.SessionTest do
   @tag :capture_log
   test "a write failure turns persistence off and the session lives", %{core: core, tmp_dir: dir} do
     {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     File.rm_rf!(dir)
 
@@ -1214,7 +1250,7 @@ defmodule Helyx.SessionTest do
       on_exit(fn -> :persistent_term.erase({Counted, :observer}) end)
       core = start_core([Helyx.Test.Provider, Counted])
       {:ok, session} = Session.start(core, model: "test/ok")
-      :ok = Session.subscribe(session)
+      {:ok, _} = Session.subscribe(session)
 
       for text <- ["one", "two"] do
         :ok = Session.prompt(session, text)
@@ -1340,7 +1376,7 @@ defmodule Helyx.SessionTest do
   @tag :tmp_dir
   test "a working directory that is gone gives an error result", %{core: core, tmp_dir: dir} do
     {:ok, session} = Session.start(core, model: "test/loop", cwd: Path.join(dir, "gone"))
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "hello")
     events = collect_until(:agent_end)
@@ -1350,7 +1386,7 @@ defmodule Helyx.SessionTest do
   describe "set_model/2" do
     test "the next turn uses the new provider, and a switch back works", %{core: core} do
       {:ok, session} = Session.start(core, model: "test/ok")
-      :ok = Session.subscribe(session)
+      {:ok, _} = Session.subscribe(session)
 
       :ok = Session.prompt(session, "one")
       first = collect_until(:agent_end)
@@ -1382,7 +1418,7 @@ defmodule Helyx.SessionTest do
       tmp_dir: dir
     } do
       {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
-      :ok = Session.subscribe(session)
+      {:ok, _} = Session.subscribe(session)
       [path] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl"))
       before = File.read!(path)
 
@@ -1412,14 +1448,14 @@ defmodule Helyx.SessionTest do
 
       {:ok, resumed} = Session.resume(core, sessions_dir: dir)
       assert Session.model(resumed) == "other/any"
-      :ok = Session.subscribe(resumed)
+      {:ok, _} = Session.subscribe(resumed)
       :ok = Session.prompt(resumed, "hello")
       assert final_text(collect_until(:agent_end)) == "from other"
     end
 
     test "a switch during a turn takes effect on the next turn", %{core: core} do
       {:ok, session} = Session.start(core, model: "test/steer")
-      :ok = Session.subscribe(session)
+      {:ok, _} = Session.subscribe(session)
 
       :ok = Session.prompt(session, "hello")
       assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
@@ -1440,7 +1476,7 @@ defmodule Helyx.SessionTest do
       tmp_dir: dir
     } do
       {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
-      :ok = Session.subscribe(session)
+      {:ok, _} = Session.subscribe(session)
 
       assert :ok = Session.set_model(session, "test/ok")
       assert_receive {:helyx_event, %Event{type: :model_change, data: %{model: "test/ok"}}}
@@ -1475,7 +1511,7 @@ defmodule Helyx.SessionTest do
     @tag :tmp_dir
     test "a switch still works when the file cannot be written", %{core: core, tmp_dir: dir} do
       {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
-      :ok = Session.subscribe(session)
+      {:ok, _} = Session.subscribe(session)
       [path] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl"))
       header = File.read!(path)
       File.rm!(path)
@@ -1509,7 +1545,7 @@ defmodule Helyx.SessionTest do
     # Starts a turn whose tool call holds a handle that no release confirms.
     defp start_stuck_turn(core) do
       {:ok, session} = Session.start(core, model: "test/stuck")
-      :ok = Session.subscribe(session)
+      {:ok, _} = Session.subscribe(session)
       hands = :sys.get_state(Session.pid(session)).hands
 
       :ok = Session.prompt(session, "go")

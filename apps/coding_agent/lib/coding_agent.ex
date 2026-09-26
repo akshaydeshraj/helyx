@@ -32,9 +32,8 @@ defmodule CodingAgent do
   @spec run(keyword()) :: :ok | {:error, term()}
   def run(opts) do
     with {:ok, _core} <- Helyx.Core.start_link(plugins: @plugins),
-         {:ok, session} <- start_session(opts),
-         {:ok, model} <- fetch_model(session) do
-      result = Helyx.TUI.run(session: session, model: model)
+         {:ok, session} <- start_session(opts) do
+      result = Helyx.TUI.run(session: session, resumed: opts[:resume] == true)
 
       # Quitting mid-turn must not leave shell process groups running after
       # the VM stops; only abort makes the hands kill them and wait. A
@@ -110,14 +109,6 @@ defmodule CodingAgent do
   end
 
   defp sentence(reason), do: inspect(reason)
-
-  # A session that dies right after starting must reach the task's
-  # `{:error, reason}` surface, not exit the VM with a raw dump.
-  defp fetch_model(session) do
-    {:ok, Helyx.Session.model(session)}
-  catch
-    :exit, reason -> {:error, {:session_down, reason}}
-  end
 
   @doc """
   Starts or resumes the session `run/1` uses. Public so tests can drive the

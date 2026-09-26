@@ -113,13 +113,34 @@ defmodule Helyx.TUI.ViewModelTest do
         [{:tool_execution_start, %{tool_call: call}}]
         |> fold()
         |> ViewModel.notice("usage: /model provider/model")
-        |> ViewModel.apply(hd(events([tool_end(result)])))
+        |> ViewModel.apply(%{hd(events([tool_end(result)])) | seq: 2})
 
       assert vm.cells == [
                {:tool, call, ViewModel.call_line(call), result},
                {:notice, "usage: /model provider/model"}
              ]
     end
+  end
+
+  # An external turn starts all calls of a message at once, and a provider
+  # can repeat an id: the first result answers the first call, as in the
+  # session's transcript.
+  test "a result goes to the oldest open tool cell with its id" do
+    read = %Message.ToolCall{id: "t", name: "read", arguments: %{}}
+    bash = %Message.ToolCall{id: "t", name: "bash", arguments: %{}}
+    one = Message.tool_result(read, {:ok, "one"})
+
+    vm =
+      fold([
+        {:tool_execution_start, %{tool_call: read}},
+        {:tool_execution_start, %{tool_call: bash}},
+        tool_end(one)
+      ])
+
+    assert vm.cells == [
+             {:tool, read, ViewModel.call_line(read), one},
+             {:tool, bash, ViewModel.call_line(bash), nil}
+           ]
   end
 
   # The session runs tool calls one at a time (start, end, start, end). The
@@ -166,7 +187,7 @@ defmodule Helyx.TUI.ViewModelTest do
            ]
   end
 
-  test "a result goes to the newest open cell and never replaces a result" do
+  test "a result goes to the oldest open cell and never replaces a result" do
     call = %Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
     first = Message.tool_result(call, {:ok, "first"})
     second = Message.tool_result(call, {:ok, "second"})
@@ -184,11 +205,12 @@ defmodule Helyx.TUI.ViewModelTest do
              {:tool, call, ViewModel.call_line(call), first}
            ]
 
-    # An old cell that stayed open does not take the result of a new call.
+    # Two open cells with one id: the first result answers the first call,
+    # the rule of the session's transcript.
     assert fold([start, start, tool_end(second)]).cells ==
              [
-               {:tool, call, ViewModel.call_line(call), nil},
-               {:tool, call, ViewModel.call_line(call), second}
+               {:tool, call, ViewModel.call_line(call), second},
+               {:tool, call, ViewModel.call_line(call), nil}
              ]
   end
 

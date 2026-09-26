@@ -6,9 +6,9 @@ defmodule Helyx.Session do
   the current turn. Clients subscribe to its events and send prompts.
 
       {:ok, session} = Helyx.Session.start(core, model: "fake/echo")
-      :ok = Helyx.Session.subscribe(session)
+      {:ok, snapshot} = Helyx.Session.subscribe(session)
       :ok = Helyx.Session.prompt(session, "hello")
-      # receive {:helyx_event, %Helyx.Event{}} ...
+      # receive {:helyx_event, %Helyx.Event{}}, drop each seq <= snapshot.seq ...
 
   Each turn runs the provider stream in a Task under Core's task supervisor,
   linked to the session: the session traps exits, so a Task crash stays a
@@ -192,11 +192,18 @@ defmodule Helyx.Session do
     end
   end
 
-  @doc "Subscribes the caller to the session's events, delivered as `{:helyx_event, event}`."
-  @spec subscribe(t()) :: :ok
+  @doc """
+  Subscribes the caller to the session's events, delivered as
+  `{:helyx_event, event}`, and returns the session's state as a
+  `Helyx.Session.Snapshot`. The caller registers first and asks for the
+  snapshot second, so every event after the snapshot reaches it. An event
+  with a `seq` at or below `snapshot.seq` is already in the snapshot; the
+  caller drops it.
+  """
+  @spec subscribe(t()) :: {:ok, Helyx.Session.Snapshot.t()}
   def subscribe(%__MODULE__{id: id, core: core}) do
     {:ok, _} = Registry.register(Helyx.Core.events_registry(core), id, nil)
-    :ok
+    {:ok, GenServer.call(Server.via(core, id), {:snapshot})}
   end
 
   @doc "The pid behind a session handle, or nil when the session is not running."

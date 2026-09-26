@@ -35,7 +35,7 @@ defmodule Helyx.Provider.FakeTest do
 
   test "one prompt runs one turn and emits the loop events in order", %{core: core} do
     {:ok, session} = Session.start(core, model: "fake/echo")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
     :ok = Session.prompt(session, "hello there")
 
     events = collect_until(:agent_end)
@@ -69,7 +69,7 @@ defmodule Helyx.Provider.FakeTest do
   test "a scripted model replays its responses in order", %{core: core} do
     :ok = Fake.script(core, "scripted", [["one"], ["two", " and", " three"]])
     {:ok, session} = Session.start(core, model: "fake/scripted")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "first")
     first = collect_until(:agent_end)
@@ -84,8 +84,8 @@ defmodule Helyx.Provider.FakeTest do
   test "two sessions run at once without interfering", %{core: core} do
     {:ok, a} = Session.start(core, model: "fake/echo")
     {:ok, b} = Session.start(core, model: "fake/echo")
-    :ok = Session.subscribe(a)
-    :ok = Session.subscribe(b)
+    {:ok, _} = Session.subscribe(a)
+    {:ok, _} = Session.subscribe(b)
     :ok = Session.prompt(a, "alpha")
     :ok = Session.prompt(b, "beta")
 
@@ -107,7 +107,7 @@ defmodule Helyx.Provider.FakeTest do
     call = %Helyx.Message.ToolCall{id: "c1", name: "upcase", arguments: %{"text" => "hi"}}
     :ok = Fake.script(core, "caller", [["Calling.", call], ["Done."]])
     {:ok, session} = Session.start(core, model: "fake/caller")
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
 
     :ok = Session.prompt(session, "go")
     events = collect_until(:agent_end)
@@ -127,12 +127,12 @@ defmodule Helyx.Provider.FakeTest do
     :ok = Fake.script(core, "bad", [[42]])
     :ok = Fake.script(core, "good", [["fine"]])
     {:ok, bad} = Session.start(core, model: "fake/bad")
-    :ok = Session.subscribe(bad)
+    {:ok, _} = Session.subscribe(bad)
     :ok = Session.prompt(bad, "go")
     assert List.last(collect_until(:agent_end)).data.stop_reason == :error
 
     {:ok, good} = Session.start(core, model: "fake/good")
-    :ok = Session.subscribe(good)
+    {:ok, _} = Session.subscribe(good)
     :ok = Session.prompt(good, "go")
     assert Helyx.Message.text(final_message(collect_until(:agent_end))) == "fine"
   end

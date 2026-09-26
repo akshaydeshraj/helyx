@@ -52,7 +52,7 @@ if Helyx.TUI.Available.available?() do
 
     Start it with `run/1`, which blocks until the user quits:
 
-        Helyx.TUI.run(session: session, model: "opencode-go/kimi-k2")
+        Helyx.TUI.run(session: session)
     """
 
     use ExRatatui.App
@@ -130,9 +130,11 @@ if Helyx.TUI.Available.available?() do
     @doc """
     Starts the TUI for a session and blocks until the user quits.
 
-    The options are `:session`, `:model`, and those of `ExRatatui.App`. The
-    scroll keys read the terminal size through `:terminal_size_fn`, the option
-    of `ExRatatui.Server`; the default is `ExRatatui.terminal_size/0`.
+    The options are `:session`, `:resumed` (true when the session was
+    resumed: a notice "resumed session" follows the history), and those of
+    `ExRatatui.App`. The scroll keys read the terminal size through
+    `:terminal_size_fn`, the option of `ExRatatui.Server`; the default is
+    `ExRatatui.terminal_size/0`.
     """
     @spec run(keyword()) :: :ok | {:error, term()}
     def run(opts) do
@@ -178,7 +180,6 @@ if Helyx.TUI.Available.available?() do
     @impl true
     def mount(opts) do
       session = Keyword.fetch!(opts, :session)
-      :ok = Session.subscribe(session)
 
       # A monitor surfaces a dying session through run/1. A session that is
       # already gone has nothing to monitor; exit now rather than hang idle.
@@ -188,13 +189,25 @@ if Helyx.TUI.Available.available?() do
           pid -> {Process.monitor(pid), pid}
         end
 
+      # The screen starts from the snapshot: the history of a resumed
+      # session, and the turn a late client joins.
+      {:ok, snapshot} =
+        try do
+          Session.subscribe(session)
+        catch
+          :exit, reason -> exit({:session_down, reason})
+        end
+
+      vm = ViewModel.from_snapshot(snapshot)
+      vm = if opts[:resumed], do: ViewModel.notice(vm, "resumed session"), else: vm
+
       {:ok,
        %{
          session: session,
          # The reference and pid of the session monitor. Only its `:DOWN`
          # ends the TUI.
          monitor: monitor,
-         vm: ViewModel.new(Keyword.fetch!(opts, :model)),
+         vm: vm,
          input: ExRatatui.textarea_new(),
          # Marker text to the full paste it stands for. Emptied with the
          # composer, so a marker id is the map size plus one.

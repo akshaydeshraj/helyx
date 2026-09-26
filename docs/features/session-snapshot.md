@@ -44,12 +44,19 @@ The session sends its events from its own process in `seq` order, and the snapsh
 
 `Helyx.TUI.ViewModel`:
 
-- `ViewModel.from_snapshot(snapshot)` builds the cells from the messages with the same cell shapes as the live events: text, thinking, and each tool call with its result. An open tool cell is made only for a call in `turn.running`. A live client adds a tool cell at `tool_execution_start`, and a local turn starts its calls one at a time (an external turn starts them all at once), so a call that has not started has no cell in either client. It is still in the copied assistant message, and its cell comes with its start event.
-- The rule: the view model from a snapshot at `seq` equals the view model folded from every event up to `seq`. So a late client and a client that watched from the start show the same screen (owner decision, 2026-09-26).
-- When `messages` is not empty, a notice cell "resumed session" follows the history. The model comes from the snapshot.
+- `ViewModel.from_snapshot(snapshot)` builds the cells from the messages with the same cell shapes as the live events: text, thinking, and each tool call with its result. The started calls are always the first calls with no result, in call order, so the view model gives open cells to the first `length(turn.running)` calls with no result, by position. A call that has not started gets no cell until it starts, also when it has the id of a running call (review of 2026-09-26). A live client adds a tool cell at `tool_execution_start`, and a local turn starts its calls one at a time (an external turn starts them all at once), so a call that has not started has no cell in either client. It is still in the copied assistant message, and its cell comes with its start event.
+- The rule: the transcript cells from a snapshot at `seq` equal the cells folded from every event up to `seq`, and so do the model, the queue counts, the streaming message, and the run state. So a late client and a client that watched from the start show the same transcript (owner decision, 2026-09-26). Notices ("aborted", "error: ...", the harness notices, "resumed session") are not in the transcript, so a snapshot does not rebuild them. The partial reply of a failed turn is display-only too: `fail_turn` emits `message_end` for it with `error`, but does not add it to the transcript, so a live client shows it and a late client does not (owner decision, 2026-09-26). An abort closes the partial reply with `message_end` and the stop reason `aborted`. That reply is also not in the transcript, so a late client does not show it. A result goes to the oldest open call with its id in the session, in the snapshot, and in the live fold. Accepted limit (owner decision, 2026-09-26):
+  - A call that never started and got an `aborted` result in the transcript shows a closed cell with that result, although a live client showed no cell for it. The session gives such results after an abort, after a failed turn, and at the normal end of an external turn whose last message has calls (`end_turn/2` calls `abort_open_calls/1`, and no `tool_execution_start` comes for these calls). The view model does not hide the cell. A later ADR (an item model with ids that the session assigns) removes this class (owner decision, 2026-09-26).
+- The notice "resumed session" follows the history only when the TUI started from a resume: `mix helyx --resume` passes `resumed: true` to `Helyx.TUI.run/1`, and the mount adds the notice. A live join shows no notice. The model comes from the snapshot.
 - The view model keeps `seq`, and `apply/2` drops an event with `seq <= seq`.
 
 Callers of `subscribe/1` change from `:ok = ` to `{:ok, _} = ` or use the snapshot: `Helyx.TUI`, `mix helyx.graph`, the moduledoc example, and the tests.
+
+Changes that follow from the snapshot (accepted by the owner, 2026-09-26):
+
+- `Helyx.TUI.run/1` has no `:model` option, and `CodingAgent.fetch_model/1` is gone: the model comes from the snapshot.
+- The TUI mount checks that the session is alive before it subscribes, because the subscribe now calls the session. A session that dies in between ends the mount with `{:session_down, reason}`, as before.
+- Tests that folded events with `seq` 0, or with one `seq` twice, use increasing values, because `apply/2` now drops an event at or below the view model's `seq`.
 
 ## Bounds
 
@@ -59,7 +66,7 @@ Callers of `subscribe/1` change from `:ok = ` to `{:ok, _} = ` or use the snapsh
 | snapshot call | `GenServer.call` with the default 5,000 ms timeout. The session never blocks on a call (#93), so the wait is the time to build and copy the reply | `Helyx.Session.subscribe/1` | the caller exits with a timeout, as for every other session call |
 | TUI render of the history | the same as live cells: one cell for each message, tool call, and notice. The render bounds of the TUI (wrap, scrollback) apply unchanged | `Helyx.TUI.ViewModel` | n/a |
 
-Tests: for a local turn with three tool calls, a subscribe while the first call runs gives the same view model as the fold of every event up to the snapshot, and each later call gets one cell when it starts; the same for an external turn; a subscribe during a running turn with events before and after the snapshot shows each event once; a subscribe after a resume shows the history cells; a subscribe to a session with no events has `seq` 0 and no notice.
+Tests: for a local turn with three tool calls, a subscribe while the first call runs gives the same view model, without notices, as the fold of every event up to the snapshot, and each later call gets one cell when it starts; the same for an external turn; a subscribe during a running turn with events before and after the snapshot shows each event once; a subscribe after a resume shows the history cells, then the notice only with `resumed: true`; a subscribe after a failed turn with a partial reply, and after an abort during a partial reply, gives the transcript cells of the live fold without notices and without the partial reply, and no event with `seq <= snapshot.seq` changes that view model; a subscribe after an external turn that ends with a tool call and `:done` shows one extra closed `aborted` cell, the accepted limit, and every other part of the view model equals the live fold; a subscribe to a session with no events has `seq` 0 and no notice.
 
 ## Ownership
 
