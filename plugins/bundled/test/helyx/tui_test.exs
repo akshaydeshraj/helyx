@@ -45,19 +45,6 @@ defmodule Helyx.TUI.Test.Provider.BadTurn do
   def turn, do: :bogus
 end
 
-defmodule Helyx.TUI.Test.Provider.BadId do
-  @moduledoc false
-  # A provider whose `id/0` raises once the calling process sets `:bad_id`,
-  # so a session can start and a later switch meets the bad `id/0`.
-  @behaviour Helyx.Provider
-
-  @impl true
-  def id, do: if(Process.get(:bad_id), do: raise("no id"), else: "bad_id")
-
-  @impl true
-  def stream(_model, _context, _opts), do: {:ok, []}
-end
-
 defmodule Helyx.TUITest do
   # The app callbacks, driven directly: mount subscribes the caller, key
   # events edit and send the composer, session events fold into the view
@@ -80,7 +67,6 @@ defmodule Helyx.TUITest do
       Fake,
       Helyx.TUI.Test.Provider.Other,
       Helyx.TUI.Test.Provider.BadTurn,
-      Helyx.TUI.Test.Provider.BadId,
       Helyx.TUI.Test.Tool.Slow
     ]
 
@@ -817,19 +803,6 @@ defmodule Helyx.TUITest do
       end
 
       refute_receive {:helyx_event, _}, 50
-    end
-
-    test "a provider plugin with a bad id/0 shows a notice that names it (#153)",
-         %{core: core} do
-      state = mounted(core, "stay", [])
-      Process.put(:bad_id, true)
-      state = submit(state, "/model other/any")
-
-      assert {:notice, "provider plugin Helyx.TUI.Test.Provider.BadId has a bad id/0"} =
-               List.last(state.vm.cells)
-
-      assert ExRatatui.textarea_get_value(state.input) == "/model other/any"
-      assert Session.model(state.session) == "fake/stay"
     end
 
     test "a line that starts with /model but has no separator shows usage and is never sent",

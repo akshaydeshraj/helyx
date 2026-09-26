@@ -66,9 +66,7 @@ defmodule Helyx.Session do
   @type model_error ::
           {:invalid_model_ref, String.t()}
           | {:unknown_provider, String.t()}
-          | {:ambiguous_provider, String.t()}
           | {:bad_provider_turn, String.t()}
-          | {:bad_provider_id, module()}
 
   # Public API
 

@@ -9,7 +9,11 @@ defmodule Helyx.Core do
   Core checks every plugin against the interfaces it implements. It refuses to
   start when a `:single` interface receives more than one plugin, when a
   `required: true` interface receives none, or when a module implements no
-  interface at all.
+  interface at all. It calls `id/0` of each provider once, and refuses to
+  start with `{:invalid_provider_id, plugin}` when one raises, throws, exits,
+  or returns a value that is not a binary, and with
+  `{:duplicate_provider_id, id, [first, second]}` when two providers share
+  an id.
 
   A plugin that exports `child_spec/1` gets its process tree started under
   Core, with `[core: name]` as the argument.
@@ -42,13 +46,14 @@ defmodule Helyx.Core do
     name = Keyword.get(opts, :name, __MODULE__)
     plugins = Keyword.get(opts, :plugins, [])
 
-    with {:ok, table} <- Helyx.Core.Plugins.resolve(plugins, @interfaces) do
-      Supervisor.start_link(__MODULE__, {name, plugins, table}, name: name)
+    with {:ok, table} <- Helyx.Core.Plugins.resolve(plugins, @interfaces),
+         {:ok, ids} <- Helyx.Core.Plugins.provider_ids(table[Helyx.Provider]) do
+      Supervisor.start_link(__MODULE__, {name, plugins, table, ids}, name: name)
     end
   end
 
   @impl true
-  def init({name, plugins, table}) do
+  def init({name, plugins, table, ids}) do
     plugin_children =
       for plugin <- plugins, function_exported?(plugin, :child_spec, 1) do
         plugin.child_spec(core: name)
@@ -56,8 +61,10 @@ defmodule Helyx.Core do
 
     children =
       [
-        # The child spec holds the plugin table, so a restart keeps it.
-        {Registry, keys: :unique, name: sessions_registry(name), meta: [plugins: table]},
+        # The child spec holds the plugin table and the provider ids, so a
+        # restart keeps them.
+        {Registry,
+         keys: :unique, name: sessions_registry(name), meta: [plugins: table, provider_ids: ids]},
         {Registry, keys: :duplicate, name: events_registry(name)},
         {Task.Supervisor, name: task_supervisor(name)},
         # The start message of a session holds its whole state, a resumed
@@ -75,6 +82,14 @@ defmodule Helyx.Core do
   def plugins(name \\ __MODULE__, interface) do
     {:ok, table} = Registry.meta(sessions_registry(name), :plugins)
     Map.get(table, interface, [])
+  end
+
+  @doc false
+  # The provider id to module map that Core built at start.
+  @spec provider_ids(name()) :: %{String.t() => module()}
+  def provider_ids(name) do
+    {:ok, ids} = Registry.meta(sessions_registry(name), :provider_ids)
+    ids
   end
 
   @doc false

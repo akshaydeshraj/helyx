@@ -61,4 +61,28 @@ defmodule Helyx.CoreTest do
   test "rejects a module that implements no interface" do
     assert {:error, {:not_a_plugin, Test.NoInterface}} = boot([Test.Provider, Test.NoInterface])
   end
+
+  describe "provider ids (#169)" do
+    test "an id/0 that raises, throws, exits, or is not a binary stops the start" do
+      for mode <- [:raise, :throw, :exit, 42] do
+        Process.put(:bad_id, mode)
+        assert boot([Test.Provider, Test.BadId]) == {:error, {:invalid_provider_id, Test.BadId}}
+      end
+    end
+
+    test "two providers with one id stop the start and are both named" do
+      assert boot([Test.Provider, Test.ProviderOther, Test.ProviderTwin]) ==
+               {:error, {:duplicate_provider_id, "test", [Test.Provider, Test.ProviderTwin]}}
+    end
+
+    test "a lookup reads the ids of the start and calls no plugin code" do
+      name = :"core_#{System.unique_integer([:positive])}"
+      start_supervised!({Helyx.Core, name: name, plugins: [Test.Provider, Test.BadId]})
+      Process.put(:bad_id, :raise)
+
+      assert Helyx.Provider.find(name, "bad_id") == {:ok, Test.BadId}
+      assert Helyx.Provider.find(name, "test") == {:ok, Test.Provider}
+      assert Helyx.Provider.find(name, "none") == {:error, {:unknown_provider, "none"}}
+    end
+  end
 end

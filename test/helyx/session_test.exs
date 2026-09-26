@@ -14,7 +14,6 @@ defmodule Helyx.SessionTest do
       Helyx.Test.Harness,
       Helyx.Test.BadTurn,
       Helyx.Test.RaisingTurn,
-      Helyx.Test.BadId,
       Helyx.Test.Tool.Upcase,
       Helyx.Test.Tool.Kill,
       Helyx.Test.Tool.Slow,
@@ -140,14 +139,6 @@ defmodule Helyx.SessionTest do
     refute Enum.any?(events, &(&1.type == :turn_end))
   end
 
-  test "two providers with the same id are rejected at session start" do
-    core = :"core_#{System.unique_integer([:positive])}"
-    plugins = [Helyx.Test.Provider, Helyx.Test.ProviderTwin]
-    start_supervised!({Helyx.Core, name: core, plugins: plugins})
-
-    assert {:error, {:ambiguous_provider, "test"}} = Session.start(core, model: "test/ok")
-  end
-
   test "thinking, text, and tool call events build one assistant message in order", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/blocks")
     :ok = Session.subscribe(session)
@@ -199,30 +190,6 @@ defmodule Helyx.SessionTest do
 
       assert {:error, {:bad_provider_turn, "raising_turn"}} =
                Session.set_model(session, "raising_turn/m")
-    end
-
-    @tag :tmp_dir
-    test "a provider id/0 that raises, throws, exits, or is not a string is refused (#153)",
-         %{core: core, tmp_dir: dir} do
-      {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
-      GenServer.stop(Session.pid(session))
-
-      for mode <- [:raise, :throw, :exit, 42] do
-        Process.put(:bad_id, mode)
-        error = {:error, {:bad_provider_id, Helyx.Test.BadId}}
-
-        assert Session.start(core, model: "test/ok") == error
-        assert Session.resume(core, sessions_dir: dir) == error
-      end
-
-      Process.delete(:bad_id)
-      {:ok, session} = Session.start(core, model: "test/ok")
-      Process.put(:bad_id, :raise)
-
-      assert {:error, {:bad_provider_id, Helyx.Test.BadId}} =
-               Session.set_model(session, "other/m")
-
-      assert Session.model(session) == "test/ok"
     end
 
     @tag :tmp_dir
@@ -1503,19 +1470,6 @@ defmodule Helyx.SessionTest do
       [path] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl"))
       [_header, change] = path |> File.read!() |> String.split("\n", trim: true)
       assert byte_size(change) <= 660
-    end
-
-    test "a provider id that two plugins share is rejected and the model stays" do
-      core = :"core_#{System.unique_integer([:positive])}"
-      plugins = [Helyx.Test.Provider, Helyx.Test.ProviderTwin, Helyx.Test.ProviderOther]
-      start_supervised!({Helyx.Core, name: core, plugins: plugins})
-
-      {:ok, session} = Session.start(core, model: "other/any")
-      :ok = Session.subscribe(session)
-
-      assert {:error, {:ambiguous_provider, "test"}} = Session.set_model(session, "test/ok")
-      assert Session.model(session) == "other/any"
-      refute_receive {:helyx_event, _}, 50
     end
 
     @tag :tmp_dir
