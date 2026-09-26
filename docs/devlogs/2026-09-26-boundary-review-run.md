@@ -23,10 +23,11 @@ Date: 2026-09-26. The run built the tickets of the boundary review (`docs/review
 | #143 inner defensive code deleted | #155 | r1: 0 |
 | #144 tool text repaired at the two boundaries only | #156 | r1: 0 |
 | #145 a `/model` notice for a provider with a bad `turn/0` | #157 | r1: 0 |
+| #146 one bad tool call is rejected alone, not the whole turn | #160 | r1: 0 |
 
 ## Parked
 
-- #146: one tool call with bad JSON arguments fails the whole OpenAI turn. The fix is a new provider stream event, so a feature doc comes first. The draft proposes `{:rejected_tool_call, call, reason}` for a local turn, and one rejection path in Core for this event and the integer cap. It waits for the approval of the owner.
+None. #146 waited for its feature doc (`docs/features/rejected-tool-call.md`). The owner approved it, and it merged in the same run.
 
 ## Filed
 
@@ -48,6 +49,7 @@ Both escapes are on the same class: a failure of code this module does not contr
 ## Orchestrator checks that changed a result
 
 - #142: the worker let a raising spec callback propagate to the caller (its decision 4). Codex found the same case as a regression, and it was rejected: plugin output into Core is a boundary. The fix contains raise, throw, and exit in the style of `Helyx.Provider.turn/1`. An exit signal from a process that a callback linked to the caller is not contained, as in `turn/1`; this was accepted, because plugins are compiled into the node.
+- #146: the feature doc said the integer cap tests keep their assertions, but the new message shape changes two lower-level assertions. The doc now says this. It also states that a call equal to a rejected call is not run, as for the integer cap.
 - #143: one extra ViewModel test was deleted, which the ticket did not name. It tested only the guard and the catch-all that A3 deletes, so it was accepted.
 
 ## Notes
@@ -57,5 +59,4 @@ Both escapes are on the same class: a failure of code this module does not contr
 
 ## Next
 
-- The owner approves or changes the #146 feature doc.
 - Triage #131, #148, #150, #152, #153, and #158. #150 and #153 are small and follow the pattern of #142.
