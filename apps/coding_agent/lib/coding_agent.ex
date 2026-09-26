@@ -92,6 +92,10 @@ defmodule CodingAgent do
   defp sentence({:invalid_model_ref, _ref}), do: "the model ref is not valid; use provider/model"
   defp sentence({:unknown_provider, id}), do: "no provider has the id #{inspect(id)}"
   defp sentence({:ambiguous_provider, id}), do: "two providers have the id #{inspect(id)}"
+  defp sentence({:bad_provider_turn, id}), do: "the provider #{inspect(id)} has a bad turn/0"
+
+  defp sentence({:bad_provider_id, module}),
+    do: "the provider plugin #{inspect(module)} has a bad id/0"
 
   defp sentence({:tool_unavailable, name, reason}) when is_binary(name) and is_binary(reason),
     do: "the #{name} tool is not available: #{reason}"

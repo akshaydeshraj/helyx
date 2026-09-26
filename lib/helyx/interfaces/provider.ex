@@ -94,16 +94,45 @@ defmodule Helyx.Provider do
           | {:tool_result, String.t(), {:ok | :error, String.t()}}
           | {:harness_session, String.t(), non_neg_integer()}
 
-  @doc "Finds the provider plugin whose id matches a model ref prefix. Two matches is an error."
+  @doc """
+  Finds the provider plugin whose id matches a model ref prefix. Two matches
+  are an error. It calls `id/0` of every provider plugin, because it must know
+  every id to know that a match is unique. An `id/0` that raises, throws,
+  exits, or returns a value that is not a binary fails the find with
+  `{:bad_provider_id, module}`, whatever the ref names. `id/0` is plugin
+  code, so the session calls this function in the caller of a start, a
+  resume, or a switch.
+  """
   @spec find(Helyx.Core.name(), String.t()) ::
           {:ok, module()}
-          | {:error, {:unknown_provider, String.t()} | {:ambiguous_provider, String.t()}}
+          | {:error,
+             {:unknown_provider, String.t()}
+             | {:ambiguous_provider, String.t()}
+             | {:bad_provider_id, module()}}
   def find(core, id) do
-    case Enum.filter(Helyx.Core.plugins(core, __MODULE__), &(&1.id() == id)) do
-      [plugin] -> {:ok, plugin}
-      [] -> {:error, {:unknown_provider, id}}
-      _ -> {:error, {:ambiguous_provider, id}}
+    with {:ok, ids} <- plugin_ids(Helyx.Core.plugins(core, __MODULE__)) do
+      match(for({plugin, ^id} <- ids, do: plugin), id)
     end
+  end
+
+  defp match([plugin], _id), do: {:ok, plugin}
+  defp match([], id), do: {:error, {:unknown_provider, id}}
+  defp match(_plugins, id), do: {:error, {:ambiguous_provider, id}}
+
+  defp plugin_ids(plugins) do
+    Enum.reduce_while(plugins, {:ok, []}, fn plugin, {:ok, acc} ->
+      case checked_id(plugin) do
+        {:ok, id} -> {:cont, {:ok, [{plugin, id} | acc]}}
+        :error -> {:halt, {:error, {:bad_provider_id, plugin}}}
+      end
+    end)
+  end
+
+  defp checked_id(plugin) do
+    id = plugin.id()
+    if is_binary(id), do: {:ok, id}, else: :error
+  catch
+    _class, _reason -> :error
   end
 
   @doc """

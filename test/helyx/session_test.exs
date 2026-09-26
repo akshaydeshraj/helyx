@@ -14,6 +14,7 @@ defmodule Helyx.SessionTest do
       Helyx.Test.Harness,
       Helyx.Test.BadTurn,
       Helyx.Test.RaisingTurn,
+      Helyx.Test.BadId,
       Helyx.Test.Tool.Upcase,
       Helyx.Test.Tool.Kill,
       Helyx.Test.Tool.Slow,
@@ -196,6 +197,30 @@ defmodule Helyx.SessionTest do
 
       assert {:error, {:bad_provider_turn, "raising_turn"}} =
                Session.set_model(session, "raising_turn/m")
+    end
+
+    @tag :tmp_dir
+    test "a provider id/0 that raises, throws, exits, or is not a string is refused (#153)",
+         %{core: core, tmp_dir: dir} do
+      {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
+      GenServer.stop(Session.pid(session))
+
+      for mode <- [:raise, :throw, :exit, 42] do
+        Process.put(:bad_id, mode)
+        error = {:error, {:bad_provider_id, Helyx.Test.BadId}}
+
+        assert Session.start(core, model: "test/ok") == error
+        assert Session.resume(core, sessions_dir: dir) == error
+      end
+
+      Process.delete(:bad_id)
+      {:ok, session} = Session.start(core, model: "test/ok")
+      Process.put(:bad_id, :raise)
+
+      assert {:error, {:bad_provider_id, Helyx.Test.BadId}} =
+               Session.set_model(session, "other/m")
+
+      assert Session.model(session) == "test/ok"
     end
 
     @tag :tmp_dir

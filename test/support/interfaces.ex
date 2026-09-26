@@ -119,6 +119,29 @@ defmodule Helyx.Test.BadTurn do
   def stream(_model, _context, _opts), do: {:ok, []}
 end
 
+defmodule Helyx.Test.BadId do
+  @moduledoc false
+  # A provider whose `id/0` is "bad_id" until the calling process puts a
+  # mode under `:bad_id`. Then it raises, throws, exits, or returns the value.
+  @behaviour Helyx.Provider
+
+  # The bad results are the point of this provider.
+  @dialyzer {:nowarn_function, id: 0}
+  @impl true
+  def id do
+    case Process.get(:bad_id) do
+      nil -> "bad_id"
+      :raise -> raise "no id"
+      :throw -> throw(:no_id)
+      :exit -> exit(:no_id)
+      other -> other
+    end
+  end
+
+  @impl true
+  def stream(_model, _context, _opts), do: {:ok, []}
+end
+
 defmodule Helyx.Test.RaisingTurn do
   @moduledoc false
   @behaviour Helyx.Provider
