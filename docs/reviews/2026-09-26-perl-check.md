@@ -77,8 +77,14 @@ Skipped:
 - No ARG_MAX bound on a bash command: older than this change.
 - A NUL byte in a provider's model or cwd gives an `ArgumentError` from `Port.open`, or a silent cut. This is a separate boundary. Follow-up ticket suggested.
 - The harness `{:not_started, port, acc}` head cut drops the watchdog's reason when perl's warnings come first. Older than this change. Follow-up ticket suggested.
-- The rescue catches only `ErlangError`. No probe found another raise from `Port.open` for a perl failure.
 - The text for an empty no-marker ends in a colon. Kept: the prefix is constant.
 - The `:no_marker` tag also carries "perl did not start". Kept: both mean no marker, and both texts name perl.
 - `Helyx.Tool.Bash` calls `HarnessIO.cap_error/1`. A helper call, allowed by ADR 0005.
 - A shared `Watchdog.perl/0`: skipped, because `Bash.check/0` stays as it is.
+
+## Orchestrator
+
+- Codex adversarial review, round 1: 1 confirmed finding. `open_port/2` did `rescue error in ErlangError -> inspect(error.original)`. The rescue also catches a normalized exception, such as `SystemLimitError` at the BEAM port limit or `ArgumentError`, which has no `:original` field, so it raised `KeyError`. Codex reproduced it with `+Q 1024` through `Bash.run(%{"command" => "true"}, "/")`.
+- Fixed: the text is now `Exception.message(error)`. A regression test in `watchdog_test.exs` passes a cwd that is not text, so `Port.open` raises `ArgumentError` deterministically, with no VM flag for the suite. The test also checks that the spawn ran, not the perl lookup.
+- Rerun round 8, reduced (spec and failure path; the fix is one code line in one file and a test): 1 finding on spec, the test also matched a failed perl lookup, fixed. The failure path was clean. It reproduced the port limit in a separate VM with `+Q 1024`: `{:error, "the command did not start: perl did not start: a system limit has been reached"}`.
+- Text change: a missing file was `perl did not start: :enoent` and is now `perl did not start: Erlang error: :enoent`. No test or doc depends on the old text.

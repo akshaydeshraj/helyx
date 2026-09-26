@@ -201,13 +201,15 @@ defmodule Helyx.Watchdog do
 
   # perl is used here, so its failure is handled here. The callers check
   # for perl earlier (the bash tool's `check/0`, `Helyx.HarnessIO.find/1`),
-  # but PATH and the file can change after that check.
+  # but PATH and the file can change after that check. The rescue also
+  # catches a normalized error such as `SystemLimitError` at the port limit,
+  # which has no `:original` field, so the text is the exception message.
   defp open_port(nil, _options), do: {:error, "not found on PATH"}
 
   defp open_port(exe, options) do
     {:ok, Port.open({:spawn_executable, exe}, options)}
   rescue
-    error in ErlangError -> {:error, inspect(error.original)}
+    error in ErlangError -> {:error, Exception.message(error)}
   end
 
   defp handshake(port, nonce, input) do

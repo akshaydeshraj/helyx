@@ -124,6 +124,16 @@ defmodule Helyx.WatchdogTest do
     refute File.exists?(ran)
   end
 
+  # A cwd that is not text makes `Port.open` raise `ArgumentError`. Like
+  # `SystemLimitError` at the port limit, it has no `:original` field.
+  test "a spawn that raises a normalized error returns a result that names perl" do
+    assert {:no_marker, "perl did not start: " <> reason} =
+             Helyx.Watchdog.start(["true"], 123, nil)
+
+    # The spawn ran: a failed perl lookup would pass the match above.
+    refute reason == "not found on PATH"
+  end
+
   describe "input (#10)" do
     test "the command reads exactly the counted bytes, sent with the go-ahead, then end of file" do
       port = open("cat; echo done", "bash", 6)
