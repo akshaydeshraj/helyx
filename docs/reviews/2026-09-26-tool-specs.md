@@ -89,3 +89,9 @@ The fix of the mechanism (above): `checked_spec/1` builds and checks each spec i
 - Failure path: every requested reproduction holds through `start/2` and `resume/2`, with a consolidated `JSON.Encoder`. Finding: the crash of a process that a callback links to the caller (`spawn_link`, a failing `Task.async`) ends the caller, because a `catch` cannot stop an exit signal. `Helyx.Provider.turn/1` has the same limit. Accepted and stated in the feature doc row: a plugin is compiled into the node, and a separate process for the spec build would give up "in the caller". Reported to the orchestrator.
 
 No code changed after the round 4 reviews; only the feature doc, the checklist, and this record.
+
+## Orchestrator, Codex round 2
+
+- No finding. Precommit passed after the rebase on #141.
+- Accepted: a `catch` cannot stop an exit signal from a process that a callback linked to the caller. `Helyx.Provider.turn/1` has the same limit, and plugins are compiled into the node.
+- Filed: #150 (`check/0` runs after the session file is created) and #153 (`id/0` in `Helyx.Provider.find/2` has no catch).
