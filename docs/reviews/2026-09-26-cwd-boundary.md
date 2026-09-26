@@ -57,3 +57,8 @@ The fix: 2 `@doc` lines in one code file and one test line. Under 15 lines, one 
 
 - Spec: the `@doc` line was not rewrapped. Fixed (whitespace only). Skipped: `{:unknown_provider, _}` has no test in `apps/coding_agent`; this was so before the change. Skipped: the `:invalid_cwd` text says "not UTF-8 or holds a NUL byte" also for a value that is not a binary; `mix helyx` always passes a binary.
 - Failure path: `CodingAgent.start_session/1` returns `{:error, :invalid_cwd}` for each bad value in both modes, and `error_text/1` gives one clean line without the cwd. APFS rejects a name that is not UTF-8, and argv cannot hold a NUL, so `mix helyx` cannot reach `:invalid_cwd` on macOS. Out of scope, reported to the orchestrator: `Mix.Tasks.Helyx.run/1` raises `"not a directory: #{cwd}"` with the raw argument, which can hold bytes that are not UTF-8, a terminal escape, or a line break. This code is older than the change.
+
+## Orchestrator
+
+- Codex adversarial review, round 1: approve, 0 findings.
+- Out of scope, filed separately: the raw argument in the `mix helyx` "not a directory" error.
