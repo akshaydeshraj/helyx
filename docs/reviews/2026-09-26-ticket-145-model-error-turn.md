@@ -33,3 +33,8 @@ Both agents reported one gap out of the scope of the ticket: `CodingAgent.error_
 ## Precommit
 
 `mix precommit` passed in the root, `plugins/bundled`, and `apps/coding_agent`.
+
+## Orchestrator
+
+- Codex adversarial review, round 1: no finding. The base did not change after the precommit run of the worker.
+- Filed as a follow-up: `CodingAgent.error_text/1` has no clause for `{:bad_provider_turn, id}`.
