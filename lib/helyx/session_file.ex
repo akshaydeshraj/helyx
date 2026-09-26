@@ -40,8 +40,6 @@ defmodule Helyx.SessionFile do
   # The scan reads the header of this many files: the ones with the newest
   # modification time. Nothing deletes session files, so their count grows.
   @max_scanned_files 256
-  # Claude Code's ids are UUIDs; 256 bytes leaves room for another harness.
-  @harness_id_max_bytes 256
 
   @enforce_keys [:path]
   defstruct [:path, :leaf]
@@ -228,8 +226,9 @@ defmodule Helyx.SessionFile do
   @doc """
   Appends a harness session entry: the id that the external program of the
   harness provider `provider_id` issued for its harness session. Like message text, both
-  strings must be valid UTF-8 when they reach the file; the caller checks
-  them where they enter the session.
+  strings must be valid UTF-8 when they reach the file, and the id must pass
+  `Helyx.Message.harness_id?/1`, else a resume rejects the file. The caller
+  checks them where they enter the session.
   """
   @spec append_harness_session(t(), String.t(), String.t()) :: t()
   def append_harness_session(%__MODULE__{} = file, provider_id, id)
@@ -256,7 +255,7 @@ defmodule Helyx.SessionFile do
         "role" => Atom.to_string(role),
         "content" => Enum.map(message.content, &encode_block/1),
         "model" => message.model,
-        "stop_reason" => message.stop_reason && encode_stop_reason(message.stop_reason),
+        "stop_reason" => encode_stop_reason(message.stop_reason),
         "tool_call_id" => message.tool_call_id,
         "tool_name" => message.tool_name,
         "usage" => map_size(message.usage) > 0 && message.usage
@@ -289,7 +288,7 @@ defmodule Helyx.SessionFile do
       role: decode_role(entry["role"]),
       content: Enum.map(entry["content"], &decode_block/1),
       model: optional_string(entry["model"]),
-      stop_reason: entry["stop_reason"] && decode_stop_reason(entry["stop_reason"]),
+      stop_reason: decode_stop_reason(entry["stop_reason"]),
       tool_call_id: optional_string(entry["tool_call_id"]),
       tool_name: optional_string(entry["tool_name"]),
       is_error: decode_is_error(entry["is_error"]),
@@ -301,19 +300,19 @@ defmodule Helyx.SessionFile do
   defp decode_role("assistant"), do: :assistant
   defp decode_role("tool_result"), do: :tool_result
 
-  # The format owns this closed set, enforced on both sides. The decode
-  # clauses intern the atoms in this module, so a fresh VM that has loaded
-  # no provider still decodes a saved file; a stop reason outside the set
-  # has no encode clause, so the writer fails loudly instead of appending
-  # an entry that a later resume would reject. A new stop reason is a
-  # format change.
-  defp decode_stop_reason("end_turn"), do: :end_turn
-  defp decode_stop_reason("tool_use"), do: :tool_use
-  defp decode_stop_reason("max_tokens"), do: :max_tokens
+  # The clauses are built at compile time from `Message.stop_reasons/0`, so
+  # the atoms are interned in this module: a fresh VM that has loaded no
+  # provider still decodes a saved file. A stop reason outside the set has
+  # no encode clause, so the writer raises an error instead of appending an
+  # entry that a later resume would reject. Only nil means no stop reason:
+  # any other value outside the set, false too, has no clause.
+  defp decode_stop_reason(nil), do: nil
+  defp encode_stop_reason(nil), do: nil
 
-  defp encode_stop_reason(:end_turn), do: "end_turn"
-  defp encode_stop_reason(:tool_use), do: "tool_use"
-  defp encode_stop_reason(:max_tokens), do: "max_tokens"
+  for reason <- Message.stop_reasons() do
+    defp decode_stop_reason(unquote(Atom.to_string(reason))), do: unquote(reason)
+    defp encode_stop_reason(unquote(reason)), do: unquote(Atom.to_string(reason))
+  end
 
   defp optional_string(nil), do: nil
   defp optional_string(value) when is_binary(value), do: value
@@ -348,16 +347,6 @@ defmodule Helyx.SessionFile do
     %Message.Image{mime_type: mime_type, data: data}
   end
 
-  @doc """
-  Whether `id` is a harness session id this file holds: valid UTF-8 of 1 to
-  #{@harness_id_max_bytes} bytes. The session checks an id from a provider
-  with it before the id is written, and a resume rejects a file whose entry
-  fails it.
-  """
-  @spec harness_id?(term()) :: boolean()
-  def harness_id?(id),
-    do: is_binary(id) and byte_size(id) in 1..@harness_id_max_bytes and Message.valid_utf8?(id)
-
   defp check_version(%{"version" => @version}), do: :ok
   defp check_version(header), do: {:error, {:unknown_version, header["version"]}}
 
@@ -386,7 +375,7 @@ defmodule Helyx.SessionFile do
          "provider" => provider,
          "harness_session_id" => harness_id
        }),
-       do: is_binary(id) and is_binary(provider) and harness_id?(harness_id)
+       do: is_binary(id) and is_binary(provider) and Message.harness_id?(harness_id)
 
   defp valid_entry?(_entry), do: false
 

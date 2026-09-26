@@ -348,6 +348,14 @@ defmodule Helyx.SessionFileTest do
     assert {:error, {:invalid_file, _}} = SessionFile.resume(dir, "/repo")
   end
 
+  test "a stop reason of false is rejected", %{tmp_dir: dir} do
+    entry = ~s({"id":"x","type":"message","role":"assistant","stop_reason":false,"content":[]})
+    {:ok, file} = SessionFile.create(dir, "sess1", "/repo", "test/ok")
+    File.write!(file.path, entry <> "\n", [:append])
+
+    assert {:error, {:invalid_file, _}} = SessionFile.resume(dir, "/repo")
+  end
+
   test "a content block with a wrong field type is rejected", %{tmp_dir: dir} do
     entry = ~s({"id":"x","type":"message","role":"user","content":[{"type":"text","text":42}]})
     {:ok, file} = SessionFile.create(dir, "sess1", "/repo", "test/ok")

@@ -7,6 +7,11 @@ defmodule Helyx.Message do
 
   A tool result message links to its call with `tool_call_id` and `tool_name`,
   and flags a failed call with `is_error`.
+
+  The module also owns the rules of the values in a message and in a turn:
+  the stop reason set, the harness session id, valid UTF-8, and the integer
+  limit. The session checks input against them, and the session file
+  encodes them.
   """
 
   defmodule Text do
@@ -89,6 +94,32 @@ defmodule Helyx.Message do
   defp scrub(text) do
     if String.valid?(text, :fast_ascii), do: text, else: String.replace_invalid(text)
   end
+
+  # A closed set: a provider normalizes its wire protocol into it, the
+  # session guards stream events with it, and the session file encodes it.
+  # A new stop reason is a change of the file format.
+  @stop_reasons [:end_turn, :tool_use, :max_tokens]
+
+  # Claude Code's ids are UUIDs; 256 bytes leaves room for another harness.
+  @harness_id_max_bytes 256
+
+  @typedoc "A stop reason of a message end, one of `stop_reasons/0`."
+  @type stop_reason ::
+          unquote(@stop_reasons |> Enum.reverse() |> Enum.reduce(&{:|, [], [&1, &2]}))
+
+  @doc "The stop reasons of a message end: the closed set of `t:stop_reason/0`."
+  @spec stop_reasons() :: [stop_reason()]
+  def stop_reasons, do: @stop_reasons
+
+  @doc """
+  Whether `id` is a valid harness session id: valid UTF-8 of 1 to
+  #{@harness_id_max_bytes} bytes. The session checks an id from a provider
+  with it before the id is written, and a resume rejects a session file
+  whose entry fails it.
+  """
+  @spec harness_id?(term()) :: boolean()
+  def harness_id?(id),
+    do: is_binary(id) and byte_size(id) in 1..@harness_id_max_bytes and String.valid?(id)
 
   @doc """
   Whether every string in the value, keys and values at any depth, is
