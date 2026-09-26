@@ -35,3 +35,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-09-26 | #117 | r1: 0 simplify, 0 standards (2 judgement calls, kept), 0 spec, 1 failure-path (rejected: the plan is a dated record, the ticket rules) | r1: 0 | none needed |
 | 2026-09-26 | #126 | r1: 3 simplify and 3 standards judgement calls (none applied), 0 spec, 0 failure-path | r1: 0 | none needed |
 | 2026-09-26 | #118 | r1: 3 simplify, 4 standards judgement calls, 0 spec, 0 failure-path; r2: 2, 1 hard + 1 judgement, 0, 1; r3 (reduced): 1 spec, 1 failure-path; r4 (reduced): 0 | r1: 0 | none needed; the id check on write is filed as #129 |
+| 2026-09-26 | #119 | r1: 2 simplify, 2 standards judgement calls, 2 spec, 0 failure-path; r2 (reduced): 0; precommit 1 failed (flaky bash test, #131) | r1: 0 | none needed; the flaky test is filed as #131 |

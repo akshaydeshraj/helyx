@@ -65,3 +65,9 @@ Invariant of the fix: `drop_queues/1` emits exactly one `:queue_update` if and o
 ## Precommit
 
 The first run failed on one test in `plugins/bundled`: `Helyx.Tool.BashTest`, "a watchdog killed before the go-ahead is an error" (`bash_test.exs:172`), with an `:epipe` exit. The test calls `Helyx.Tool.Bash.run/2` with a fake hands process and does not use the session. It passed 30 of 30 runs alone, and the full `plugins/bundled` suite passed with the same seed (29191). The second precommit run passed. The flake is outside this change and has no issue yet.
+
+## Orchestrator
+
+- `Queues.drain_steers/1` and `Transcript.resumable/3`: accepted. The first matches the queue rule (steers go before each provider call, follow-ups stay). The second keeps the pure module free of the GenServer state.
+- The flaky bash test of the first precommit run: filed as #131.
+- Codex adversarial review, round 1: approve, 0 findings.
