@@ -808,6 +808,54 @@ defmodule Helyx.Provider.CodexTest do
            ] = run_direct([Message.user("go")], work)
   end
 
+  # The `message_end` of "d" waits for "b", so it and every event after it
+  # is held: the end, the result, and 9,998 deltas make 10,000, the cap.
+  defp held_run(bin, work, count) do
+    deltas = for i <- 1..count, do: delta(@tid, "msg_y", "#{i}")
+
+    fresh(
+      bin,
+      1,
+      @tid,
+      [
+        started(@tid, command("a", %{status: "inProgress"})),
+        started(@tid, command("b", %{status: "inProgress"})),
+        completed(@tid, command("a", @done)),
+        started(@tid, command("d", %{status: "inProgress"})),
+        completed(@tid, command("d", @done))
+      ] ++ deltas ++ [turn_end(@tid, "completed")]
+    )
+
+    assert [
+             {:harness_session, @tid, 0},
+             {:tool_call, %{id: "a"}},
+             {:tool_call, %{id: "b"}},
+             {:message_end, :tool_use, _},
+             {:tool_result, "a", {:ok, "out"}},
+             {:tool_call, %{id: "d"}},
+             {:message_end, :tool_use, _},
+             {:tool_result, "d", {:ok, "out"}} | rest
+           ] = run_direct([Message.user("go")], work)
+
+    {texts, [terminal]} = Enum.split(rest, -1)
+    assert texts == for(i <- 1..min(count, 9_998), do: {:text_delta, "#{i}"})
+    terminal
+  end
+
+  test "the held events one under the cap go out at the turn's end", %{bin: bin, work: work} do
+    assert {:done, _} = held_run(bin, work, 9_997)
+  end
+
+  test "the held events at the cap go out at the turn's end", %{bin: bin, work: work} do
+    assert {:done, _} = held_run(bin, work, 9_998)
+  end
+
+  # The next delta is over the cap: it does not go out, and the error
+  # comes after the held events.
+  test "the held events over the cap end the stream after them", %{bin: bin, work: work} do
+    assert {:error, {:held_over_limit, 10_000}} = held_run(bin, work, 9_999)
+  end
+
   test "a replayed call id and tool name keep to the API limits", %{bin: bin, work: work} do
     fresh(bin, 1, @tid, reply(@tid, "ok"))
 

@@ -1,6 +1,8 @@
 defmodule Helyx.Provider.Codex do
   # The TERM grace of the release: codex ends its commands itself on TERM.
   @term_grace_ms 5_000
+  # The most events held at once (see `in_order/2`).
+  @held_max 10_000
 
   alias Helyx.HarnessIO
 
@@ -42,8 +44,9 @@ defmodule Helyx.Provider.Codex do
   a file change, a tool of an MCP server, and the like) is a tool call
   when it starts and a tool result when it completes, and a `message_end`
   closes the assistant message before the result. A stdout line over
-  #{HarnessIO.line_max_bytes()} bytes ends the stream with an error. The
-  protocol facts are in `docs/research/codex-app-server.md`.
+  #{HarnessIO.line_max_bytes()} bytes ends the stream with an error, and so
+  does an event over #{@held_max} held events. The protocol facts are in
+  `docs/research/codex-app-server.md`.
   """
 
   @behaviour Helyx.Provider
@@ -209,7 +212,8 @@ defmodule Helyx.Provider.Codex do
   # Output
 
   # At any terminal (the turn's end, an error, the program's exit, a line
-  # over the cap), every held event goes out after the events of the chunk.
+  # over the cap, the held events over their cap), every held event goes out
+  # after the events of the chunk.
   defp settle({events, %{terminal: nil} = state}), do: {events, state}
 
   defp settle({events, state}) do
@@ -222,25 +226,40 @@ defmodule Helyx.Provider.Codex do
   # so a call of a sent message can still run when the next message closes.
   # Such a `message_end`, and every event after it, is held until the
   # results of the sent calls are out; a result of a sent call goes out at
-  # once. At a terminal `settle/1` sends every held event, in order.
+  # once. At a terminal `settle/1` sends every held event, in order. An
+  # event over `@held_max` held events is dropped and ends the stream with
+  # an error, as a line over the cap does; the events after it are not read.
   defp in_order(object, state) do
     {events, state} = translate(object, state)
     {out, state} = Enum.reduce(events, {[], state}, &order_one/2)
     {Enum.reverse(out), state}
   end
 
+  defp order_one(_event, {out, %{terminal: {:error, {:held_over_limit, _}}} = state}),
+    do: {out, state}
+
+  # `:queue.len/1` costs O(held), as a held result's insert does; the cap
+  # bounds both.
   defp order_one(event, {out, state}) do
     cond do
-      waiting_result?(event, state) -> flush(emit(event, {out, state}))
-      :queue.is_empty(state.held) and not blocked?(event, state) -> emit(event, {out, state})
-      true -> {out, %{state | held: hold(event, state.held)}}
+      waiting_result?(event, state) ->
+        flush(emit(event, {out, state}))
+
+      :queue.is_empty(state.held) and not blocked?(event, state) ->
+        emit(event, {out, state})
+
+      :queue.len(state.held) >= @held_max ->
+        {out, %{state | done?: true, terminal: {:error, {:held_over_limit, @held_max}}}}
+
+      true ->
+        {out, %{state | held: hold(event, state.held)}}
     end
   end
 
   # A held result goes right after its own `message_end` and the results
   # there, so a later `message_end` cannot hold it back. A result with no
   # held `message_end`, such as a repeat, goes to the end. Each insert
-  # costs O(held); the held events have no bound (row "Codex held events").
+  # costs O(held), and `@held_max` bounds the held events.
   defp hold({:tool_result, id, _result} = event, held) do
     {before, rest} = Enum.split_while(:queue.to_list(held), &(not closes?(&1, id)))
 
