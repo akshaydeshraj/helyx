@@ -135,3 +135,12 @@ No findings. Probed through `stream/3`: a `:kill` in the read loop, a normal end
 
 - Codex traps exits from its start, as before this change, so a shutdown during its start (a hold call to the hands) waits the 2,000 ms kill. The same holds for its replay build after `thread/start`, whose time grows with the transcript. `coding-agent.md` states both.
 - In the Codex interrupt path, `receive_end/3` does not take an `:epipe` port exit; its 1,000 ms wait bounds it.
+
+## Orchestrator
+
+- Codex adversarial review, round 1: 1 finding, confirmed. `ClaudeCode.start/2` built the input from the whole transcript while the Task trapped exits, so a hands shutdown during a lost session's fresh run waited the 2,000 ms grace (probe: 3,000 messages of 50 KB, 2,003 ms, `:killed`). Fixed in round 4.
+- Codex adversarial review, round 2: 1 finding, confirmed. The read loop trapped exits, and a `receive` takes messages in arrival order, so a shutdown waited behind all queued stdout (probe: 6,000 lines of 64 KB, still alive after 2,000 ms). This was the fourth finding on the trap in this change, so the fix removed the class: the stream Task no longer traps exits, and a keeper (`Helyx.HarnessIO.keep_port/1`) holds the port link. Fixed in round 5.
+- Codex adversarial review, round 3: no finding.
+- Accepted: the keeper, not the Task, traps exits. The owner decision was the result, "the turn fails with the same error shape", and it holds. Claude Code no longer traps exits for the life of the port.
+- Accepted: the short trap in the go-ahead of `Helyx.Watchdog.start/4` covers one write and one port check, and it predates this change.
+- Open, out of scope: the Codex provider still traps exits to send `turn/interrupt`, so a shutdown during its start, its replay build, or behind queued stdout can wait up to the 2,000 ms kill; `receive_end/3` does not take `:epipe`, bounded by its 1,000 ms wait. Ticket #184.
