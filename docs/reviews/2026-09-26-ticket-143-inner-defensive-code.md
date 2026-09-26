@@ -41,3 +41,9 @@ Failure-path: 1 finding, not fixed here. A `/model` switch to a provider whose `
 ## Precommit
 
 `mix precommit` passed in the root, `plugins/bundled`, and `apps/coding_agent`.
+
+## Orchestrator
+
+- Codex adversarial review, round 1: no finding. Precommit passed after the rebase on #142.
+- Accepted: the extra deleted ViewModel test (it tested only the guard and the catch-all that A3 deletes), and one cap per terminal in `Stream.run/1` (the usage cap before `encodable?/1` stays).
+- Not fixed here: the `/model` crash on a bad `turn/0` is #145.
