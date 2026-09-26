@@ -81,6 +81,9 @@ defmodule Helyx.Session do
       :cwd,
       :hands,
       :file,
+      # The registered ModelContext and Compaction plugins, or nil for none.
+      :model_context,
+      :compaction,
       tools: [],
       transcript: [],
       seq: 0,
@@ -175,6 +178,15 @@ defmodule Helyx.Session do
   end
 
   defp start_child(%State{id: id, core: core} = state) do
+    # The plugin table of a Core does not change after start, so a plugin
+    # resolved once here is the plugin a lookup per provider call would give.
+    # Both interfaces are single-mode: one plugin or none (nil).
+    state = %{
+      state
+      | model_context: List.first(Helyx.Core.plugins(core, Helyx.ModelContext)),
+        compaction: List.first(Helyx.Core.plugins(core, Helyx.Compaction))
+    }
+
     with {:ok, _pid} <-
            DynamicSupervisor.start_child(Helyx.Core.session_supervisor(core), {__MODULE__, state}) do
       {:ok, %__MODULE__{id: id, core: core}}
@@ -646,7 +658,8 @@ defmodule Helyx.Session do
     opts = if harness?, do: opts ++ [harness_session_id: resumed], else: opts
 
     args = %{
-      core: state.core,
+      model_context: state.model_context,
+      compaction: state.compaction,
       provider: turn.provider,
       model: turn.model.model,
       context: %Context{messages: state.transcript, tools: state.tools},

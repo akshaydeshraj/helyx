@@ -13,7 +13,8 @@ defmodule Helyx.Session.Stream do
           {:done, %{stop_reason: atom(), usage: map()}} | {:error, term()} | :stream_ended
 
   @type args :: %{
-          core: Helyx.Core.name(),
+          model_context: module() | nil,
+          compaction: module() | nil,
           provider: module(),
           model: String.t(),
           context: Helyx.Context.t(),
@@ -30,7 +31,8 @@ defmodule Helyx.Session.Stream do
   """
   @spec run(args()) :: terminal()
   def run(%{
-        core: core,
+        model_context: model_context,
+        compaction: compaction,
         provider: provider,
         model: model,
         context: context,
@@ -41,8 +43,10 @@ defmodule Helyx.Session.Stream do
       }) do
     # Context building runs inside the Task so plugin code never blocks the
     # session and a plugin that raises fails the turn, not the session.
-    context = Helyx.ModelContext.build(core, context, opts)
-    context = Helyx.Compaction.compact(core, context, opts)
+    # The session resolved both plugins at its start; nil means none, and
+    # the context goes on unchanged.
+    context = if model_context, do: model_context.build(context, opts), else: context
+    context = if compaction, do: compaction.compact(context, opts), else: context
 
     result =
       case provider.stream(model, context, opts) do

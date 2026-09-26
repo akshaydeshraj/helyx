@@ -14,7 +14,8 @@ defmodule Helyx.Session.StreamTest do
 
   defp run(core, model, opts \\ []) do
     SessionStream.run(%{
-      core: core,
+      model_context: nil,
+      compaction: nil,
       provider: Keyword.get(opts, :provider, Helyx.Test.Provider),
       model: model,
       context: %Context{messages: Keyword.get(opts, :messages, [])},
