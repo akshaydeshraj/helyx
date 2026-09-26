@@ -47,3 +47,8 @@ No findings. Probes: an empty stream and a lazy stream with no terminal, a `done
 ## Precommit
 
 Passed on the first run: root 196 tests and 1 property, `plugins/bundled` 289 tests, `apps/coding_agent` 17 tests, 0 failures.
+
+## Orchestrator
+
+- Codex adversarial review, round 1: approve, 0 findings.
+- Note for #123: the `kind` flag now appears in two places, the session and the `harness?` key of `Helyx.Session.Stream.run/1`. #123 removes both.
