@@ -60,7 +60,8 @@ defmodule Helyx.TUI.Test.Provider.Monitors do
 
   @impl true
   def turn do
-    Process.monitor(spawn(fn -> :ok end))
+    # spawn_monitor/1: a monitor set after spawn/1 can give `:noproc`.
+    spawn_monitor(fn -> :ok end)
     :local
   end
 end

@@ -26,6 +26,7 @@ Invariants the review axes check on every diff. Add one when a review or a PR co
 - Two findings on one mechanism stop the patching. The next round fixes the mechanism, not the path.
 - A `receive` loop with a deadline checks the deadline before each `receive`. A matching message in the mailbox wins over `after`, even with a timeout of 0, so a sender that never stops keeps the loop past its deadline. The failure path queues messages past the deadline and checks that the loop acts on it. Source: the Codex round 1 finding of #11.
 - Every resource has a release path that works when its owner dies (ADR 0004): inside the VM through links to the owner, at the OS boundary through the port watchdog. The resource is still held with the hands, with `Helyx.Tool.hold/1`, before the external work starts, because delivery and cancel wait until it is gone.
+- A test that monitors a process it just spawned uses `spawn_monitor/1`. With `Process.monitor(spawn(...))` the process can exit before the monitor is set, and the `:DOWN` reason is `:noproc`. Source: the Codex round 1 finding of #170.
 
 ## Events
 
