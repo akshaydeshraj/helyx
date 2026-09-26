@@ -27,7 +27,7 @@ The protocol facts are in `docs/research/claude-code-stream-json.md` ("Long-live
 |---|---|---|
 | Program life | one turn | the session, or until a provider switch, a crash, or a failed interrupt |
 | Steer on an external turn | abort, then a new turn with the steer | delivered to the running turn at most once; queued for the next turn only after a confirmed rejection |
-| Abort | kill the stream Task, release the group | stop the Helyx tool calls, then interrupt in the program within a deadline; on a timeout or queued work left, stop the program with TERM |
+| Abort | kill the stream Task, release the group | stop the Helyx tool calls, then interrupt in the program within a deadline; on a timeout, queued work left, or (Codex) a running command, stop the program with TERM |
 | Resume and replay | every turn | when the program starts: the first turn, after a crash, after a provider switch |
 | Helyx tools in the harness | not offered | Claude: an SDK MCP server over stdio. Codex: `dynamicTools` |
 | Harness requests | Codex approvals: `accept`; all else: an error | Helyx tool calls run on the hands; approvals still `accept`; all else an error |
@@ -108,7 +108,7 @@ At the terminal of a normal end, the session checks for Helyx work of the turn: 
 - With none, the turn ends as today.
 - With some, the turn ends, and the session asks the hands for the turn cleanup, step 1. Each Helyx call with no result gets an `aborted` error result, as today at the end of an external call. The session starts no turn until the hands answer.
 
-A harness can withdraw a tool request: Claude sends `control_cancel_request` (research note, source only). The provider gives the action `{:cancel_tool, turn_id, call_id}`. The session asks the hands to kill and release that one tool Task, or drops the request from the queue. Its result, if one comes, is dropped: the pair `{turn_id, call_id}` is no longer open.
+A harness can withdraw a tool request: at an interrupt, Claude sends the MCP notification `notifications/cancelled` in an `mcp_message` for an open `tools/call` (#198). The source also has `control_cancel_request`, which was never seen; the provider treats it the same way. Codex withdraws nothing: an open `item/tool/call` gets no `serverRequest/resolved`, so the abort answers it first (abort step 3). The provider gives the action `{:cancel_tool, turn_id, call_id}`. The session asks the hands to kill and release that one tool Task, or drops the request from the queue. Its result, if one comes, is dropped: the pair `{turn_id, call_id}` is no longer open.
 
 ## Interface changes
 
@@ -210,12 +210,12 @@ A steer that waits for its answer or its `user_message` counts in the 32 entries
 
 ### Claude Code
 
-- `claude --output-format stream-json --verbose --input-format stream-json --include-partial-messages --permission-mode bypassPermissions --session-id=<uuid> --mcp-config <helyx server> --replay-user-messages`, with no `-p`. The run passes `--resume=<id>` in place of `--session-id` when the harness session exists.
+- `claude --output-format stream-json --verbose --input-format stream-json --include-partial-messages --permission-mode bypassPermissions --session-id=<uuid> --mcp-config <helyx server>`, with no `-p`. The run passes `--resume=<id>` in place of `--session-id` when the harness session exists.
 - A turn is one user line. The turn ends at a `result` line with `queued_turn_count` 0 **and** no unresolved steer. A steer that `claude` queues as its next turn therefore stays in the same Helyx turn.
 - A steer is a user line with `uuid` equal to `steer_id`. `claude` never rejects a user line, so the provider checks first: after the terminal of the turn, it answers `:rejected` and writes nothing. Otherwise the write gives `:ok`, and the steer is unresolved.
-- The replay echo of that `uuid` (or `command_lifecycle` `started`, to verify) resolves the steer and gives `{:user_message, steer_id, text}`.
-- A `result` with `queued_turn_count` 0 can come before `claude` read an unresolved steer. Then `claude` reads it later and starts a turn of its own. So the provider waits for the echo, then for the next `result` with `queued_turn_count` 0, and only then emits the terminal. The whole program turn is inside the Helyx turn.
-- The wait for the echo after such a `result` is bounded (see "Bounds"). Over the bound, the loop ends itself (see "Stop"): Helyx does not know whether the program will start the steer.
+- `command_lifecycle` `started` for that `uuid` resolves the steer and gives `{:user_message, steer_id, text}`. It comes 0 to 10 ms after the tool result or the `result` (#198). The replay echo is not used: it comes only when the next model call starts, 0.65 to 1.77 s later.
+- A `result` with `queued_turn_count` 0 can come before `claude` read an unresolved steer. Then `claude` reads it later and starts a turn of its own. #198 saw this in every run: a line queued at the end of a turn always ran as a turn of its own, and every `result` had `queued_turn_count` 0. So the provider waits for `started`, then for the next `result` with `queued_turn_count` 0, and only then emits the terminal. The whole program turn is inside the Helyx turn.
+- The wait for `started` after such a `result` is bounded (see "Bounds"). Over the bound, the loop ends itself (see "Stop"): Helyx does not know whether the program will start the steer.
 - `interrupt` is the control request `interrupt` with `cancel_queued: true`.
   - The program must list `interrupt_cancel_queued_v1` in `init.capabilities`. Without it, every interrupt answers `{:error, :no_cancel_queued}`, and the abort stops the program.
   - A response with a `still_queued` list that is not empty answers `{:error, :still_queued}`. The abort stops the program.
@@ -225,10 +225,14 @@ A steer that waits for its answer or its `user_message` counts in the 32 entries
 ### Codex
 
 - `initialize` with `experimentalApi`, then `thread/start` with `dynamicTools` (the Helyx tools), or `thread/resume` with the trust overrides, which a resume does not keep (research note).
-- A turn is `turn/start`. A steer is `turn/steer` with `expectedTurnId` and `clientUserMessageId` equal to `steer_id`. After `turn/completed` of the turn, the provider answers `:rejected` and sends nothing. The server also checks `expectedTurnId`, so a steer that crosses the end of the turn gets the error below.
-  - A success answer gives `:ok`. The `userMessage` item with that id gives `{:user_message, ...}` (to verify).
+- A turn is `turn/start`. A steer is `turn/steer` with `expectedTurnId` and `clientUserMessageId` equal to `steer_id`. The `userMessage` item carries this id in the field `clientId` (#198). After `turn/completed` of the turn, the provider answers `:rejected` and sends nothing. The server also checks `expectedTurnId`, so a steer that crosses the end of the turn gets the error below.
+  - A success answer gives `:ok`. The `userMessage` item with that `clientId` gives `{:user_message, ...}`.
   - The errors `no active turn to steer` and a turn id mismatch give `:rejected`. Any other error gives `{:error, reason}`.
-- `interrupt` is `turn/interrupt`. The answer comes only after the turn stopped. After it, a `turn/started` that Helyx did not ask for, or any item of the stopped turn, ends the loop, and the program stops.
+- `turn/interrupt` stops the turn but **not a running command**: the command runs to its end, and its late `item/completed` can come during the next turn (#198, 7 of 7 runs). So the provider tracks the open `commandExecution` items of the turn (`item/started` without `item/completed`). Owner decision on #201:
+  - No open command: `interrupt` is `turn/interrupt`. The answer comes only after the turn stopped. The program stays.
+  - An open command: `interrupt` answers `{:error, :command_running}` at once, and the abort stops the program. On TERM the program ends its commands (research note). The next turn starts the program again and resumes, as today.
+  - After an interrupt with `:ok`, a `turn/started` that Helyx did not ask for, or any item of the stopped turn, ends the loop, and the program stops.
+  - An accepted steer that the model did not yet take is dropped by `turn/interrupt`, and no turn starts (#198).
 - `item/tool/call` gives `{:tool_request, ...}`. The result goes back as `contentItems` text.
 - When `experimentalApi` is rejected, the thread starts without `dynamicTools`, and the session emits a notice that the Helyx tools are off for this provider.
 - A thread whose tool set differs from the current Helyx tool set starts a new thread with the replay.
@@ -244,7 +248,7 @@ The numbers are proposals. Observed values are given for comparison.
 | interrupt, from the request to the reply | 2,000 ms, armed kill | stop and turn cleanup. Observed: 19 ms (Codex), 50 ms (Claude) |
 | steer answer | 2,000 ms, armed kill | stop and turn cleanup; the steer is unknown: not queued again, a notice |
 | `{:turn, ...}` answer | 2,000 ms, armed kill | stop and turn cleanup |
-| Claude: the wait for the echo of an unresolved steer after a `result` with `queued_turn_count` 0 | 5,000 ms, a timer of the loop | the loop ends itself: stop and turn cleanup; the steer is unknown, a notice. A blocked loop does not reach this timer, and an abort (an armed kill) ends it |
+| Claude: the wait for `started` of an unresolved steer after a `result` with `queued_turn_count` 0 | 5,000 ms, a timer of the loop. Observed: 0 to 10 ms | the loop ends itself: stop and turn cleanup; the steer is unknown, a notice. A blocked loop does not reach this timer, and an abort (an armed kill) ends it |
 | steers waiting for an answer or a `user_message` | in the 32 entries of the session's steer queue | `{:error, :queue_full}` to the client |
 | requests from the session open in the harness process | 8 | `{:error, :busy}` to the caller at once |
 | Helyx tool requests of one turn | one runs; at most 16 wait | over 16: an error result to the harness at once |
@@ -268,30 +272,20 @@ On `SIGTERM` both programs end their own commands: Claude 2.1.283 in about 0.7 s
 | harness process | the hands, as a Task in `tasks` | hands, linked; the hands trap exits | close at session end or provider switch, then `release/3` of its handles | the link kills it with the hands; its crash is a `:DOWN` in the hands, which run the turn cleanup | kept after an interrupt with `:ok`; stopped on any other answer (the loop ends itself) or a missed deadline (the armed kill) |
 | program port, watchdog, program group | `Helyx.Watchdog.start/4` in `harness_init/3` | hands (the handles) and watchdog (the life) | close: end of input, the exit, then `release/3` | the closed port ends the watchdog's stdin: TERM, grace, KILL | as the harness process; a stop sends no end of input |
 | prepare Task | hands | hands, linked | returns the context | the link; the turn fails | killed in turn cleanup step 1 |
-| the harness's own command groups | the program | the program | the program ends them | on TERM the program ends them; a KILL leaves them (research notes, both programs) | the program's interrupt ends a foreground command; a Claude background task survives (#194) |
+| the harness's own command groups | the program | the program | the program ends them | on TERM the program ends them; a KILL leaves them (research notes, both programs) | Claude: the interrupt ends a foreground command; a background task survives (#194). Codex: the interrupt does not end a command, so an abort with an open command stops the program (#201) |
 | Helyx tool Task of a connected turn | hands | hands, linked | the result is sent back | the link; on a crash of the harness process, turn cleanup step 1 | killed and released in turn cleanup step 1 |
 | open tool request | the harness | the harness process (keyed by `{turn_id, call_id}`) | answered with the result | ends with the harness process | answered `aborted` in abort step 3 |
 | open request from the session | the session (with a timer) | the harness process | answered | the session's monitor gives `:DOWN`: turn cleanup | answered, or the timer stops the harness process; a late reply is dropped |
 | steer in the local queue of a `preparing` turn | the session | the session | goes into the context of `{:turn, ...}` | ends with the session | dropped with the queues of the aborted turn, as today |
 
-## Verify before implementation
+## Verified before implementation
 
-- Claude: the signal that the program took a steer line (the replay echo of the `uuid`, or `command_lifecycle` `started`).
-- Claude: `still_queued` and the lines after an interrupt with `cancel_queued: true` while a steer line waits.
-- Claude, the two orders at a turn end, each as a test of the provider and a run against `claude`:
-  - A steer after the loop emitted the terminal: `:rejected`, and no user line reaches the program's stdin.
-  - A steer written just before a `result` with `queued_turn_count` 0: the terminal waits for the echo and for the next `result`. Check how often `claude` reads a line after such a `result`, and the gap in time.
-- Codex: a `turn/steer` that crosses `turn/completed`: the error text, and no new turn.
-- Claude: `_meta["claudecode/toolUseId"]` in `tools/call` equals the `tool_use` id.
-- Codex: the `userMessage` item of a steer carries `clientUserMessageId`.
-- Codex: a steer that `turn/steer` accepted and the model did not yet take, then `turn/interrupt`. Is it dropped, or does it start a turn?
-- Codex: `callId` of `item/tool/call` equals the `dynamicToolCall` item id.
-- Codex: `turn/steer` during the final answer. Does the turn take one more model call?
-- Codex: the tool set of a thread after a resume with a different Helyx tool set.
-- Claude: `SIGTERM` to the group while a user line is queued. The queued line asks the model to create a marker file. Pass: no `command_lifecycle` `started` for its `uuid`, and no marker file after the exit. No `result` line alone is not a pass, because the turn can write the file and die before its `result`.
-- Both: the stop path end to end, with the watchdog cap of #196.
-- Claude: `control_cancel_request` for an open `mcp_message` (source only, not observed). When does the program send it?
-- Codex: does the program withdraw an open `item/tool/call`, for example with `serverRequest/resolved`?
+#198 ran the protocol checks on 2026-09-27 (`claude` 2.1.283, `codex` 0.157.1). The results are in `docs/research/claude-code-stream-json.md` and `docs/research/codex-app-server.md`, and this doc follows them. Two items stay open:
+
+- The stop path end to end with the watchdog cap: #196 must land first. The test belongs to #199.
+- When Claude sends `control_cancel_request`: never seen. The provider handles it as `notifications/cancelled` if it comes.
+
+The implementation tickets still test both orders at a Claude turn end, with the provider: a steer after the terminal writes nothing, and a steer written before a `result` keeps the Helyx turn open until its `started` and the next `result`.
 
 ## Out of scope
 
