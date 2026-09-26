@@ -60,7 +60,11 @@ defmodule Helyx.Core do
         {Registry, keys: :unique, name: sessions_registry(name)},
         {Registry, keys: :duplicate, name: events_registry(name)},
         {Task.Supervisor, name: task_supervisor(name)},
-        {DynamicSupervisor, name: session_supervisor(name), strategy: :one_for_one}
+        # The start message of a session holds its whole state, a resumed
+        # transcript too. An idle supervisor never collects it, so the
+        # supervisor hibernates after each message: a full collection (#103).
+        {DynamicSupervisor,
+         name: session_supervisor(name), strategy: :one_for_one, hibernate_after: 0}
       ] ++ plugin_children
 
     Supervisor.init(children, strategy: :one_for_one)

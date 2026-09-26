@@ -50,15 +50,17 @@ defmodule Helyx.SessionTest do
     registry = Helyx.Core.sessions_registry(core)
     [{pid, _}] = Registry.lookup(registry, session.id)
     stop.(pid)
-    await_free(registry, session.id, 100)
+    await(fn -> Registry.lookup(registry, session.id) == [] end, "the registry entry to free")
   end
 
-  defp await_free(_registry, _id, 0), do: flunk("registry entry never freed")
+  # Polls a condition every 10 ms, for at most 5 s by default.
+  defp await(condition, what, tries \\ 500)
+  defp await(_condition, what, 0), do: flunk("timed out waiting for #{what}")
 
-  defp await_free(registry, id, tries) do
-    if Registry.lookup(registry, id) != [] do
+  defp await(condition, what, tries) do
+    unless condition.() do
       Process.sleep(10)
-      await_free(registry, id, tries - 1)
+      await(condition, what, tries - 1)
     end
   end
 
@@ -1005,6 +1007,63 @@ defmodule Helyx.SessionTest do
     assert final_text(collect_until(:agent_end)) ==
              "user:hello\nassistant:user:hello\nuser:again"
   end
+
+  describe "the session supervisor after a resume (#103)" do
+    # The start message of a resume holds the whole transcript. The supervisor
+    # hibernates after each message, which collects that copy. Short texts stay
+    # on the heap; this transcript is about 7 MB there, and the margin is 1 MB.
+    @describetag :tmp_dir
+
+    setup %{core: core, tmp_dir: dir} do
+      {:ok, file} = Helyx.Session.File.create(dir, "big", File.cwd!(), "test/transcript")
+
+      Enum.reduce(1..20_000, file, fn i, file ->
+        Helyx.Session.File.append_message(file, Helyx.Message.user("m#{i}"))
+      end)
+
+      sup = Process.whereis(Helyx.Core.session_supervisor(core))
+      {:memory, before} = Process.info(sup, :memory)
+      %{sup: sup, limit: before + 1_000_000}
+    end
+
+    test "keeps no copy after a start and after a failed start", %{
+      core: core,
+      tmp_dir: dir,
+      sup: sup,
+      limit: limit
+    } do
+      {:ok, _session} = Session.resume(core, sessions_dir: dir)
+      await(fn -> memory(sup) < limit end, "supervisor memory under #{limit}")
+
+      assert {:error, {:already_started, _}} = Session.resume(core, sessions_dir: dir)
+      await(fn -> memory(sup) < limit end, "supervisor memory under #{limit}")
+    end
+
+    test "keeps no copy when the caller dies during the start", %{
+      core: core,
+      tmp_dir: dir,
+      sup: sup,
+      limit: limit
+    } do
+      # The start message waits in the mailbox of the suspended supervisor
+      # while the caller dies.
+      :erlang.suspend_process(sup)
+      {caller, ref} = spawn_monitor(fn -> Session.resume(core, sessions_dir: dir) end)
+
+      await(
+        fn -> Process.info(sup, :message_queue_len) != {:message_queue_len, 0} end,
+        "the start message in the supervisor mailbox"
+      )
+
+      Process.exit(caller, :kill)
+      assert_receive {:DOWN, ^ref, _, _, :killed}
+      :erlang.resume_process(sup)
+
+      await(fn -> memory(sup) < limit end, "supervisor memory under #{limit}")
+    end
+  end
+
+  defp memory(pid), do: pid |> Process.info(:memory) |> elem(1)
 
   @tag :tmp_dir
   test "resume keeps a reused tool call id open until its own result", %{
