@@ -14,7 +14,7 @@ A process group, port, file handle, or other OS resource that a tool creates is 
 
 ## Consequences
 
-- The bash launcher carries a handshake: the perl watchdog writes the group id, the tool (since #10, `Helyx.Watchdog.start/3` for it) holds it with `Helyx.Tool.hold/1`, and only then sends the go-ahead line that lets the command exec.
+- The bash launcher carries a handshake: the perl watchdog writes the group id, the tool (since #10, `Helyx.Watchdog.start/4` for it) holds it with `Helyx.Tool.hold/1`, and only then sends the go-ahead line that lets the command exec.
 - Every feature doc lists its external resources in an ownership table (`docs/features/TEMPLATE.md`); a row whose release path dies with its owner is a design flag the spec axis raises before implementation.
 - Harness providers that spawn processes follow the same rule: they are spawned on the hands side (ADR 0003), and their processes are held with the hands before use.
 - perl is required for the bash tool; a system without it is a clear error at session start or resume (since #150, before the hands start).
