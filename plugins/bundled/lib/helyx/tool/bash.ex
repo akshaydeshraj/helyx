@@ -18,7 +18,7 @@ defmodule Helyx.Tool.Bash do
   command is allowed to execute. The watchdog ties the command's life to
   the port: when the port closes, because anything above the command died,
   the watchdog kills the group. perl is required; `check/0` reports a
-  system without it when the hands start.
+  system without it when a session starts or resumes.
   """
 
   @behaviour Helyx.Tool

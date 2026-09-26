@@ -59,29 +59,28 @@ defmodule Helyx.Session.Server do
     # both with it (ADR 0004).
     Process.flag(:trap_exit, true)
 
-    case Hands.start_link(
-           core: state.core,
-           cwd: state.cwd,
-           session: self(),
-           tools: state.tool_modules
-         ) do
-      {:ok, hands} ->
-        state = %{state | hands: hands}
+    # The tool checks ran before the session started, so the hands' init
+    # cannot fail (#150).
+    {:ok, hands} =
+      Hands.start_link(
+        core: state.core,
+        cwd: state.cwd,
+        session: self(),
+        tools: state.tool_modules
+      )
 
-        # A resumed transcript can end mid-turn, after a crash. Each open tool
-        # call gets an `aborted` error result before anyone can subscribe, so
-        # the next provider call sees complete call and result pairs.
-        aborted =
-          Enum.map(
-            Transcript.open_calls(state.transcript),
-            &Message.tool_result(&1, {:error, "aborted"})
-          )
+    state = %{state | hands: hands}
 
-        {:ok, Enum.reduce(aborted, state, &append_message(&2, &1))}
+    # A resumed transcript can end mid-turn, after a crash. Each open tool
+    # call gets an `aborted` error result before anyone can subscribe, so
+    # the next provider call sees complete call and result pairs.
+    aborted =
+      Enum.map(
+        Transcript.open_calls(state.transcript),
+        &Message.tool_result(&1, {:error, "aborted"})
+      )
 
-      {:error, reason} ->
-        {:stop, reason}
-    end
+    {:ok, Enum.reduce(aborted, state, &append_message(&2, &1))}
   end
 
   # An abort waits for the hands. A turn that starts now could send a tool

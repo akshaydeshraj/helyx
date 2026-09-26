@@ -31,10 +31,6 @@ defmodule Helyx.Session.Hands do
   unconfirmed, the hands refuse tool calls with an error result. Chat,
   abort, and quit are not blocked.
 
-  At init, each tool's optional `check/0` runs; a failed check stops the
-  hands with `{:tool_unavailable, name, reason}`, so the session fails to
-  start with a clear error.
-
   `stream/4` runs the stream of a harness provider call the same way, as
   a Task of the hands with the provider module in the place of the tool,
   because the harness program is the turn's tool runner (ADR 0004). Its
@@ -127,24 +123,9 @@ defmodule Helyx.Session.Hands do
     do: :gen_server.check_response(message, request)
 
   @impl true
-  def init(%State{tools: tools} = state) do
+  def init(%State{} = state) do
     Process.flag(:trap_exit, true)
-
-    case failed_check(tools) do
-      nil -> {:ok, state}
-      {name, reason} -> {:stop, {:tool_unavailable, name, reason}}
-    end
-  end
-
-  defp failed_check(tools) do
-    Enum.find_value(tools, fn {name, tool} ->
-      with true <- function_exported?(tool, :check, 0),
-           {:error, reason} <- tool.check() do
-        {name, reason}
-      else
-        _ -> nil
-      end
-    end)
+    {:ok, state}
   end
 
   @impl true
