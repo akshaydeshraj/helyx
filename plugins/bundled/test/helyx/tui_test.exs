@@ -30,6 +30,21 @@ defmodule Helyx.TUI.Test.Provider.Other do
   end
 end
 
+defmodule Helyx.TUI.Test.Provider.BadTurn do
+  @moduledoc false
+  # A provider whose `turn/0` is neither `:local` nor `:external`.
+  @behaviour Helyx.Provider
+
+  @impl true
+  def id, do: "bad_turn"
+
+  @impl true
+  def stream(_model, _context, _opts), do: {:ok, []}
+
+  @impl true
+  def turn, do: :bogus
+end
+
 defmodule Helyx.TUITest do
   # The app callbacks, driven directly: mount subscribes the caller, key
   # events edit and send the composer, session events fold into the view
@@ -47,7 +62,14 @@ defmodule Helyx.TUITest do
 
   setup do
     core = :"tui_core_#{System.unique_integer([:positive])}"
-    plugins = [Fake, Helyx.TUI.Test.Provider.Other, Helyx.TUI.Test.Tool.Slow]
+
+    plugins = [
+      Fake,
+      Helyx.TUI.Test.Provider.Other,
+      Helyx.TUI.Test.Provider.BadTurn,
+      Helyx.TUI.Test.Tool.Slow
+    ]
+
     start_supervised!({Helyx.Core, name: core, plugins: plugins})
     %{core: core}
   end
@@ -760,6 +782,7 @@ defmodule Helyx.TUITest do
 
       for {text, notice} <- [
             {"/model nope/any", "unknown provider: nope"},
+            {"/model bad_turn/any", "provider bad_turn has a bad turn/0"},
             {"/model fake", "invalid model ref"},
             {"/model fake/" <> String.duplicate("m", 252), "invalid model ref"},
             {"/model", "usage: /model"},
