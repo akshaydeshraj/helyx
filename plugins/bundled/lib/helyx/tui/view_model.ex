@@ -56,7 +56,11 @@ defmodule Helyx.TUI.ViewModel do
   @spec new(String.t()) :: t()
   def new(model), do: %__MODULE__{model: model}
 
-  @doc "Folds one event into the view model."
+  @doc """
+  Folds one event into the view model. Core makes every event from checked
+  data, so the fold trusts the shapes of `Helyx.Event`. An event of another
+  shape is a bug in Core and crashes the TUI.
+  """
   @spec apply(t(), Event.t()) :: t()
   def apply(vm, %Event{type: :agent_start}), do: %{vm | running?: true}
 
@@ -70,24 +74,25 @@ defmodule Helyx.TUI.ViewModel do
       %{stop_reason: :error, error: error} ->
         add_cell(vm, {:notice, "error: " <> error_text(error)})
 
-      _ ->
+      %{stop_reason: _other} ->
         vm
     end
   end
+
+  # The TUI shows a turn only through its messages, and a user message
+  # when it ends.
+  def apply(vm, %Event{type: type}) when type in [:turn_start, :turn_end], do: vm
+  def apply(vm, %Event{type: :message_start, data: %{message: %Message{role: :user}}}), do: vm
 
   def apply(vm, %Event{type: :message_start, data: %{message: %Message{role: :assistant}}}) do
     %{vm | streaming: []}
   end
 
-  # The fold is total: a clause head matches the delta's key and value
-  # shape, and anything malformed falls through to the catch-all.
-  def apply(vm, %Event{type: :message_update, data: %{text_delta: delta}})
-      when is_binary(delta) do
+  def apply(vm, %Event{type: :message_update, data: %{text_delta: delta}}) do
     stream(vm, {:text_delta, delta})
   end
 
-  def apply(vm, %Event{type: :message_update, data: %{thinking_delta: delta}})
-      when is_binary(delta) do
+  def apply(vm, %Event{type: :message_update, data: %{thinking_delta: delta}}) do
     stream(vm, {:thinking_delta, delta})
   end
 
@@ -110,44 +115,33 @@ defmodule Helyx.TUI.ViewModel do
     add_cell(vm, {:tool, call, call_line(call), nil})
   end
 
-  # Only a message with the role and a binary call id attaches, as
-  # `Message.tool_result/2` makes it. The content is not checked. Any other
-  # message falls through to the catch-all, so a
-  # nil id never matches an open cell with a nil id.
   def apply(vm, %Event{
         type: :tool_execution_end,
-        data: %{message: %Message{role: :tool_result, tool_call_id: id} = result}
-      })
-      when is_binary(id) do
+        data: %{message: %Message{role: :tool_result} = result}
+      }) do
     %{vm | cells: attach_result(vm.cells, result)}
   end
 
-  def apply(vm, %Event{type: :queue_update, data: %{steers: steers, follow_ups: follow_ups}})
-      when is_integer(steers) and is_integer(follow_ups) do
+  def apply(vm, %Event{type: :queue_update, data: %{steers: steers, follow_ups: follow_ups}}) do
     %{vm | queue: %{steers: steers, follow_ups: follow_ups}}
   end
 
-  def apply(vm, %Event{type: :model_change, data: %{model: model}}) when is_binary(model) do
-    %{vm | model: model}
-  end
+  def apply(vm, %Event{type: :model_change, data: %{model: model}}), do: %{vm | model: model}
 
-  def apply(vm, %Event{type: :harness_session, data: %{provider: provider} = data})
-      when is_binary(provider) do
-    vm = if data[:lost] == true, do: add_cell(vm, {:notice, lost_text(provider)}), else: vm
+  def apply(vm, %Event{
+        type: :harness_session,
+        data: %{provider: provider, lost: lost, cut: cut}
+      }) do
+    vm = if lost, do: add_cell(vm, {:notice, lost_text(provider)}), else: vm
 
-    case data[:cut] do
-      cut when is_integer(cut) and cut > 0 ->
+    if cut > 0,
+      do:
         add_cell(
           vm,
           {:notice, "#{provider} got the transcript without its #{cut} oldest messages"}
-        )
-
-      _ ->
-        vm
-    end
+        ),
+      else: vm
   end
-
-  def apply(vm, %Event{}), do: vm
 
   @doc "Adds a notice from the client itself, such as a rejected command."
   @spec notice(t(), String.t()) :: t()

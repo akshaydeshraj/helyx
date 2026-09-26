@@ -181,8 +181,7 @@ defmodule Helyx.Provider.Codex do
 
   # Asks the program to stop a running turn, waits for its end within
   # `@interrupt_wait_ms`, and exits. The closed port then ends the program.
-  defp interrupt(%{turn: turn, terminal: nil, port: port} = state, reason)
-       when is_binary(turn) and port != nil do
+  defp interrupt(%{turn: turn, terminal: nil} = state, reason) when is_binary(turn) do
     request(state, @interrupt, %{threadId: state.thread, turnId: turn})
     await_end(state, System.monotonic_time(:millisecond) + @interrupt_wait_ms)
     exit(reason)

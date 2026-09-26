@@ -249,8 +249,12 @@ defmodule Helyx.Session.Hands do
     %{state | tasks: tasks, held: held, unconfirmed: add_handles(state.unconfirmed, left)}
   end
 
+  # Of the terminals of an external turn, the crash reason is the one that
+  # `Helyx.Session.Stream.run/1` did not cap, so the hands cap it where they
+  # make it (see `Helyx.Message.cap_integers/1`). The session caps the crash
+  # reason of a local turn in its `:DOWN` clause.
   defp outcome(turn_id, :stream, {:exit, reason}),
-    do: {:stream_end, turn_id, {:error, {:task_exit, reason}}}
+    do: {:stream_end, turn_id, {:error, {:task_exit, Helyx.Message.cap_integers(reason)}}}
 
   defp outcome(turn_id, :stream, terminal), do: {:stream_end, turn_id, terminal}
 

@@ -39,17 +39,17 @@ The session keeps `start_provider_call/1`, `call_provider/1`, and `start_stream/
 
 ## Which checks move, and which stay
 
-The stream module owns the checks of stream events: the event shapes, `Message.valid_utf8?/1` on deltas, `Message.harness_id?/1` on harness ids, `Message.cap_integers/1` and `Message.encodable?/1` on tool call arguments and usage, the stop-reason set (`Helyx.Message.stop_reasons/0`), and the harness event rules.
+The stream module owns the checks of stream events: the event shapes, `String.valid?/1` on deltas, `Message.harness_id?/1` on harness ids, `Message.cap_integers/1` and `Message.encodable?/1` on tool call arguments and usage, the stop-reason set (`Helyx.Message.stop_reasons/0`), and the harness event rules.
 
-Some input reaches the session with no stream event. These checks stay at their boundary in the session:
+Some input reaches the session with no stream event. These checks stay at their boundary:
 
 | Input | Where | Check |
 | --- | --- | --- |
 | `:DOWN` reason of a crashed provider Task | the `:DOWN` clause of `handle_info/2` | `Message.cap_integers/1` |
-| `:stream_end` terminal from the hands | the `:stream_end` clause of `handle_info/2` | `Message.cap_integers/1` |
-| client text | `prompt/2`, `steer/2`, `follow_up/2` | `Message.valid_utf8?/1` |
+| crash reason of the stream Task of an external turn | `Helyx.Session.Hands`, where the hands make the `{:task_exit, reason}` terminal | `Message.cap_integers/1` |
+| client text | `prompt/2`, `steer/2`, `follow_up/2` | `String.valid?/1` |
 
-The terminal cap at the end of `run/1` stays too. The session caps the `:stream_end` terminal again, because the hands can make a terminal of their own.
+The terminal cap at the end of `run/1` stays too. The hands cap only the crash reason, the one terminal that `run/1` did not cap. The other terminals of the hands are text. The session does not cap the `:stream_end` terminal again.
 
 ## Bounds
 

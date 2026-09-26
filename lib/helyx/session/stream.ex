@@ -78,7 +78,7 @@ defmodule Helyx.Session.Stream do
     Enum.reduce_while(stream, :stream_ended, fn
       {kind, payload} = event, acc
       when kind in [:text_delta, :thinking_delta] and is_binary(payload) ->
-        forward(Message.valid_utf8?(payload), event, session, turn_id, acc)
+        forward(String.valid?(payload), event, session, turn_id, acc)
 
       {:tool_call, %Message.ToolCall{id: id, name: name, arguments: args}}, acc
       when is_binary(id) and is_binary(name) and is_non_struct_map(args) ->
@@ -136,13 +136,13 @@ defmodule Helyx.Session.Stream do
     end
   end
 
+  # The session uses the id only to find an open call, so an id that is
+  # not valid UTF-8 is dropped there like an unknown id.
   defp external_event({:tool_result, id, {status, text}} = event)
        when is_binary(id) and status in [:ok, :error] and is_binary(text) do
-    cond do
-      not Message.valid_utf8?(id) -> malformed(event)
-      byte_size(text) > @max_tool_result_bytes -> {:error, too_large(text)}
-      true -> {:ok, event}
-    end
+    if byte_size(text) > @max_tool_result_bytes,
+      do: {:error, too_large(text)},
+      else: {:ok, event}
   end
 
   defp external_event({:harness_session, id, cut} = event) when is_integer(cut) and cut >= 0 do

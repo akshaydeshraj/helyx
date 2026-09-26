@@ -8,10 +8,11 @@ defmodule Helyx.Message do
   A tool result message links to its call with `tool_call_id` and `tool_name`,
   and flags a failed call with `is_error`.
 
-  The module also owns the rules of the values in a message and in a turn:
-  the stop reason set, the harness session id, valid UTF-8, and the integer
-  limit. The session checks input against them, and the session file
-  encodes them.
+  The module also defines the rules of the values in a message and in a
+  turn: the stop reason set, the harness session id, the JSON round trip,
+  and the integer limit. It does not check input. Its callers are the
+  boundaries: the session and its stream check input against these rules,
+  and the session file reader checks the disk against them.
   """
 
   defmodule Text do
@@ -126,30 +127,9 @@ defmodule Helyx.Message do
     do: is_binary(id) and byte_size(id) in 1..@harness_id_max_bytes and String.valid?(id)
 
   @doc """
-  Whether every string in the value, keys and values at any depth, is
-  valid UTF-8.
-
-  The cheap transcript-ingress check, for the values that are plain text:
-  prompts and provider deltas are rejected against it, tool output is
-  scrubbed instead. A compound provider value that must round-trip to the
-  file is checked against `encodable?/1`, the stricter predicate.
-  """
-  @spec valid_utf8?(term()) :: boolean()
-  def valid_utf8?(value) when is_binary(value), do: String.valid?(value)
-  def valid_utf8?(%_{} = value), do: valid_utf8?(Map.from_struct(value))
-
-  def valid_utf8?(value) when is_map(value),
-    do: Enum.all?(value, fn {key, val} -> valid_utf8?(key) and valid_utf8?(val) end)
-
-  # The head-tail walk never raises on an improper list; the catch-all
-  # covers the empty list and every non-text terminal.
-  def valid_utf8?([head | tail]), do: valid_utf8?(head) and valid_utf8?(tail)
-  def valid_utf8?(_value), do: true
-
-  @doc """
   Whether the value round-trips to the session file, which holds only JSON.
 
-  Stricter than `valid_utf8?/1`: it also rejects a term JSON cannot encode,
+  It rejects text that is not valid UTF-8, and a term JSON cannot encode,
   such as a tuple, a pid, or a non-string, non-atom map key. Used at the
   provider-stream boundary for a tool call's fields and a turn's usage,
   where the value is arbitrary and must survive the write to disk.

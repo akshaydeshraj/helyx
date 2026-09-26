@@ -144,6 +144,8 @@ defmodule Helyx.Test.Harness do
   #   "id0"     an empty id
   #   "raw_id"  an id that is not valid UTF-8
   #   "orphan"  a tool result for a call of no completed message
+  #   "raw_result_id"  a tool result whose id is not valid UTF-8
+  #   "exit_big"  the stream exits with a reason of 101 digits
   #   "big_cut" a cut of 101 digits, over the digit limit
   #   "max_cut" a cut of 100 digits, at the digit limit
   #   "neg_cut" a cut of -1
@@ -163,6 +165,8 @@ defmodule Helyx.Test.Harness do
   def turn, do: :external
 
   @impl true
+  def stream("exit_big", _context, _opts), do: exit({:boom, Integer.pow(10, 100)})
+
   def stream("open_call", _context, _opts),
     do:
       {:ok,
@@ -220,6 +224,7 @@ defmodule Helyx.Test.Harness do
   defp events("id0"), do: [{:harness_session, "", 0}]
   defp events("raw_id"), do: [{:harness_session, <<255>>, 0}]
   defp events("orphan"), do: [{:tool_result, "nope", {:ok, "lost"}}]
+  defp events("raw_result_id"), do: [{:tool_result, <<255>>, {:ok, "lost"}}]
 
   defp result_text("multibyte"), do: String.duplicate("x", 65_535) <> "é"
   defp result_text("raw"), do: :binary.copy(<<255>>, 65_536)
