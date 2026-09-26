@@ -62,3 +62,9 @@ Failure-path: 0 findings. Probes through `Stream.run/1`: an external turn, an id
 ## Precommit
 
 `mix precommit` passed in the root, `plugins/bundled`, and `apps/coding_agent`, after round 2 and again after round 3.
+
+## Orchestrator
+
+- Codex adversarial review, round 1: no finding. The base did not change after the precommit run of the worker.
+- Spec conflict accepted: the new message shape changes two assertions of the stream and `Turn` tests of the integer cap. The session test of the integer cap is unchanged. The feature doc now says this.
+- Equal calls: the feature doc now states that a call equal to a rejected call is also not run, as for the integer cap.
