@@ -343,6 +343,52 @@ defmodule Helyx.TUITest do
              {:session_down, :noproc}
   end
 
+  test "a snapshot of an unsupported contract version shows a message, not the session", %{
+    core: core
+  } do
+    # A fake session that answers the snapshot call with version 2.
+    id = "future"
+    test = self()
+
+    fake =
+      spawn(fn ->
+        {:ok, _} = Registry.register(Helyx.Core.sessions_registry(core), id, nil)
+        send(test, :registered)
+
+        receive do
+          {:"$gen_call", from, {:snapshot}} ->
+            GenServer.reply(from, %Session.Snapshot{
+              contract_version: 2,
+              seq: 7,
+              messages: [%Message{role: :user, content: [%Message.Text{text: "secret"}]}],
+              turn: nil,
+              model: "fake/future",
+              queue: %{steers: 0, follow_ups: 0}
+            })
+
+            Process.sleep(:infinity)
+        end
+      end)
+
+    assert_receive :registered
+    {:ok, state} = TUI.mount(session: %Session{id: id, core: core})
+
+    assert [{%Paragraph{} = message, _rect}] = TUI.render(state, %{width: 80, height: 10})
+    assert inspect(message) =~ "contract version"
+    refute inspect(message) =~ "secret"
+
+    # Session events and keys do nothing; Ctrl+C quits.
+    event = %Event{type: :agent_end, session_id: id, turn_id: "t", seq: 8, data: %{}}
+    assert {:noreply, ^state} = TUI.handle_info({:helyx_event, event}, state)
+    assert {:noreply, ^state} = TUI.handle_event(%Key{code: "enter", kind: "press"}, state)
+    assert {:stop, _state} = TUI.handle_event(%Key{code: "c", modifiers: ["ctrl"]}, state)
+
+    # The end of the session still ends the TUI.
+    Process.exit(fake, :kill)
+    assert_receive {:DOWN, _ref, :process, ^fake, :killed} = down
+    assert catch_exit(TUI.handle_info(down, state)) == {:session_down, :killed}
+  end
+
   defp eventually(condition, tries \\ 100)
   defp eventually(_condition, 0), do: flunk("condition never held")
 
