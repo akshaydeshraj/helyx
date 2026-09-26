@@ -13,7 +13,7 @@ Decisions:
 - Accepted shape: `name` a non-empty string of valid UTF-8; `description` a string of valid UTF-8; `parameters` a map whose top-level keys are strings and that `Helyx.Message.encodable?/1` accepts. Nested keys are not checked: the ticket puts JSON Schema validation out of scope, and `encodable?/1` already rejects nested values that JSON cannot hold.
 - The error label is the name when the name passes, else `inspect(module)`, an atom text of at most 255 characters.
 - Two tools with one name keep `{:error, {:duplicate_tool_name, name}}`, the existing shape and test, not `{:bad_tool_spec, name}`. The feature doc row states this.
-- A spec callback that raises raises in the caller of `start/2` or `resume/2`, as the provider lookup does. Plugins are compiled into the node, and the checklist checks shape, not values.
+- A spec callback that raises, throws, or exits gives `{:error, {:bad_tool_spec, module_name}}`. (Round 1 and 2 let the failure reach the caller. The orchestrator's Codex review rejected that as a regression; see "Orchestrator, Codex round 1".)
 - `CodingAgent.error_text/1` gets no new clause. `{:bad_tool_spec, label}` goes through the `inspect/1` fallback with its limits and the clean pass, like `{:duplicate_tool_name, _}`. The feature doc lists it.
 
 ## Bounds sensor
@@ -63,3 +63,29 @@ The fix: 17 changed lines in `lib/`, in two code files (`session.ex`, `tool.ex`)
 - Standards: no hard violations. Skipped again: `:persistent_term` in an async test; the key belongs to one test and is erased.
 - Spec: clean. No path breaks the invariant: before the spec check, `start/2` runs only `Id.new/0` and the `cwd` check, and `resume/2` only reads the `:sessions_dir` option and checks `cwd`.
 - Failure path: the round 1 reproduction passes. One finding outside this diff, already on master: a tool whose `check/0` fails is rejected in `Hands.init/1`, after `resume/2` repaired the file or `start/2` created it, which leaves an orphan file. Not fixed here: `check/0` is not a spec callback, #142 does not name it, and the moduledoc of the hands documents it at hands start. Reported to the orchestrator for a separate ticket.
+
+## Orchestrator, Codex round 1
+
+One finding (medium): a tool whose `name/0`, `description/0`, or `parameters/0` raises, throws, or exits reached the caller of `start/2` and `resume/2`. On master, part of this path returned `{:error, _}` from the session start. Decision 4 of rounds 1 and 2 (let it propagate) was rejected. The other decisions were accepted, and the `check/0` ordering bug is a separate ticket.
+
+## Round 3 (full)
+
+The fix: a `catch` around the three callbacks in `Helyx.Tool.specs/1`, which gives `{:error, {:bad_tool_spec, module_name}}`. It adds a function, so a full round.
+
+- Simplify, four agents. Fixed: the three failing test tools were copies of the table generator; the table now holds quoted callback bodies, and one start test and one resume test cover every row. Reuse and efficiency: clean. Altitude: `Helyx.Provider.find/2` calls `id/0` with no catch. Out of scope, reported to the orchestrator.
+- Standards: no hard violations. Fixed: the feature doc named the review round; it now names the ticket. Fixed: a checklist line under "Inputs from plugins" states the rule. The `:failed` sentinel finding is resolved by round 4.
+- Spec: no missing requirement. The first error now names the first bad tool in registration order, not name order; the feature doc states it. Its unproven second path is the failure-path finding below.
+- Failure path, reproduced: a struct in `parameters` whose `JSON.Encoder` implementation (plugin code) throws or exits escaped through `Helyx.Message.encodable?/1`, which only rescues.
+
+This is the second finding on one mechanism: plugin code that runs during the spec check outside a catch. Round 4 fixes the mechanism, not the path: `checked_spec/1` builds and checks each spec inside one `catch`, so every piece of plugin code that the check runs is contained. The sentinel is gone. `encodable?/1` is not changed. Two test rows (`Helyx.Test.FailingJSON`, throw and exit) cover the encoder path; they fail without the fix.
+
+## Round 4 (full)
+
+The fix of the mechanism (above): `checked_spec/1` builds and checks each spec inside one `catch`, and `specs/1` stops at the first bad tool with `Enum.reduce_while/3`. It adds and removes functions, so a full round.
+
+- Simplify, four agents. Fixed: two `cond` branches with the same result became one. Skipped: a `:module` marker in the test table for labels that equal the module name; the literal labels keep the expected value visible. Reuse, efficiency, altitude: clean; the catch is at the mechanism.
+- Standards: no hard violations. Fixed: the new checklist line stated a rule that `Helyx.Provider.find/2` (`id/0`) does not meet yet; the line now names that hole as open. Kept: the catch also wraps core code in `checked_spec/1`, as `Helyx.Provider.turn/1` does; the comment states why. Skipped: mixed quoted and literal cells in the test table.
+- Spec: no missing requirement, no scope creep. A nested key whose `String.Chars` implementation exits is contained. Residual: an exit signal sent to the caller (next item).
+- Failure path: every requested reproduction holds through `start/2` and `resume/2`, with a consolidated `JSON.Encoder`. Finding: the crash of a process that a callback links to the caller (`spawn_link`, a failing `Task.async`) ends the caller, because a `catch` cannot stop an exit signal. `Helyx.Provider.turn/1` has the same limit. Accepted and stated in the feature doc row: a plugin is compiled into the node, and a separate process for the spec build would give up "in the caller". Reported to the orchestrator.
+
+No code changed after the round 4 reviews; only the feature doc, the checklist, and this record.

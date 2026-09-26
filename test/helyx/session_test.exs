@@ -1021,18 +1021,32 @@ defmodule Helyx.SessionTest do
   end
 
   describe "tool specs at the session boundary (#142)" do
-    # One bad test tool per rule of `Helyx.Tool.specs/1`, with the label
-    # the error gives.
+    # One bad test tool per rule of `Helyx.Tool.specs/1`, and one per
+    # failure class of a spec callback (raise, throw, exit), with the label
+    # the error gives. Each row holds the quoted callback bodies.
+    @empty Macro.escape(%{})
     @bad_specs [
-      {Helyx.SessionTest.EmptyName, "", "d", %{}, "Helyx.SessionTest.EmptyName"},
-      {Helyx.SessionTest.AtomName, :bad, "d", %{}, "Helyx.SessionTest.AtomName"},
-      {Helyx.SessionTest.BytesName, <<"b", 255>>, "d", %{}, "Helyx.SessionTest.BytesName"},
-      {Helyx.SessionTest.NilDesc, "t", nil, %{}, "t"},
-      {Helyx.SessionTest.BytesDesc, "t", <<"d", 255>>, %{}, "t"},
+      {Helyx.SessionTest.EmptyName, "", "d", @empty, "Helyx.SessionTest.EmptyName"},
+      {Helyx.SessionTest.AtomName, :bad, "d", @empty, "Helyx.SessionTest.AtomName"},
+      {Helyx.SessionTest.BytesName, <<"b", 255>>, "d", @empty, "Helyx.SessionTest.BytesName"},
+      {Helyx.SessionTest.NilDesc, "t", nil, @empty, "t"},
+      {Helyx.SessionTest.BytesDesc, "t", <<"d", 255>>, @empty, "t"},
       {Helyx.SessionTest.ListParams, "t", "d", [], "t"},
-      {Helyx.SessionTest.AtomKeys, "t", "d", %{type: "object"}, "t"},
-      {Helyx.SessionTest.TupleParams, "t", "d", %{"type" => {:object}}, "t"},
-      {Helyx.SessionTest.BytesParams, "t", "d", %{"type" => <<255>>}, "t"}
+      {Helyx.SessionTest.AtomKeys, "t", "d", Macro.escape(%{type: "object"}), "t"},
+      {Helyx.SessionTest.TupleParams, "t", "d", Macro.escape(%{"type" => {:object}}), "t"},
+      {Helyx.SessionTest.BytesParams, "t", "d", Macro.escape(%{"type" => <<255>>}), "t"},
+      {Helyx.SessionTest.ThrowingEncoder, "t", "d",
+       Macro.escape(%{"type" => %Helyx.Test.FailingJSON{kind: :throw}}),
+       "Helyx.SessionTest.ThrowingEncoder"},
+      {Helyx.SessionTest.ExitingEncoder, "t", "d",
+       Macro.escape(%{"type" => %Helyx.Test.FailingJSON{kind: :exit}}),
+       "Helyx.SessionTest.ExitingEncoder"},
+      {Helyx.SessionTest.RaisingName, quote(do: raise("boom")), "d", @empty,
+       "Helyx.SessionTest.RaisingName"},
+      {Helyx.SessionTest.ThrowingDescription, "t", quote(do: throw(:boom)), @empty,
+       "Helyx.SessionTest.ThrowingDescription"},
+      {Helyx.SessionTest.ExitingParameters, "t", "d", quote(do: exit(:boom)),
+       "Helyx.SessionTest.ExitingParameters"}
     ]
 
     for {module, name, description, parameters, _label} <- @bad_specs do
@@ -1041,11 +1055,11 @@ defmodule Helyx.SessionTest do
         @behaviour Helyx.Tool
 
         @impl true
-        def name, do: unquote(Macro.escape(name))
+        def name, do: unquote(name)
         @impl true
-        def description, do: unquote(Macro.escape(description))
+        def description, do: unquote(description)
         @impl true
-        def parameters, do: unquote(Macro.escape(parameters))
+        def parameters, do: unquote(parameters)
         @impl true
         def run(_args, _cwd), do: {:ok, ""}
       end
@@ -1077,7 +1091,9 @@ defmodule Helyx.SessionTest do
     end
 
     @tag :tmp_dir
-    test "start rejects each bad spec, names the tool, and makes nothing", %{tmp_dir: dir} do
+    test "start rejects each bad or failing spec, names the tool, and makes nothing", %{
+      tmp_dir: dir
+    } do
       for {module, _name, _description, _parameters, label} <- @bad_specs do
         core = start_core([Helyx.Test.Provider, Helyx.Test.Tool.Upcase, module])
 
@@ -1091,7 +1107,7 @@ defmodule Helyx.SessionTest do
     end
 
     @tag :tmp_dir
-    test "resume rejects a bad spec before it reads or repairs the file",
+    test "resume rejects a bad or failing spec before it reads or repairs the file",
          %{core: core, tmp_dir: dir} do
       {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
       [path] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl"))
@@ -1101,10 +1117,13 @@ defmodule Helyx.SessionTest do
       File.write!(path, ~s({"type":"mess), [:append])
       before = File.read!(path)
 
-      bad = start_core([Helyx.Test.Provider, Helyx.SessionTest.NilDesc])
-      assert {:error, {:bad_tool_spec, "t"}} = Session.resume(bad, sessions_dir: dir)
+      for {module, _name, _description, _parameters, label} <- @bad_specs do
+        bad = start_core([Helyx.Test.Provider, module])
+        assert {:error, {:bad_tool_spec, ^label}} = Session.resume(bad, sessions_dir: dir)
+        assert DynamicSupervisor.count_children(Helyx.Core.session_supervisor(bad)).active == 0
+      end
+
       assert File.read!(path) == before
-      assert DynamicSupervisor.count_children(Helyx.Core.session_supervisor(bad)).active == 0
     end
 
     test "the spec callbacks run once per session, not per provider call" do

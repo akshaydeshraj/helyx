@@ -57,37 +57,46 @@ defmodule Helyx.Tool do
   `description` is a string of valid UTF-8, and `parameters` is a map with
   string keys at the top level that `Helyx.Message.encodable?/1` accepts.
   Otherwise the result is `{:error, {:bad_tool_spec, label}}`: the label is
-  the name when the name is accepted, else the module name. Two tools with
+  the name when the name is accepted, else the module name. Plugin code that
+  raises, throws, or exits while a spec is built or checked (a callback, or
+  a JSON encoder of a struct in `parameters`) gives the same error with the
+  module name, so a plugin failure never reaches the caller. Two tools with
   one name give `{:error, {:duplicate_tool_name, name}}`.
   """
   @spec specs(Helyx.Core.name()) ::
           {:ok, [{module(), spec()}]}
           | {:error, {:bad_tool_spec, String.t()} | {:duplicate_tool_name, String.t()}}
   def specs(core) do
-    tools =
-      core
-      |> Helyx.Core.plugins(__MODULE__)
-      |> Enum.map(
-        &{&1, %{name: &1.name(), description: &1.description(), parameters: &1.parameters()}}
-      )
-      |> Enum.sort_by(fn {_tool, spec} -> spec.name end)
+    result =
+      Enum.reduce_while(Helyx.Core.plugins(core, __MODULE__), {:ok, []}, fn tool, {:ok, acc} ->
+        case checked_spec(tool) do
+          {:ok, spec} -> {:cont, {:ok, [{tool, spec} | acc]}}
+          error -> {:halt, error}
+        end
+      end)
 
-    with :ok <- check_specs(tools), :ok <- check_unique(tools), do: {:ok, tools}
+    with {:ok, tools} <- result,
+         :ok <- check_unique(tools),
+         do: {:ok, Enum.sort_by(tools, fn {_tool, spec} -> spec.name end)}
   end
 
-  defp check_specs(tools) do
-    Enum.find_value(tools, :ok, fn {tool, spec} ->
-      cond do
-        not text?(spec.name) or spec.name == "" ->
-          {:error, {:bad_tool_spec, inspect(tool)}}
+  # The callbacks and the check run in one catch: all of it can run plugin
+  # code, and a failure there is a bad spec, not a crash of the caller.
+  defp checked_spec(tool) do
+    spec = %{name: tool.name(), description: tool.description(), parameters: tool.parameters()}
 
-        not text?(spec.description) or not parameters?(spec.parameters) ->
-          {:error, {:bad_tool_spec, spec.name}}
+    cond do
+      not text?(spec.name) or spec.name == "" ->
+        {:error, {:bad_tool_spec, inspect(tool)}}
 
-        true ->
-          nil
-      end
-    end)
+      not text?(spec.description) or not parameters?(spec.parameters) ->
+        {:error, {:bad_tool_spec, spec.name}}
+
+      true ->
+        {:ok, spec}
+    end
+  catch
+    _class, _reason -> {:error, {:bad_tool_spec, inspect(tool)}}
   end
 
   defp check_unique(tools) do
