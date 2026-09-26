@@ -34,3 +34,9 @@ Fix diff without test files and Markdown: 0 lines, 0 code files, so a reduced ro
 
 - Spec: 0 findings.
 - Failure path: 0 findings. Reproduced the old form under concurrency (13 non-`:normal` in 1.6M runs; `spawn_monitor/1` 0). A mailbox probe through `/model` (3,000 runs) found exactly one `:normal` `:DOWN` after `/model` and two `:killed` after the kill. The test passed 2,001 of 2,001 runs with `--repeat-until-failure`.
+
+## Orchestrator
+
+- Codex adversarial review, round 1: 1 finding, confirmed. The test provider did `Process.monitor(spawn(...))`, which can give `:noproc`, so the test was flaky. Fixed with `spawn_monitor/1`, and a line in `docs/agents/review-checklist.md`, "Races and resource ownership".
+- Codex adversarial review, round 2: no finding. The base did not change after the precommit run of the worker.
+- The ticket names `id/0` as the trigger. Since #169 it is `turn/0` during `/model`; the closing comment on the ticket says so.
