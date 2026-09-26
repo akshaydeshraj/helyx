@@ -247,9 +247,9 @@ defmodule Helyx.Session do
 
   @doc """
   Switches the session's model. The ref is parsed and its provider resolved
-  like the `:model` of `start/2`; a bad ref, an unknown provider, or a
-  provider id that two plugins share is an error and the model stays as it
-  was. The switch is written to the session
+  like the `:model` of `start/2`; a bad ref, an unknown provider, a
+  provider id that two plugins share, or a provider with a bad `turn/0` is
+  an error and the model stays as it was. The switch is written to the session
   file as a `model_change` entry, so a resume restores it, and goes out as a
   `:model_change` event. A running turn keeps the model it started with; the
   next turn uses the new one.

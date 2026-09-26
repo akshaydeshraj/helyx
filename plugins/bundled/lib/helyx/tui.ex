@@ -483,6 +483,7 @@ if Helyx.TUI.Available.available?() do
     # A notice shows at most the provider id, which the ref bounds cap.
     defp model_error({:unknown_provider, id}), do: "unknown provider: #{id}"
     defp model_error({:ambiguous_provider, id}), do: "two providers have the id #{id}"
+    defp model_error({:bad_provider_turn, id}), do: "provider #{id} has a bad turn/0"
 
     defp model_error({:invalid_model_ref, _ref}), do: "invalid model ref: use provider/model"
 
