@@ -1020,6 +1020,33 @@ defmodule Helyx.SessionTest do
     assert stop_reason(collect_until(:agent_end)) == :end_turn
   end
 
+  describe "cwd at the session boundary (#140)" do
+    @bad_cwds [:repo, ~c"/repo", <<"/repo", 255>>, "/re\0po"]
+
+    @tag :tmp_dir
+    test "start rejects a cwd that is not a UTF-8 string without a NUL byte, and makes nothing",
+         %{core: core, tmp_dir: dir} do
+      for cwd <- @bad_cwds do
+        assert {:error, :invalid_cwd} =
+                 Session.start(core, model: "test/ok", cwd: cwd, sessions_dir: dir)
+      end
+
+      assert File.ls!(dir) == []
+      assert DynamicSupervisor.count_children(Helyx.Core.session_supervisor(core)).active == 0
+    end
+
+    @tag :tmp_dir
+    test "resume rejects the same cwds before it reads the sessions dir",
+         %{core: core, tmp_dir: dir} do
+      for cwd <- @bad_cwds do
+        assert {:error, :invalid_cwd} = Session.resume(core, cwd: cwd, sessions_dir: dir)
+      end
+
+      assert File.ls!(dir) == []
+      assert DynamicSupervisor.count_children(Helyx.Core.session_supervisor(core)).active == 0
+    end
+  end
+
   @tag :tmp_dir
   test "a working directory that is gone gives an error result", %{core: core, tmp_dir: dir} do
     {:ok, session} = Session.start(core, model: "test/loop", cwd: Path.join(dir, "gone"))

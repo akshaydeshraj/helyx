@@ -619,9 +619,4 @@ defmodule Helyx.Session.FileTest do
       assert {:ok, %{session_id: "b"}} = Session.File.resume(dir, "_repo", max_scanned_files: 1)
     end
   end
-
-  test "a working directory that is not UTF-8 is an error, not a raise", %{tmp_dir: dir} do
-    assert {:error, {:create_failed, _}} =
-             Session.File.create(dir, "sess1", <<"/repo", 255>>, "test/ok")
-  end
 end

@@ -73,32 +73,28 @@ defmodule Helyx.Session.File do
           | {:too_large, String.t()}
           | :not_regular
           | {:repair_failed, File.posix()}
-          | {:create_failed, File.posix() | :invalid_utf8}
+          | {:create_failed, File.posix()}
 
-  @doc "Creates the file for a new session and writes the header."
+  @doc """
+  Creates the file for a new session and writes the header. `cwd` and
+  `model` must be valid UTF-8; `Helyx.Session.start/2` checks both.
+  """
   @spec create(Path.t(), String.t(), String.t(), String.t()) :: {:ok, t()} | {:error, error()}
   def create(dir, session_id, cwd, model) do
-    # A cwd or model that is not UTF-8 cannot reach JSON, and the mkdir
-    # failing is the caller's configuration, not a crash.
-    with :ok <- valid_utf8(cwd, model),
-         project = project_dir(dir, cwd),
-         :ok <- File.mkdir_p(project) do
-      header = %{"type" => "session", "version" => @version, "cwd" => cwd, "model" => model}
-      {:ok, append(%__MODULE__{path: Path.join(project, session_id <> ".jsonl")}, header)}
-    else
-      {:error, reason} -> {:error, {:create_failed, reason}}
+    project = project_dir(dir, cwd)
+
+    # The mkdir failing is the caller's configuration, not a crash.
+    case File.mkdir_p(project) do
+      :ok ->
+        header = %{"type" => "session", "version" => @version, "cwd" => cwd, "model" => model}
+        {:ok, append(%__MODULE__{path: Path.join(project, session_id <> ".jsonl")}, header)}
+
+      {:error, reason} ->
+        {:error, {:create_failed, reason}}
     end
   rescue
     # The header write failing right after the mkdir succeeded.
     error in File.Error -> {:error, {:create_failed, error.reason}}
-  end
-
-  defp valid_utf8(cwd, model) do
-    if Message.valid_utf8?(cwd) and Message.valid_utf8?(model) do
-      :ok
-    else
-      {:error, :invalid_utf8}
-    end
   end
 
   @doc """
