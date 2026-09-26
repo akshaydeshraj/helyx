@@ -181,6 +181,42 @@ defmodule Helyx.Provider.CodexTest do
 
   @done %{status: "completed", aggregatedOutput: "out", exitCode: 0}
 
+  # The setup restores PATH.
+  test "with no perl on PATH, the stream returns an error that names perl",
+       %{bin: bin, work: work} do
+    System.put_env("PATH", bin)
+
+    assert {:error, "perl not found" <> _} =
+             Codex.stream("m", %Helyx.Context{messages: []}, cwd: work)
+  end
+
+  # The setup restores PATH.
+  test "a perl that ends with no output ends the stream with an error that names perl",
+       %{bin: bin, work: work} do
+    File.write!(Path.join(bin, "perl"), "#!/bin/sh\nexit 1\n")
+    File.chmod!(Path.join(bin, "perl"), 0o755)
+    System.put_env("PATH", bin)
+
+    {:ok, stream} = Codex.stream("m", %Helyx.Context{messages: []}, cwd: work)
+
+    assert [{:error, {:not_started, "the perl watchdog gave no marker: "}}] =
+             Enum.to_list(stream)
+  end
+
+  # The setup restores PATH. `Helyx.HarnessIO.cap_error/1` drops the invalid
+  # byte, so the error is valid UTF-8 for every reader, the model too.
+  test "a perl that writes an invalid byte and ends gives valid text that names perl",
+       %{bin: bin, work: work} do
+    File.write!(Path.join(bin, "perl"), "#!/bin/sh\nprintf 'bad \\351 byte'\nexit 1\n")
+    File.chmod!(Path.join(bin, "perl"), 0o755)
+    System.put_env("PATH", bin)
+
+    {:ok, stream} = Codex.stream("m", %Helyx.Context{messages: []}, cwd: work)
+
+    assert [{:error, {:not_started, "the perl watchdog gave no marker: bad  byte"}}] =
+             Enum.to_list(stream)
+  end
+
   test "a turn: text, tool calls, and tool results join the transcript, and the id is stored",
        %{bin: bin} = ctx do
     fresh(

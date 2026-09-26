@@ -44,3 +44,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-09-26 | #124 | r1: 5 simplify (3 fixed), 5 standards judgement calls (1 fixed), 0 spec, 0 failure-path | r1: 0 | none needed |
 | 2026-09-26 | #140 | r1: 2 simplify (1 fixed), 5 standards judgement calls (1 fixed), 1 spec (fixed), 0 failure-path; r2 (reduced): 3 spec (1 fixed), 0 failure-path | r1: 0 | none needed |
 | 2026-09-26 | #129 | r1: 1 simplify (fixed), 6 standards judgement calls (1 fixed), 0 spec (1 assertion added), 0 failure-path | r1: 0 | none needed |
+| 2026-09-26 | #141 | r1: 2, r2: 2, r3: 2, r4: 1, r5: 3, r6: 1, r7: 0 (comments and docs only); r8 (reduced, after Codex r1): 1 spec (fixed), 0 failure-path | r1: 1 (a rescue `in ErlangError` read `:original`, which a normalized exception such as `SystemLimitError` does not have); r2: 0 | `docs/agents/review-checklist.md`, Tools and hands: format a caught exception with `Exception.message/1` |

@@ -286,6 +286,14 @@ defmodule Helyx.TUI.ViewModelTest do
     end
   end
 
+  test "an error text with a control or invalid byte renders as text, not as bytes" do
+    # perl's warnings quote the environment as raw bytes (#141).
+    for text <- ["perl \x01 byte", "perl \u0085 byte", "perl \xE9 byte"] do
+      vm = fold([{:agent_end, %{stop_reason: :error, error: {:not_started, text}}}])
+      assert {:notice, "error: {:not_started, \"perl " <> _} = List.last(vm.cells)
+    end
+  end
+
   test "queue updates change the counts, including the nil-turn drain" do
     vm =
       fold([

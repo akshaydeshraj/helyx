@@ -125,22 +125,18 @@ defmodule Helyx.Provider.Codex do
 
   @impl true
   def stream(model, %Helyx.Context{messages: messages}, opts) do
-    case System.find_executable("codex") do
-      nil ->
-        {:error, "codex not found on PATH"}
+    with {:ok, exe} <- HarnessIO.find("codex") do
+      {prompt, history} = HarnessIO.split_prompt(messages)
 
-      exe ->
-        {prompt, history} = HarnessIO.split_prompt(messages)
+      state = %State{
+        model: model,
+        cwd: Keyword.fetch!(opts, :cwd),
+        resume: opts[:harness_session_id],
+        history: history,
+        prompt: prompt
+      }
 
-        state = %State{
-          model: model,
-          cwd: Keyword.fetch!(opts, :cwd),
-          resume: opts[:harness_session_id],
-          history: history,
-          prompt: prompt
-        }
-
-        {:ok, Stream.resource(fn -> start(exe, state) end, &next/1, &HarnessIO.stop/1)}
+      {:ok, Stream.resource(fn -> start(exe, state) end, &next/1, &HarnessIO.stop/1)}
     end
   end
 

@@ -80,14 +80,10 @@ defmodule Helyx.Provider.ClaudeCode do
 
   @impl true
   def stream(model, %Helyx.Context{messages: messages}, opts) do
-    case System.find_executable("claude") do
-      nil ->
-        {:error, "claude not found on PATH"}
-
-      exe ->
-        run = %Run{exe: exe, model: model, cwd: Keyword.fetch!(opts, :cwd), messages: messages}
-        resume = opts[:harness_session_id]
-        {:ok, Stream.resource(fn -> start(run, resume) end, &next/1, &HarnessIO.stop/1)}
+    with {:ok, exe} <- HarnessIO.find("claude") do
+      run = %Run{exe: exe, model: model, cwd: Keyword.fetch!(opts, :cwd), messages: messages}
+      resume = opts[:harness_session_id]
+      {:ok, Stream.resource(fn -> start(run, resume) end, &next/1, &HarnessIO.stop/1)}
     end
   end
 

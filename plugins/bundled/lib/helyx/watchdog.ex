@@ -178,7 +178,8 @@ defmodule Helyx.Watchdog do
   #     child died before the `exec`; a failure report is "<go> 0".
   #   * `{:not_started, port, acc}`: the watchdog did not fork; the rest of
   #     the stream up to the exit status is the reason.
-  #   * `{:no_marker, text}`: no marker; the port is closed.
+  #   * `{:no_marker, text}`: no marker; the port is closed. Also when perl
+  #     did not start, with no port. The text always names perl.
   #
   # Only a group marker leads to the go-ahead, after the group is held: a
   # command never runs without its group in the hands. With no marker, the
@@ -191,8 +192,27 @@ defmodule Helyx.Watchdog do
     nonce = random_word()
     grace = Keyword.get(opts, :grace_ms, @grace_ms)
     {exe, options} = launcher(argv, cwd, nonce, feed(input), grace)
-    port = Port.open({:spawn_executable, exe}, options)
 
+    case open_port(exe, options) do
+      {:ok, port} -> handshake(port, nonce, input)
+      {:error, reason} -> {:no_marker, "perl did not start: " <> reason}
+    end
+  end
+
+  # perl is used here, so its failure is handled here. The callers check
+  # for perl earlier (the bash tool's `check/0`, `Helyx.HarnessIO.find/1`),
+  # but PATH and the file can change after that check. The rescue also
+  # catches a normalized error such as `SystemLimitError` at the port limit,
+  # which has no `:original` field, so the text is the exception message.
+  defp open_port(nil, _options), do: {:error, "not found on PATH"}
+
+  defp open_port(exe, options) do
+    {:ok, Port.open({:spawn_executable, exe}, options)}
+  rescue
+    error in ErlangError -> {:error, Exception.message(error)}
+  end
+
+  defp handshake(port, nonce, input) do
     # The runtime detaches port programs into their own process group, so
     # the port's OS pid is the watchdog's group. Held as :watchdog: the
     # release waits for it, so an abort cannot return while the command is
@@ -207,9 +227,11 @@ defmodule Helyx.Watchdog do
       {:not_started, acc} ->
         {:not_started, port, acc}
 
+      # Names the watchdog, not a cause: perl may be gone, fail to compile
+      # the watchdog, or never run (an argv over the OS limit).
       {:no_marker, text} ->
         close(port)
-        {:no_marker, text}
+        {:no_marker, "the perl watchdog gave no marker: " <> text}
 
       {group, pre} ->
         Helyx.Tool.hold({:command, group})
@@ -228,7 +250,7 @@ defmodule Helyx.Watchdog do
   # -1 for none, or -2 for open input (see the watchdog). `grace_ms` is the
   # TERM grace when the port closes.
   def launcher(argv, cwd, nonce, feed, grace_ms \\ @grace_ms) do
-    perl = System.find_executable("perl") || "/usr/bin/perl"
+    perl = System.find_executable("perl")
     # ponytail: the VM decodes a name or a value that is not UTF-8 as
     # Latin-1. Such a `PERL*` value reaches the command with other bytes,
     # and such a name is not removed. Raw bytes need another transport, if
