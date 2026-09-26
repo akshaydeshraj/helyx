@@ -2,7 +2,7 @@
 
 ## Goal
 
-Move the text helpers of `Helyx.Tool` out of Core, into a helper module of `plugins/bundled`, `Helyx.Text`. About 200 of the 259 lines of `lib/helyx/tool.ex` are text utilities that only plugins need: `truncate/2`, `truncate/3`, `read_file/1`, `max_bytes/0`, and the UTF-8 edge rules. Core must stay small (AGENTS.md). After this change, `Helyx.Tool` holds only the behaviour, `by_name/1`, `spec/1`, and `hold/1`. Issue #121, from the Core cleanup plan (`docs/reviews/2026-09-26-core-cleanup-plan.md`).
+Move the text helpers of `Helyx.Tool` out of Core, into a helper module of `plugins/bundled`, `Helyx.Text`. About 200 of the 259 lines of `lib/helyx/interfaces/tool.ex` are text utilities that only plugins need: `truncate/2`, `truncate/3`, `read_file/1`, `max_bytes/0`, and the UTF-8 edge rules. Core must stay small (AGENTS.md). After this change, `Helyx.Tool` holds only the behaviour, `by_name/1`, `spec/1`, and `hold/1`. Issue #121, from the Core cleanup plan (`docs/reviews/2026-09-26-core-cleanup-plan.md`).
 
 One Core caller holds the helpers in Core: the session cuts the text of each harness tool result with `Helyx.Tool.truncate/2` (`harness_event/1`, `Helyx.Session.Stream` after #120). Core cannot call into `plugins/bundled`. So this change moves the responsibility for the cut from the session to the providers. That is a change of the `Helyx.Provider` contract.
 
@@ -48,8 +48,8 @@ No new resource. An oversized result fails the turn while the harness program ru
 
 ## Tests
 
-- The truncate and `read_file/1` tests, including the property test, move from `test/helyx/tool_test.exs` to `plugins/bundled/test/helyx/text_test.exs`, with no change to their assertions. `plugins/bundled` adds `stream_data` as a test dependency, and its lock file is updated.
-- `test/helyx/tool_test.exs` keeps only the tests of `by_name/1`, `spec/1`, and `hold/1`.
+- The truncate and `read_file/1` tests, including the property test, move from `test/helyx/interfaces/tool_test.exs` to `plugins/bundled/test/helyx/text_test.exs`, with no change to their assertions. `plugins/bundled` adds `stream_data` as a test dependency, and its lock file is updated.
+- `test/helyx/interfaces/tool_test.exs` keeps only the tests of `by_name/1`, `spec/1`, and `hold/1`.
 - The ClaudeCode and Codex tests each get a test: a tool result over the limits arrives cut, with the notice.
 - The session test "a harness tool result is cut like a tool result" (`test/helyx/session_test.exs:247`) is replaced by tests of the Core check: a result at the limit is recorded as sent; a result over the limit fails the turn with `{:tool_result_too_large, bytes, 65_536}`, the error holds no text, the open calls get their aborted results, and the session then accepts another prompt that completes a turn.
 
