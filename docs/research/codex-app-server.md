@@ -78,3 +78,70 @@ With `"approvalPolicy": "never"` and `"sandbox": "danger-full-access"` on `threa
 ## Sizes
 
 No limit is documented for a line. The largest lines in these runs were the `thread/start` result and the `thread/started` notification, under 2,000 bytes each. `thread/resume` without `excludeTurns` returns the whole history in one line (not measured).
+
+## Long-lived use, steering, approvals, and client tools (2026-09-26)
+
+Runs on 2026-09-26 with `codex-cli 0.157.1` (the program updated itself from 0.155.0), the model `gpt-6-luna` with effort `low`, in empty temporary directories: four runs with about 20 turns, driven by a Python script over stdio. Source: `openai/codex` tag `rust-v0.157.1`, commit `36650394c5b38c2990ccf2a3457165ca3e9d9726`, and the schemas from `generate-json-schema` with and without `--experimental`. "Verified" means a run on 0.157.1. "Source" means the repository at that tag.
+
+### Stable and experimental schema
+
+- The stable schema has 104 client requests, 10 server requests, and 83 notifications. With `--experimental` it has 167 client requests and 11 server requests (source).
+- An experimental method or field needs `initialize` with `"capabilities":{"experimentalApi":true}`. Without it the server answers `{"error":{"code":-32600,"message":"thread/start.dynamicTools requires experimentalApi capability"},"id":2}` (verified).
+- **`thread/rollback` was removed.** The call gives `unknown variant` (verified). `thread/revert` replaces it (source: `app-server/README.md`).
+
+### One process, many turns (verified)
+
+- One process ran 7 turns and a compaction turn on one thread in about 55 s. Each `turn/start` came after the last `turn/completed` on the same connection. `thread/status/changed` goes `active`, then `idle`, around each turn.
+- Overrides on `turn/start` (`model`, `effort`, `cwd`, `sandboxPolicy`, `approvalPolicy`, `summary`) apply "for this turn and subsequent turns" (source). `effort: "low"` on a later turn was accepted (verified). A model or `cwd` change in the middle of a thread was not verified.
+- **`thread/resume` does not keep the sandbox and the approval policy.** A thread started with `"sandbox":"workspace-write"`. A later `thread/resume` with no override returned `"sandbox":{"type":"readOnly",...}` and `"approvalPolicy":"never"` (verified). A client sends the overrides again on every resume.
+
+### Steer: `turn/steer` (stable, verified)
+
+- Request: `{"threadId","expectedTurnId","input":[...],"clientUserMessageId"?}`. The result is `{"turnId"}`.
+- Sent while the model ran `sleep 6`: the command was not stopped. After its `item/completed`, the steer input arrived as a `userMessage` item **in the same turn**, before the next model call. The model obeyed it, and the turn had one `turn/completed` with `completed`. So a steer takes effect at the next model call.
+- Errors: `no active turn to steer` with no turn running, and `expected active turn id ... but found ...` with a wrong id (verified). A review turn and a compaction turn cannot be steered (source).
+- **`turn/start` during a running turn also steers.** It returned the running turn's id, and its text became a `userMessage` of that turn (verified). Only `turn/steer` checks the turn id.
+
+### Interrupt (verified)
+
+- `turn/interrupt {threadId, turnId}` during `sleep 30`: the result `{}` came after 19 ms, then `thread/status/changed` `idle` and `turn/completed` with `"status":"interrupted"`. The running `commandExecution` got no `item/completed`. The server sends the result only after the turn has stopped (source).
+- The next `turn/start` on the same process and thread worked 0.5 s later.
+
+### Approvals
+
+- `approvalPolicy`: `untrusted`, `on-request`, `never`, or a `granular` object. `sandbox` on `thread/start`, `thread/resume`, and `thread/fork`: `read-only`, `workspace-write`, `danger-full-access` (source).
+- **Command** (verified with `untrusted` and `read-only`): `{"method":"item/commandExecution/requestApproval","id":1,"params":{"threadId","turnId","itemId","command":"/bin/zsh -lc 'echo hi > made.txt'","cwd",...,"availableDecisions":["accept",{"acceptWithExecpolicyAmendment":{...}},"cancel"]}}`. The `item/started` of the command comes first. `serverRequest/resolved` follows the answer.
+  - `{"decision":"accept"}`: the command ran, although the sandbox was `read-only`.
+  - `{"decision":"decline"}`: `item/completed` with `"status":"declined"`, and the turn went on. `decline` worked although `availableDecisions` did not list it.
+  - `acceptForSession` and `cancel` ("the turn will also be immediately interrupted") are in the source; not verified.
+- **File change** (verified): `{"method":"item/fileChange/requestApproval","id":3,"params":{"threadId","turnId","itemId","reason":null,"grantRoot":null}}`. The request has no diff; the diff is in the `changes` of the `fileChange` item's `item/started`, which comes first.
+- **A JSON-RPC error answer to an approval is a decline** (verified). The server sent `serverRequest/resolved`, the item completed with `"status":"declined"`, and the turn completed. This closes the "not verified" item in "Approvals" above.
+
+### Client tools: `dynamicTools` (experimental, verified)
+
+- `thread/start.dynamicTools` is experimental. The server request `item/tool/call` and the item `dynamicToolCall` are stable (source).
+- A tool spec is `{"type":"function","name","description","inputSchema","deferLoading"?}`, or a `namespace` that holds such tools (source).
+- Observed: `item/started` of a `dynamicToolCall`, then `{"method":"item/tool/call","id":0,"params":{"threadId","turnId","callId","namespace":null,"tool":"lookup_code","arguments":{"key":"alpha"}}}`. The answer `{"id":0,"result":{"contentItems":[{"type":"inputText","text":"ZEBRA-42"}],"success":true}}` reached the model.
+- Content items: `inputText`, `inputImage` (a remote URL is rejected), `inputAudio` (a `data:` URL only) (source).
+- An error answer, or an answer that does not parse, reaches the model as `success: false` with the text "dynamic tool request failed" or "dynamic tool response was invalid". The turn does not fail (source: `app-server/src/dynamic_tools.rs`).
+- `thread/resume` has no `dynamicTools` field (source). Whether the tools of a thread are still there after a resume in a new process was not verified.
+
+### Other methods (verified unless marked)
+
+| Method | Result |
+|---|---|
+| `model/list` | `data[]` with `id`, `isDefault`, `supportedReasoningEfforts`, `hidden` |
+| `account/rateLimits/read` | `primary.usedPercent`, `windowDurationMins`, `resetsAt`, `planType`, and more. The server also sends `account/rateLimits/updated` after every model call |
+| `config/read` | The user's effective configuration |
+| `thread/list` | `data[]` with `id`, `preview`, `model`, `status` |
+| `thread/fork {threadId, excludeTurns, lastTurnId?}` | A new thread with `forkedFromId`. No model call |
+| `thread/revert {threadId, beforeTurnId}` | Removes that turn and every later one from the history. It does not undo file changes (source) |
+| `thread/compact/start {threadId}` | `{}` at once, then a separate turn with a `contextCompaction` item. `thread/compacted` was not sent |
+| `thread/tokenUsage/updated` | Now also has `modelContextWindow` (258400 for this model) |
+| `item/commandExecution/outputDelta` | Now observed (`"delta":"first\n"`); 0.155.0 did not send it |
+
+### Processes on 0.157.1 (verified)
+
+- Every command, and the helpers `node_repl` and `codex-code-mode-host`, still run in a process group of their own. The program starts a shell command with `setsid()`, or `setpgid(0,0)` when that fails, and with `kill_on_drop(true)` (source: `utils/pty/src/process_group.rs`, `core/src/spawn.rs`).
+- **End of file on stdin during a running command:** the program exited with status 0 after about 0.07 s, and the command was gone 0.5 s later (two runs). The turn is saved as `interrupted`.
+- In stdio mode the program installs no graceful handler for `SIGTERM` and `SIGHUP` (source: `app-server/src/lib.rs`, `graceful_signal_restart_enabled`).
