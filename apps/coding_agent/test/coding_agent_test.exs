@@ -55,7 +55,10 @@ defmodule CodingAgentTest do
           {["--x\e[31m\n"], "unknown option", inspect("--x\e[31m\n")},
           {["--resume=\e[31m\n"], "bad value", ~S("--resume"="\e[31m\n")},
           {["-a\xFF\e[31m\n"], "not UTF-8", ~S("-a\xFF\e[31m\n")},
-          {["/x\xFF"], "not UTF-8", ~S("/x\xFF")}
+          {["/x\xFF"], "not UTF-8", ~S("/x\xFF")},
+          {["-="], "bad option", ~S(["-="])},
+          {["-=value"], "bad option", ~S(["-=value"])},
+          {["-=\e[31m\n"], "bad option", ~S(["-=\e[31m\n"])}
         ] do
       error = assert_raise Mix.Error, fn -> Mix.Tasks.Helyx.run(argv) end
       assert error.message =~ text

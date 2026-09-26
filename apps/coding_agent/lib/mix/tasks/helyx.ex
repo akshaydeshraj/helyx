@@ -18,6 +18,8 @@ defmodule Mix.Tasks.Helyx do
 
   use Mix.Task
 
+  @options "the options are --model provider/model and --resume"
+
   @impl true
   def run(argv) do
     {opts, args} = parse(argv)
@@ -52,21 +54,30 @@ defmodule Mix.Tasks.Helyx do
   end
 
   # The command line is a boundary: every argument in an error shows through
-  # inspect/1. OptionParser raises on some arguments that are not UTF-8, so
-  # they stop here, and parse!/2 would put the raw switch name in its error.
+  # inspect/1, and parse!/2 would put the raw switch name in its error. The
+  # UTF-8 check keeps inspect/1 output readable and stops the
+  # UnicodeConversionError that OptionParser raises on such a short switch.
   defp parse(argv) do
     if bad = Enum.find(argv, &(not String.valid?(&1))) do
       Mix.raise("an argument is not UTF-8: #{inspect(bad, binaries: :as_strings)}")
     end
 
-    case OptionParser.parse(argv, strict: [model: :string, resume: :boolean]) do
+    parsed =
+      try do
+        OptionParser.parse(argv, strict: [model: :string, resume: :boolean])
+      rescue
+        # OptionParser raises on some UTF-8 switches too, such as "-=".
+        ArgumentError -> Mix.raise("bad option in #{inspect(argv)}; #{@options}")
+      end
+
+    case parsed do
       {opts, args, []} ->
         {opts, args}
 
       {_, _, invalid} ->
         Mix.raise(
           "unknown option or bad value: #{Enum.map_join(invalid, ", ", &option_text/1)}; " <>
-            "the options are --model provider/model and --resume"
+            @options
         )
     end
   end

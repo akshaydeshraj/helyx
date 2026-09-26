@@ -67,3 +67,20 @@ Findings: simplify 1, standards 2 (minor), spec 0, failure path 0.
 - Skipped (standards): add a comment to the two UTF-8 test rows.
 - Skipped (spec, optional): state the UTF-8 rule in the moduledoc.
 - Failure path: 35 inputs, among them switch names at the 255-character atom limit, bidi and zero-width characters, NUL, `--`, and a 5000-character path. All end in `Mix.Error` with the argument through `inspect/1`. Not tested: a current directory that is not UTF-8, because macOS APFS does not make one.
+
+## Round 5 (Codex round 1)
+
+Codex found that `OptionParser.parse/2` raises `ArgumentError` from `expand_multiletter_alias/2` on some valid UTF-8 switches, such as `-=` and `-=value`. This is the second finding on one mechanism: `OptionParser` raises on some inputs.
+
+Fix on the mechanism: `parse/1` rescues `ArgumentError` by name around `OptionParser.parse/2` and raises `Mix.Error` with the whole argv through `inspect/1`. `OptionParser` does not tell which argument failed. A fuzz of 300000 random valid UTF-8 argv lists found no other exception type. A read of the `OptionParser` source in Elixir 1.19.5 found no other raise that argv can reach with `strict:`.
+
+The UTF-8 check stays. The rescue does not prove the same property: a long switch or a positional argument that is not UTF-8 does not raise, and without the check `inspect/1` shows it as a byte list cut after 50 bytes. There is no `UnicodeConversionError` clause, because nothing can reach it after the check.
+
+Regression cases: `-=`, `-=value`, and `-=` with control characters. Full rerun: more than 15 lines, and the two-findings rule applies.
+
+Findings: simplify 1 (nit, skipped), standards 2 (minor), spec 0, failure path 0.
+
+- Skipped (simplify and standards): remove the `parsed` variable with `case` over the `try`, or with a `try ... else`.
+- Skipped (standards): rename `@options` to `@options_hint`.
+- Not changed (spec and failure path): a NUL byte in a directory argument shows as a byte list. A real OS argv cannot hold NUL.
+- Not changed (spec): `--=x` shows as `"--"` without `=x`. This does not break the invariant.
