@@ -61,9 +61,7 @@ defmodule Helyx.Session do
 
   @queue_limit 32
 
-  # The stop reasons of a message end: the set of `Helyx.Provider.stop_reason`
-  # and of the session file (`SessionFile`).
-  @stop_reasons [:end_turn, :tool_use, :max_tokens]
+  @stop_reasons Message.stop_reasons()
 
   @rejected_call_text "tool call not run: an integer in the arguments has more than " <>
                         "#{Message.max_integer_digits()} digits"
@@ -756,11 +754,11 @@ defmodule Helyx.Session do
         if capped != args, do: send(session, {:rejected_call, turn_id, call})
         forward(Message.encodable?([id, name, capped]), {:tool_call, call}, session, turn_id, acc)
 
-      # The file format owns the closed stop reason set (see SessionFile) and
-      # holds only JSON. A terminal whose stop reason is outside the set, or
-      # whose usage the file cannot encode, fails the turn here, before the
-      # message exists, instead of raising in persist and silently turning
-      # persistence off for the rest of the session.
+      # The stop reason set is closed (`Message.stop_reasons/0`), and the
+      # session file holds only JSON. A terminal whose stop reason is outside
+      # the set, or whose usage the file cannot encode, fails the turn here,
+      # before the message exists, instead of raising in persist and silently
+      # turning persistence off for the rest of the session.
       {:done, %{stop_reason: reason, usage: usage}} = terminal, _acc
       when reason in @stop_reasons and is_non_struct_map(usage) ->
         # A new plain map: the pattern also matches a struct and a map with
@@ -801,7 +799,7 @@ defmodule Helyx.Session do
   defp harness_event({:harness_session, id, cut} = event) when is_integer(cut) and cut >= 0 do
     # No integer over the digit limit reaches the session (see
     # `Helyx.Message.cap_integers/1`).
-    if SessionFile.harness_id?(id) and Message.cap_integers(cut) == cut,
+    if Message.harness_id?(id) and Message.cap_integers(cut) == cut,
       do: {:ok, event},
       else: :error
   end

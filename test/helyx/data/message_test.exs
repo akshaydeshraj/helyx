@@ -58,6 +58,18 @@ defmodule Helyx.MessageTest do
     assert Message.cap_integers([~D[2026-09-19], self()]) == [~D[2026-09-19], self()]
   end
 
+  test "stop_reasons is the closed set of a message end" do
+    assert Message.stop_reasons() == [:end_turn, :tool_use, :max_tokens]
+  end
+
+  test "harness_id? accepts valid UTF-8 of 1 to 256 bytes" do
+    assert Message.harness_id?("a")
+    assert Message.harness_id?(String.duplicate("a", 256))
+    refute Message.harness_id?("")
+    refute Message.harness_id?(String.duplicate("a", 257))
+    refute Message.harness_id?(<<255>>)
+  end
+
   test "valid tool output passes through unchanged" do
     call = %Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
     text = "héllo\n"

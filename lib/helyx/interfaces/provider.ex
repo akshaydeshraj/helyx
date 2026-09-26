@@ -35,8 +35,9 @@ defmodule Helyx.Provider do
   no image event: providers do not produce image blocks. A malformed event
   fails the turn with `{:bad_stream_event, event}`.
 
-  `stop_reason` is the closed set `Helyx.SessionFile` owns: a provider
-  normalizes whatever its wire protocol reports into it.
+  `stop_reason` is the closed set that `Helyx.Message` owns
+  (`Helyx.Message.stop_reasons/0`): a provider normalizes whatever its wire
+  protocol reports into it.
 
   The session calls `stream/3` with `opts` carrying `:core`, `:session_id`,
   `:turn_id`, and `:cwd`, so a provider can scope state and label its calls.
@@ -61,7 +62,7 @@ defmodule Helyx.Provider do
 
   use Helyx.Interface, mode: :multi, required: true
 
-  @type stop_reason :: :end_turn | :tool_use | :max_tokens
+  @type stop_reason :: Helyx.Message.stop_reason()
 
   @type stream_event ::
           {:text_delta, String.t()}
