@@ -44,3 +44,8 @@ No findings. Every acceptance criterion is met. The plugins resolve in `start_ch
 ### Failure path
 
 No reproduced findings. A throwaway test confirmed that a lookup against the suspended Agent exits with a timeout, so the new test catches a lookup. A plugin that raises, or that returns a value that is not a context, fails only the turn; the next prompt works. That behaviour is the same on `master`.
+
+## Orchestrator
+
+- Codex adversarial review, round 1: approve, 0 findings.
+- Accepted: `List.first/1`, because Core refuses a second plugin at start. The unchecked plugin return value is the behaviour of `master` and fails only the turn.
