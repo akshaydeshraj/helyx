@@ -32,8 +32,13 @@ defmodule Helyx.Watchdog.Group do
   def release(handles, mode, deadline, opts \\ []) do
     kill = until_deadline(deadline, Keyword.get(opts, :kill, &kill_cmd/1))
     grace = Keyword.get(opts, :grace_ms, @grace_ms)
-    # `kill -- -1` would signal every process the user may signal, so a
-    # group below 2 is never signalled.
+    # Two sources make the handles, and both give the shape that `valid?/1`
+    # checks: `parse_marker/2` in `Helyx.Watchdog` for a command group, and
+    # `Port.info(port, :os_pid)` for a watchdog. `group > 1` is a deliberate
+    # safety lock, not a boundary check: `kill -- -1` would signal every
+    # process the user may signal, so a group below 2 is never signalled.
+    # An unknown handle stays "still held" in the result, so it never
+    # disappears.
     {valid, unknown} = Enum.split_with(handles, &valid?/1)
     commands = for {:command, group} <- valid, do: group
     watchdogs = for {:watchdog, group} <- valid, do: group

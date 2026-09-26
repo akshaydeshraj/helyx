@@ -14,15 +14,6 @@ defmodule Helyx.MessageTest do
     assert error.is_error
   end
 
-  test "valid_utf8? walks nested values and never raises" do
-    assert Message.valid_utf8?(%{"a" => ["b", %{"c" => "d"}]})
-    refute Message.valid_utf8?(%{"a" => [<<255>>]})
-    refute Message.valid_utf8?(%{<<255>> => "v"})
-    assert Message.valid_utf8?(~U[2026-09-18 00:00:00Z])
-    assert Message.valid_utf8?([1 | 2])
-    refute Message.valid_utf8?([<<255>> | 2])
-  end
-
   test "cap_integers replaces only an integer of more than 100 digits, at any depth" do
     at = 10 ** 100 - 1
     over = 10 ** 100

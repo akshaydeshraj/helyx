@@ -53,7 +53,7 @@ defmodule Helyx.Session do
   answered.
   """
 
-  alias Helyx.{Message, ModelRef}
+  alias Helyx.ModelRef
   alias Helyx.Session.{Id, Server}
   alias Helyx.Session.Server.State
 
@@ -197,7 +197,7 @@ defmodule Helyx.Session do
   """
   @spec prompt(t(), String.t()) :: :ok | {:error, :turn_running | :invalid_utf8 | :queue_full}
   def prompt(%__MODULE__{id: id, core: core}, text) when is_binary(text) do
-    if Message.valid_utf8?(text) do
+    if String.valid?(text) do
       GenServer.call(Server.via(core, id), {:prompt, text})
     else
       {:error, :invalid_utf8}
@@ -212,7 +212,7 @@ defmodule Helyx.Session do
   """
   @spec steer(t(), String.t()) :: :ok | {:error, :invalid_utf8 | :queue_full}
   def steer(%__MODULE__{id: id, core: core}, text) when is_binary(text) do
-    if Message.valid_utf8?(text) do
+    if String.valid?(text) do
       GenServer.call(Server.via(core, id), {:steer, text})
     else
       {:error, :invalid_utf8}
@@ -226,7 +226,7 @@ defmodule Helyx.Session do
   """
   @spec follow_up(t(), String.t()) :: :ok | {:error, :invalid_utf8 | :queue_full}
   def follow_up(%__MODULE__{id: id, core: core}, text) when is_binary(text) do
-    if Message.valid_utf8?(text) do
+    if String.valid?(text) do
       GenServer.call(Server.via(core, id), {:follow_up, text})
     else
       {:error, :invalid_utf8}

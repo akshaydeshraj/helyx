@@ -38,8 +38,8 @@ if Helyx.TUI.Available.available?() do
         Left and Right pass over it, and text typed in it goes after it.
         Text that only looks like a marker is sent as typed
       * Enter sends the composer as a steer (a prompt when no turn runs)
-      * Alt+Enter sends it as a follow-up. A rejected send (full queue, text
-        that is not valid UTF-8) stays in the composer, and the status bar
+      * Alt+Enter sends it as a follow-up. A rejected send (full queue) stays
+        in the composer, and the status bar
         shows the reason until the next key press or paste
       * `/model provider/model` in the composer switches the model; the next
         turn uses it. A rejected ref shows a notice and stays in the composer
@@ -458,15 +458,12 @@ if Helyx.TUI.Available.available?() do
         :ok ->
           %{clear_composer(state) | scroll: nil}
 
-        {:error, reason} ->
-          %{state | vm: ViewModel.reject(state.vm, send_error(reason))}
+        # `edit/3` lets only valid UTF-8 into the composer, so the session
+        # never answers `:invalid_utf8`.
+        {:error, :queue_full} ->
+          %{state | vm: ViewModel.reject(state.vm, "not sent: the queue is full")}
       end
     end
-
-    # `edit/3` lets only valid UTF-8 into the composer, so `:invalid_utf8`
-    # has no known source; the clause keeps the match total over the spec.
-    defp send_error(:queue_full), do: "not sent: the queue is full"
-    defp send_error(:invalid_utf8), do: "not sent: not valid UTF-8"
 
     defp switch_model("", state),
       do: %{state | vm: ViewModel.notice(state.vm, "usage: /model provider/model")}

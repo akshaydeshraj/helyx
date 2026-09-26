@@ -28,7 +28,7 @@ defmodule Helyx.ModelRef do
   @spec parse(String.t()) :: {:ok, t()} | {:error, {:invalid_model_ref, String.t()}}
   def parse(string) when is_binary(string) do
     with true <- byte_size(string) <= @max_bytes,
-         true <- Helyx.Message.valid_utf8?(string),
+         true <- String.valid?(string),
          false <- String.match?(string, ~r/[\s\p{C}]/u),
          [provider, model] when provider != "" and model != "" <-
            String.split(string, "/", parts: 2) do

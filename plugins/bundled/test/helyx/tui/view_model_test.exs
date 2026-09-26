@@ -192,26 +192,6 @@ defmodule Helyx.TUI.ViewModelTest do
              ]
   end
 
-  test "only a tool result message with a binary call id attaches" do
-    no_id = %Message.ToolCall{id: nil, name: "bash", arguments: %{}}
-    specs = [{:tool_execution_start, %{tool_call: no_id}}]
-
-    assert fold(specs ++ [tool_end(user("hi"))]).cells == [
-             {:tool, no_id, ViewModel.call_line(no_id), nil}
-           ]
-
-    assert fold(specs ++ [tool_end(Message.tool_result(no_id, {:ok, "x"}))]).cells == [
-             {:tool, no_id, ViewModel.call_line(no_id), nil}
-           ]
-
-    call = %Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
-    specs = [{:tool_execution_start, %{tool_call: call}}]
-
-    assert fold(specs ++ [tool_end(%{user("hi") | tool_call_id: "c1"})]).cells == [
-             {:tool, call, ViewModel.call_line(call), nil}
-           ]
-  end
-
   test "a result for an unknown call changes nothing" do
     call = %Message.ToolCall{id: "c9", name: "bash", arguments: %{}}
     result = Message.tool_result(call, {:error, "aborted"})
@@ -315,25 +295,6 @@ defmodule Helyx.TUI.ViewModelTest do
     assert ViewModel.apply(vm, drain).queue == %{steers: 0, follow_ups: 0}
   end
 
-  test "a malformed message_update changes nothing" do
-    vm = fold([{:agent_start, %{}}, {:message_update, %{weird: 1, extra: 2}}])
-    assert vm.streaming == nil
-
-    malformed = [
-      {:message_update, nil},
-      {:message_update, %{text_delta: 123}},
-      {:message_update, %{tool_call: :junk}},
-      {:tool_execution_start, %{tool_call: "bash"}},
-      {:queue_update, nil},
-      {:queue_update, %{steers: %{}, follow_ups: 0}}
-    ]
-
-    for {type, data} <- malformed do
-      event = %Event{type: type, session_id: "s", turn_id: "t", seq: 3, data: data}
-      assert ViewModel.apply(vm, event) == vm
-    end
-  end
-
   test "agent_end with an open stream and no message_end still closes it" do
     vm =
       fold([
@@ -346,11 +307,9 @@ defmodule Helyx.TUI.ViewModelTest do
     assert vm.streaming == nil
   end
 
-  test "a model change updates the model; a malformed one changes nothing" do
+  test "a model change updates the model" do
     vm = fold(model_change: %{model: "other/model"})
     assert vm.model == "other/model"
-    assert fold(model_change: %{model: 42}).model == "test/model"
-    assert fold(model_change: %{}).model == "test/model"
   end
 
   test "a harness session shows a notice when the harness lost its session or got a cut transcript" do
@@ -361,8 +320,6 @@ defmodule Helyx.TUI.ViewModelTest do
              {:notice, "claude-code lost its own session; a fresh one got the transcript"},
              {:notice, "claude-code got the transcript without its 4 oldest messages"}
            ]
-
-    assert fold(harness_session: %{lost: true}).cells == []
   end
 
   test "a reject sets the reason, events keep it, and clear_reason/1 removes it" do

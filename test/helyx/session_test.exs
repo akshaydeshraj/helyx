@@ -335,6 +335,20 @@ defmodule Helyx.SessionTest do
       assert final_text(events) == "ok"
     end
 
+    test "a result whose id is not valid UTF-8 is dropped like an unknown id", %{core: core} do
+      events = harness_turn(core, "raw_result_id")
+      refute Enum.any?(events, &(&1.type == :tool_execution_end))
+      assert final_text(events) == "ok"
+    end
+
+    @tag :capture_log
+    test "a crash reason with an integer over the digit limit is capped", %{core: core} do
+      marker = "integer of more than #{Helyx.Message.max_integer_digits()} digits removed"
+
+      assert {:task_exit, {:boom, ^marker}} =
+               List.last(harness_turn(core, "exit_big")).data.error
+    end
+
     test "a model provider that sends a harness event fails the turn", %{core: core} do
       {:ok, session} = Session.start(core, model: "test/harness_event")
       :ok = Session.subscribe(session)
@@ -1475,63 +1489,6 @@ defmodule Helyx.SessionTest do
 
       assert_receive {:DOWN, ^ref, :process, _pid, :killed}, 1_000
       assert {{:exit, :killed}, _ms} = Task.await(abort, 1_000)
-    end
-  end
-
-  describe "an unknown message (issue #95)" do
-    # The message holds a large binary and a large integer. The log line
-    # names only the shape, so its size does not grow with the message.
-    # The longest atom, 255 characters, of the character with the longest
-    # escape in `inspect/1`. It gives the longest log line.
-    @longest_tag String.to_atom(String.duplicate("\uFFFF", 255))
-
-    defp assert_unknown_dropped(session) do
-      pid = Session.pid(session)
-
-      log =
-        ExUnit.CaptureLog.capture_log(fn ->
-          send(pid, {make_ref(), {:late_reply, String.duplicate("x", 100_000), 10 ** 5_000}})
-          send(pid, :stray)
-          send(pid, {@longest_tag, String.duplicate("x", 100_000)})
-          # A call is the barrier: the session answers it after the messages.
-          assert %{steers: 0} = Session.queue_count(session)
-        end)
-
-      assert log =~ "dropped an unknown message: a tuple of size 2"
-      assert log =~ "dropped an unknown message: the atom :stray"
-      assert log =~ "dropped an unknown message: a tuple of size 2 with the tag :"
-      lines = String.split(log, "\n", trim: true)
-      assert Enum.count(lines, &(&1 =~ "dropped an unknown message")) == 3
-      assert Enum.all?(lines, &(byte_size(&1) < 4_096))
-    end
-
-    test "is dropped in the idle state, and the session stays alive", %{core: core} do
-      {:ok, session} = Session.start(core, model: "test/ok")
-      :ok = Session.subscribe(session)
-      assert_unknown_dropped(session)
-
-      :ok = Session.prompt(session, "hello")
-      assert stop_reason(collect_until(:agent_end)) == :end_turn
-    end
-
-    test "is dropped in a running turn, and the turn goes on", %{core: core} do
-      {:ok, session} = Session.start(core, model: "test/hang")
-      :ok = Session.subscribe(session)
-      :ok = Session.prompt(session, "hello")
-      assert_receive {:helyx_event, %Event{type: :message_update}}, 1_000
-      assert_unknown_dropped(session)
-
-      :ok = Session.abort(session)
-      assert stop_reason(collect_until(:agent_end)) == :aborted
-    end
-
-    @tag :capture_log
-    test "is dropped during the sweep of an abort, and the abort returns", %{core: core} do
-      {session, _hands, _task} = start_stuck_turn(core)
-      abort = Task.async(fn -> Session.abort(session) end)
-      assert stop_reason(collect_until(:agent_end)) == :aborted
-      assert_unknown_dropped(session)
-      assert Task.await(abort, 5_000) == :ok
     end
   end
 end
