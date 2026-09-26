@@ -56,8 +56,8 @@ defmodule Helyx.Core do
 
     children =
       [
-        {Helyx.Core.Plugins, name: plugins_name(name), table: table},
-        {Registry, keys: :unique, name: sessions_registry(name)},
+        # The child spec holds the plugin table, so a restart keeps it.
+        {Registry, keys: :unique, name: sessions_registry(name), meta: [plugins: table]},
         {Registry, keys: :duplicate, name: events_registry(name)},
         {Task.Supervisor, name: task_supervisor(name)},
         # The start message of a session holds its whole state, a resumed
@@ -73,7 +73,8 @@ defmodule Helyx.Core do
   @doc "Returns the plugins registered for an interface, in registration order."
   @spec plugins(name(), module()) :: [module()]
   def plugins(name \\ __MODULE__, interface) do
-    Helyx.Core.Plugins.for_interface(plugins_name(name), interface)
+    {:ok, table} = Registry.meta(sessions_registry(name), :plugins)
+    Map.get(table, interface, [])
   end
 
   @doc false
@@ -84,6 +85,4 @@ defmodule Helyx.Core do
   def task_supervisor(name), do: Module.concat(name, Tasks)
   @doc false
   def session_supervisor(name), do: Module.concat(name, SessionSupervisor)
-
-  defp plugins_name(name), do: Module.concat(name, Plugins)
 end

@@ -467,25 +467,6 @@ defmodule Helyx.SessionTest do
     assert final_text(collect_until(:agent_end)) == "built for #{File.cwd!()}, compacted"
   end
 
-  test "a provider call makes no call to the plugin table (#122)" do
-    core = :"core_#{System.unique_integer([:positive])}"
-    plugins = [Helyx.Test.Provider, Helyx.Test.ModelContext, Helyx.Test.Compaction]
-    start_supervised!({Helyx.Core, name: core, plugins: plugins})
-
-    {:ok, session} = Session.start(core, model: "test/system")
-    :ok = Session.subscribe(session)
-
-    # A suspended Agent blocks every lookup, so a lookup in the provider
-    # call would stop the turn.
-    table = Module.concat(core, Plugins)
-    :ok = :sys.suspend(table)
-    on_exit(fn -> if Process.whereis(table), do: :sys.resume(table) end)
-
-    :ok = Session.prompt(session, "hello")
-    assert final_text(collect_until(:agent_end)) == "built for #{File.cwd!()}, compacted"
-    :ok = :sys.resume(table)
-  end
-
   test "without model context and compaction plugins the context is unchanged", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/system")
     :ok = Session.subscribe(session)

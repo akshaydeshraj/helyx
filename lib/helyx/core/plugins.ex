@@ -1,15 +1,9 @@
 defmodule Helyx.Core.Plugins do
   @moduledoc false
-  # Holds the resolved plugin table for one Core instance.
-
-  use Agent
+  # Resolves the plugin table for one Core instance. Core keeps the table in
+  # the meta of its sessions Registry.
 
   @type table :: %{module() => [module()]}
-
-  def start_link(opts) do
-    table = Keyword.fetch!(opts, :table)
-    Agent.start_link(fn -> table end, name: Keyword.fetch!(opts, :name))
-  end
 
   @doc """
   Groups plugins by interface and checks each interface's mode.
@@ -28,10 +22,6 @@ defmodule Helyx.Core.Plugins do
         error -> {:error, error}
       end
     end
-  end
-
-  def for_interface(name, interface) do
-    Agent.get(name, &Map.get(&1, interface, []))
   end
 
   defp group(plugins) do
