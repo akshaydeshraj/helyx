@@ -16,7 +16,8 @@ A new internal module, `@moduledoc false`, at `lib/helyx/session/stream.ex`:
 @type terminal :: {:done, %{stop_reason: atom(), usage: map()}} | {:error, term()} | :stream_ended
 
 @spec run(%{
-        core: Helyx.Core.name(),
+        model_context: module() | nil,
+        compaction: module() | nil,
         provider: module(),
         model: String.t(),
         context: Helyx.Context.t(),
@@ -27,7 +28,7 @@ A new internal module, `@moduledoc false`, at `lib/helyx/session/stream.ex`:
       }) :: terminal()
 ```
 
-`run/1` runs in the provider Task. It builds the context with `Helyx.ModelContext.build/3`, runs `Helyx.Compaction.compact/3`, calls `provider.stream/3`, and consumes the stream. It sends the session the same messages as today:
+`run/1` runs in the provider Task. It builds the context with the ModelContext plugin, runs the Compaction plugin, calls `provider.stream/3`, and consumes the stream. The session resolves both plugins once, at its start (#122); `nil` means no plugin, and the context goes on unchanged. It sends the session the same messages as today:
 
 - `{:stream_event, turn_id, event}` for each event that passes the checks
 - `{:rejected_call, turn_id, call}` before the stream event of a call with an integer over the digit limit
