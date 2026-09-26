@@ -1,0 +1,72 @@
+# Session snapshot
+
+## Goal
+
+A client that subscribes to a session gets the state of the session at that moment, then every later event, with no gap and no duplicate. Issue #163, split from #105. Parent: #115.
+
+User story: I run `mix helyx --resume`. Today the screen is empty, but the agent answers as if it remembers everything. With this feature I see the earlier messages and tool calls, then the live turn. A second client that attaches in the middle of a reply shows the reply so far, then streams the rest.
+
+Today `Helyx.Session.subscribe/1` only registers the caller in the events Registry. No client API reads the transcript. The TUI mounts with an empty view model. v2 had `Agent.messages/1` for the same need (the v2 comparison of 2026-09-26); the snapshot covers it.
+
+The server owns the state, and the client only renders it (`AGENTS.md`, Project). So the snapshot holds everything the TUI shows: the transcript, the running turn, the model, and the queue counts.
+
+## Interface changes
+
+`Helyx.Session.subscribe/1` returns the snapshot:
+
+```elixir
+@spec subscribe(t()) :: {:ok, Helyx.Session.Snapshot.t()}
+```
+
+`Helyx.Session.Snapshot`, a new struct in core (`lib/helyx/data/`):
+
+```elixir
+%Helyx.Session.Snapshot{
+  seq: non_neg_integer(),          # the seq of the last event sent before the snapshot; 0 if none
+  messages: [Helyx.Message.t()],   # the transcript, oldest first
+  turn: nil | %{
+    id: String.t(),
+    partial: Helyx.Message.t() | nil,   # the assistant message so far, as Turn.assistant_message/2 builds it
+    running: [String.t()]               # tool call ids still to answer, the head running
+  },
+  model: String.t(),
+  queue: %{steers: non_neg_integer(), follow_ups: non_neg_integer()}
+}
+```
+
+The order that makes it gap-free:
+
+1. `subscribe/1` registers the caller in the events Registry, as today.
+2. It then calls the session (`GenServer.call`, `{:snapshot}`) for the snapshot.
+3. The client applies the snapshot, then drops each event with `seq <= snapshot.seq` and applies the rest.
+
+The session sends its events from its own process in `seq` order, and the snapshot reply is built in the same process. So each event after the snapshot has a larger `seq` and reaches the client, which registered before the call. An event sent between the registration and the snapshot is in the snapshot and has a `seq` at or below it.
+
+`Helyx.TUI.ViewModel`:
+
+- `ViewModel.from_snapshot(snapshot)` builds the cells from the messages with the same cell shapes as the live events: text, thinking, and each tool call with its result. A tool call with no result in `messages` (only possible in `turn`) is an open tool cell.
+- When `messages` is not empty, a notice cell "resumed session" follows the history. The model comes from the snapshot.
+- The view model keeps `seq`, and `apply/2` drops an event with `seq <= seq`.
+
+Callers of `subscribe/1` change from `:ok = ` to `{:ok, _} = ` or use the snapshot: `Helyx.TUI`, `mix helyx.graph`, the moduledoc example, and the tests.
+
+## Bounds
+
+| What | Bound | Where enforced | Over the bound |
+| --- | --- | --- | --- |
+| transcript in the snapshot | no bound of its own. A resumed transcript comes from a session file of at most 64 MiB (row "Session file on resume" of `docs/features/coding-agent.md`). A live transcript grows by the turns of the human, as the TUI cell list does (row "TUI cell list") | the session file read; the human | n/a: the reply is one copy into the client's heap |
+| snapshot call | `GenServer.call` with the default 5,000 ms timeout. The session never blocks on a call (#93), so the wait is the time to build and copy the reply | `Helyx.Session.subscribe/1` | the caller exits with a timeout, as for every other session call |
+| TUI render of the history | the same as live cells: one cell for each message, tool call, and notice. The render bounds of the TUI (wrap, scrollback) apply unchanged | `Helyx.TUI.ViewModel` | n/a |
+
+Tests: a subscribe during a running turn with events before and after the snapshot shows each event once; a subscribe after a resume shows the history cells; a subscribe to a session with no events has `seq` 0 and no notice.
+
+## Ownership
+
+No new resource. The Registry entry is the same as today.
+
+## Out of scope
+
+- Paging of a long transcript for a remote client: the transport work, #116.
+- A resubscribe after a restart of the events Registry: #116.
+- A compact render of old turns.
+- A read of the transcript without a subscription. Add a function when a caller needs it.
