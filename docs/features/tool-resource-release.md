@@ -66,7 +66,7 @@ The design was reviewed in three rounds on 2026-09-25. The findings are in `docs
 | release deadline, `:retry` | 1,000 ms, one deadline for all modules | every given handle stays unconfirmed; the call is refused |
 | TERM grace, KILL wait (bash internal) | 500 ms and 5,000 ms, unchanged | a group still alive after the KILL wait is returned as still held |
 | poll interval (bash internal) | 20 ms, unchanged | – |
-| handles per Task | unbounded, ticket #101. The only caller, the bash tool, holds two per call | – |
+| handles per Task | 2 per program run, held by `Helyx.Watchdog` for the bash tool and both harness providers: the watchdog and the command group. The bash tool and Codex start one run per Task. Claude Code starts a second run in the same Task after a lost session, so its Task holds at most 4. Plugin code is trusted, so there is no cap; accepted (#101) | – |
 | unconfirmed handles | bounded by the refusal rule: once one is held, no new call runs, so no new handle is created. At most the handles of the calls of one turn | – |
 | wait in `hold/1` | a `GenServer.call` with `:infinity`, as `register_group/2` was. The handler only updates a map. It can wait behind one release, which the first row bounds | the command is held until the call returns, so nothing runs unheld. An abort kills the tool Task, which ends the wait |
 
