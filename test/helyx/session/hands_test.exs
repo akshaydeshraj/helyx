@@ -1,4 +1,4 @@
-defmodule Helyx.HandsTest do
+defmodule Helyx.Session.HandsTest do
   # The hands' handle bookkeeping, driven directly with the test process as
   # the session. The hold test tools release, keep, or fail on the handles
   # they get, so no OS resource is needed.
@@ -23,7 +23,7 @@ defmodule Helyx.HandsTest do
 
   defp start_hands(core, opts \\ []) do
     {:ok, hands} =
-      Helyx.Hands.start_link([core: core, cwd: File.cwd!(), session: self()] ++ opts)
+      Helyx.Session.Hands.start_link([core: core, cwd: File.cwd!(), session: self()] ++ opts)
 
     hands
   end
@@ -31,7 +31,7 @@ defmodule Helyx.HandsTest do
   defp call(id, name, arguments), do: %ToolCall{id: id, name: name, arguments: arguments}
 
   defp upcase(hands, id) do
-    :ok = Helyx.Hands.run(hands, "t1", call(id, "upcase", %{"text" => "hi"}))
+    :ok = Helyx.Session.Hands.run(hands, "t1", call(id, "upcase", %{"text" => "hi"}))
     assert_receive {:tool_result, "t1", ^id, result}, 2_000
     result
   end
@@ -42,7 +42,7 @@ defmodule Helyx.HandsTest do
     hands = start_hands(core)
     handles = [{:keep, agent}, {:report, self()}]
 
-    :ok = Helyx.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => handles}))
+    :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => handles}))
     assert_receive {:tool_result, "t1", "c1", {:error, text}}, 2_000
     assert text =~ "could not be released"
     assert text =~ inspect({:keep, agent})
@@ -60,7 +60,8 @@ defmodule Helyx.HandsTest do
   describe "a harness stream (#10)" do
     # The Hold tool stands in for a provider module: the hands need only its
     # `release/3`.
-    defp stream(hands, fun), do: :ok = Helyx.Hands.stream(hands, "t1", Helyx.Test.Tool.Hold, fun)
+    defp stream(hands, fun),
+      do: :ok = Helyx.Session.Hands.stream(hands, "t1", Helyx.Test.Tool.Hold, fun)
 
     test "its handles are released before its terminal goes to the session", %{core: core} do
       hands = start_hands(core)
@@ -101,7 +102,7 @@ defmodule Helyx.HandsTest do
       end)
 
       await_held(hands, 1)
-      assert Helyx.Hands.cancel(hands, "t1") == :ok
+      assert Helyx.Session.Hands.cancel(hands, "t1") == :ok
       assert_received {:release, :cancel, [{:report, _}]}
       refute_receive {:stream_end, _, _}, 100
     end
@@ -122,7 +123,7 @@ defmodule Helyx.HandsTest do
       end)
 
       await_held(hands, 1)
-      assert Helyx.Hands.cancel(hands, "t1") == :ok
+      assert Helyx.Session.Hands.cancel(hands, "t1") == :ok
       assert_received :stopping
       assert_received {:release, :cancel, [{:report, _}]}
     end
@@ -138,7 +139,7 @@ defmodule Helyx.HandsTest do
       end)
 
       await_held(hands, 1)
-      {elapsed, :ok} = :timer.tc(fn -> Helyx.Hands.cancel(hands, "t1") end, :millisecond)
+      {elapsed, :ok} = :timer.tc(fn -> Helyx.Session.Hands.cancel(hands, "t1") end, :millisecond)
       assert elapsed in 2_000..3_000
       assert_received {:release, :cancel, [{:report, _}]}
     end
@@ -149,11 +150,15 @@ defmodule Helyx.HandsTest do
     handles = [:keep, {:report, self()}]
 
     :ok =
-      Helyx.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => handles, "ms" => 60_000}))
+      Helyx.Session.Hands.run(
+        hands,
+        "t1",
+        call("c1", "hold", %{"handles" => handles, "ms" => 60_000})
+      )
 
     await_held(hands, 1)
 
-    assert {:error, text} = Helyx.Hands.cancel(hands, "t1")
+    assert {:error, text} = Helyx.Session.Hands.cancel(hands, "t1")
     assert text =~ "could not be released"
     assert text =~ ":keep"
     assert_received {:release, :cancel, _handles}
@@ -164,7 +169,7 @@ defmodule Helyx.HandsTest do
 
   test "a release just under the deadline confirms its handles", %{core: core} do
     hands = start_hands(core, release_ms: 300)
-    :ok = Helyx.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 250}]}))
+    :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 250}]}))
     assert_receive {:tool_result, "t1", "c1", {:ok, "held"}}, 2_000
     assert upcase(hands, "c2") == {:ok, "HI"}
   end
@@ -173,7 +178,7 @@ defmodule Helyx.HandsTest do
   test "a release just past the deadline is killed and confirms nothing", %{core: core} do
     hands = start_hands(core, release_ms: 300)
     start = System.monotonic_time(:millisecond)
-    :ok = Helyx.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 350}]}))
+    :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 350}]}))
     assert_receive {:tool_result, "t1", "c1", {:error, text}}, 2_000
     assert System.monotonic_time(:millisecond) - start < 340
     assert text =~ "could not be released"
@@ -187,7 +192,10 @@ defmodule Helyx.HandsTest do
   test "a retry has a deadline of one second", %{core: core} do
     # The first release times out, so both handles go to the retry.
     hands = start_hands(core, release_ms: 100)
-    :ok = Helyx.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 1_500}]}))
+
+    :ok =
+      Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [{:slow, 1_500}]}))
+
     assert_receive {:tool_result, "t1", "c1", {:error, _text}}, 3_000
 
     # The retry is killed at its deadline, and the call is refused.
@@ -201,7 +209,7 @@ defmodule Helyx.HandsTest do
   test "a release that raises, exits, or returns a bad value confirms nothing", %{core: core} do
     for handle <- [:raise, :exit, :bad, :improper] do
       hands = start_hands(core)
-      :ok = Helyx.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [handle]}))
+      :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", %{"handles" => [handle]}))
       assert_receive {:tool_result, "t1", "c1", {:error, text}}, 2_000
       assert text =~ inspect(handle)
       assert {:error, text} = upcase(hands, "c2")
@@ -213,18 +221,18 @@ defmodule Helyx.HandsTest do
        %{core: core} do
     hands = start_hands(core, release_ms: 1_500)
     arguments = %{"handles" => [{:slow, 1_000}], "ms" => 60_000}
-    :ok = Helyx.Hands.run(hands, "t1", call("c1", "hold", arguments))
-    :ok = Helyx.Hands.run(hands, "t1", call("c2", "hold_two", arguments))
+    :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold", arguments))
+    :ok = Helyx.Session.Hands.run(hands, "t1", call("c2", "hold_two", arguments))
     await_held(hands, 2)
 
     # One after the other, the two releases would pass the deadline.
-    assert Helyx.Hands.cancel(hands, "t1") == :ok
+    assert Helyx.Session.Hands.cancel(hands, "t1") == :ok
     assert upcase(hands, "c3") == {:ok, "HI"}
   end
 
   test "a tool without release/3 cannot hold a handle", %{core: core} do
     hands = start_hands(core)
-    :ok = Helyx.Hands.run(hands, "t1", call("c1", "hold_bare", %{}))
+    :ok = Helyx.Session.Hands.run(hands, "t1", call("c1", "hold_bare", %{}))
     assert_receive {:tool_result, "t1", "c1", {:error, text}}, 2_000
     assert text =~ "release/3"
     assert upcase(hands, "c2") == {:ok, "HI"}

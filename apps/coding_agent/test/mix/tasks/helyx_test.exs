@@ -10,7 +10,7 @@ defmodule Mix.Tasks.HelyxTest do
     setup %{tmp_dir: dir} do
       Application.put_env(:coding_agent, :sessions_dir, dir)
       on_exit(fn -> Application.delete_env(:coding_agent, :sessions_dir) end)
-      {:ok, file} = Helyx.SessionFile.create(dir, "s1", dir, "fake/echo")
+      {:ok, file} = Helyx.Session.File.create(dir, "s1", dir, "fake/echo")
       %{path: file.path}
     end
 

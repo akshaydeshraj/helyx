@@ -4,7 +4,7 @@
 
 Preserve the existing cleanup and refusal contract of the hands while moving OS operations into the bash plugin.
 
-Today `Helyx.Hands`, in Core, holds the process groups of the bash tool and does the OS work to release them: the group kinds `:command` and `:watchdog`, the TERM and KILL sequence, the poll until a group is gone, and the rule that the watchdog is swept last. Only the bash tool uses any of it, and Core must stay small (AGENTS.md). After this change the hands hold opaque handles and call the plugin that holds them. Core no longer knows about process groups, signals, or perl.
+Today `Helyx.Hands` (now `Helyx.Session.Hands`), in Core, holds the process groups of the bash tool and does the OS work to release them: the group kinds `:command` and `:watchdog`, the TERM and KILL sequence, the poll until a group is gone, and the rule that the watchdog is swept last. Only the bash tool uses any of it, and Core must stay small (AGENTS.md). After this change the hands hold opaque handles and call the plugin that holds them. Core no longer knows about process groups, signals, or perl.
 
 This is a move, not a redesign. The watchdog protocol, the handshake, and the meaning of the watchdog's exit status do not change (ADR 0004). Protocol changes are out of scope (see the last section).
 
@@ -39,7 +39,7 @@ The design was reviewed in three rounds on 2026-09-25. The findings are in `docs
 - `release/3` must be safe to call again with the same handles.
 - `register_group/2` is removed.
 
-`Helyx.Hands` rules:
+`Helyx.Session.Hands` rules:
 
 1. The hands record each handle with the tool module and the Task that held it. The module comes from the call that the hands started, not from the handle.
 2. A handle is released only by the return value of `release/3`. After a Task ends, the hands call `release/3` for all its handles and keep only the returned ones.
@@ -53,7 +53,7 @@ The design was reviewed in three rounds on 2026-09-25. The findings are in `docs
 
 - Implements `release/3`, because the hands find the callback through the tool module of the call. It delegates to `Helyx.Tool.Bash.Group` (`@moduledoc false`), which #10 moved to `Helyx.Watchdog.Group`.
 - Handles are `{:watchdog, os_pid}` and `{:command, group}`.
-- `Helyx.Tool.Bash.Group` (now `Helyx.Watchdog.Group`, #10) receives the code that leaves `lib/helyx/hands.ex`: `signal`, `await_gone`, `poll_gone`, `kill_and_wait`, `sweep_watchdogs`, `split_kinds`, and the `kill_cmd` test hook, which becomes the `kill` argument of `Group.release/4`.
+- `Helyx.Tool.Bash.Group` (now `Helyx.Watchdog.Group`, #10) receives the code that leaves `lib/helyx/session/hands.ex`: `signal`, `await_gone`, `poll_gone`, `kill_and_wait`, `sweep_watchdogs`, `split_kinds`, and the `kill_cmd` test hook, which becomes the `kill` argument of `Group.release/4`.
 - The order does not change: command groups first, the watchdog last, so the watchdog can reap its child before a KILL. A zombie child stays in its group until it is reaped, so this order also prevents an endless poll.
 - The mode selects today's sequences. `:deliver` is KILL, wait, then the watchdog sweep. `:cancel` is TERM, 500 ms grace, KILL, wait, then the watchdog sweep. `:retry` is KILL and one probe, with no wait.
 - The plugin computes its waits from the deadline. It never waits past it, and it starts no `kill` run at or after it: a probe that it skips counts the group as alive. A group is gone only when `kill` reports "No such process"; any other failure keeps the handle held. The watchdog KILL comes after one wait of 5,000 ms, so it needs that much time before the deadline. The 20,000 ms deadline leaves it.
@@ -83,7 +83,7 @@ Tests at the limits: a release that returns 50 ms before the deadline, one that 
 
 ## Tests
 
-- `test/helyx/hands_test.exs`: a test tool whose `release/3` delays past the deadline, raises, exits, returns a handle that was not given, returns an improper list, or keeps a handle. No fake `kill(1)` in Core tests.
+- `test/helyx/session/hands_test.exs`: a test tool whose `release/3` delays past the deadline, raises, exits, returns a handle that was not given, returns an improper list, or keeps a handle. No fake `kill(1)` in Core tests.
 - `plugins/bundled/test/helyx/tool/bash/group_test.exs` (now `test/helyx/watchdog/group_test.exs`, #10): the kill order, the stuck group, and the watchdog sweep, with the `kill` argument of `Group.release/4` in place of the `kill_cmd` hook of the hands.
 - `test/helyx/session_test.exs`: the behaviour tests of #93 stay (responsive client calls during an abort, repeated aborts, owner death). They use the delaying test tool instead of `:sys.replace_state` on the hands.
 - `test/support/interfaces.ex`: the `Register` test tool becomes the `Hold` test tool, with `HoldTwo` for the parallel release and `HoldBare` for a tool without `release/3`.

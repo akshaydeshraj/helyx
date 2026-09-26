@@ -60,7 +60,7 @@ defmodule Helyx.Provider do
   id or a switch from another provider gives nil.
 
   The stream of an external turn runs as a Task of the session's hands
-  (`Helyx.Hands`), so it can hold the OS resources of its program with
+  (`Helyx.Session.Hands`), so it can hold the OS resources of its program with
   `Helyx.Tool.hold/1` and must then implement `release/3`, with the
   contract of `c:Helyx.Tool.release/3`. An abort returns only when the
   release has returned (ADR 0004).

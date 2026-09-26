@@ -198,10 +198,10 @@ defmodule Helyx.Provider.OpenAITest do
   test "a tool result with invalid bytes from the hands encodes and sends" do
     core = :"core_#{System.unique_integer([:positive])}"
     start_supervised!({Helyx.Core, name: core, plugins: [OpenAI.Go, BinaryTool]})
-    {:ok, hands} = Helyx.Hands.start_link(core: core, cwd: File.cwd!(), session: self())
+    {:ok, hands} = Helyx.Session.Hands.start_link(core: core, cwd: File.cwd!(), session: self())
 
     call = %Helyx.Message.ToolCall{id: "call_1", name: "binary", arguments: %{}}
-    :ok = Helyx.Hands.run(hands, "t1", call)
+    :ok = Helyx.Session.Hands.run(hands, "t1", call)
     assert_receive {:tool_result, "t1", "call_1", result}, 1_000
 
     stub([delta(%{content: "ok"}, "stop"), "[DONE]"])

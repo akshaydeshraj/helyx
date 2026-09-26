@@ -5,22 +5,26 @@ defmodule Mix.Tasks.Helyx.GraphTest do
   import ExUnit.CaptureIO
 
   test "calls prints the function calls of a module, one line each" do
-    out = capture_io(fn -> Mix.Tasks.Helyx.Graph.run(["calls", "Helyx.Hands"]) end)
-    assert out =~ "Helyx.Session.run_tool/2 -> Helyx.Hands.run/3\n"
+    out = capture_io(fn -> Mix.Tasks.Helyx.Graph.run(["calls", "Helyx.Session.Hands"]) end)
+    assert out =~ "Helyx.Session.Server.run_tool/2 -> Helyx.Session.Hands.run/3\n"
     refute out =~ "Enum."
   end
 
   test "calls --mermaid prints a flowchart" do
-    out = capture_io(fn -> Mix.Tasks.Helyx.Graph.run(["calls", "Helyx.Hands", "--mermaid"]) end)
+    out =
+      capture_io(fn ->
+        Mix.Tasks.Helyx.Graph.run(["calls", "Helyx.Session.Hands", "--mermaid"])
+      end)
+
     assert out =~ ~r/^flowchart LR\n/
-    assert out =~ ~s(["Helyx.Hands.run/3"])
+    assert out =~ ~s(["Helyx.Session.Hands.run/3"])
   end
 
   test "turn prints the processes and messages of one traced turn" do
     out = capture_io(fn -> Mix.Tasks.Helyx.Graph.run(["turn"]) end)
     assert out =~ ~r/^sequenceDiagram\n/
-    assert out =~ ~r/participant (p\d+) as Helyx.Session\n/
-    assert out =~ ~r/participant p\d+ as Helyx.Hands\n/
+    assert out =~ ~r/participant (p\d+) as Helyx.Session.Server\n/
+    assert out =~ ~r/participant p\d+ as Helyx.Session.Hands\n/
     assert out =~ "Note over"
     assert out =~ ": Helyx.Tool.Read.run/2"
     assert out =~ ": event agent_end"
