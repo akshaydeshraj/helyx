@@ -44,3 +44,9 @@ No reproduced finding. Probes:
 - A lookup during a Registry restart raises `ArgumentError`. The Agent had the same window and exited with `:noproc`. After each of 50 restarts, the table was correct.
 - `Session.start/2` on a Core that does not run raises `ArgumentError` instead of an exit with `:noproc`. No `catch :exit` in `lib`, `plugins/bundled/lib`, or `apps/*/lib` wraps a call to `Helyx.Core.plugins/2`. The Core name comes from product config, not from the model.
 - Nothing calls `Registry.put_meta/3`, so no other process can replace the table.
+
+## Orchestrator
+
+- Codex adversarial review, round 1: no finding. The base did not change after the precommit run of the worker.
+- Accepted: a lookup during a Registry restart raises `ArgumentError` in place of an exit with `:noproc`. Both crash the caller.
+- Accepted: the #122 test is removed with no replacement. `Registry.meta/2` reads ETS, so a lookup cannot wait on a process.
