@@ -603,7 +603,7 @@ defmodule Helyx.SessionTest do
     :ok = Session.prompt(session, "again")
     collect_until(:agent_end)
 
-    {:ok, restored} = Helyx.SessionFile.resume(dir, File.cwd!())
+    {:ok, restored} = Helyx.Session.File.resume(dir, File.cwd!())
     assert "recovered" in Enum.map(restored.messages, &Helyx.Message.text/1)
   end
 
@@ -942,18 +942,18 @@ defmodule Helyx.SessionTest do
     tmp_dir: dir
   } do
     call = %Helyx.Message.ToolCall{id: "c1", name: "slow", arguments: %{}}
-    {:ok, file} = Helyx.SessionFile.create(dir, "reuse", File.cwd!(), "test/transcript")
+    {:ok, file} = Helyx.Session.File.create(dir, "reuse", File.cwd!(), "test/transcript")
 
     [
       %Helyx.Message{role: :assistant, stop_reason: :tool_use, content: [call]},
       Helyx.Message.tool_result(call, {:ok, "first answer"}),
       %Helyx.Message{role: :assistant, stop_reason: :tool_use, content: [call]}
     ]
-    |> Enum.reduce(file, &Helyx.SessionFile.append_message(&2, &1))
+    |> Enum.reduce(file, &Helyx.Session.File.append_message(&2, &1))
 
     {:ok, _session} = Session.resume(core, sessions_dir: dir)
 
-    {:ok, restored} = Helyx.SessionFile.resume(dir, File.cwd!())
+    {:ok, restored} = Helyx.Session.File.resume(dir, File.cwd!())
     assert [_call1, _result1, _call2, aborted] = restored.messages
     assert %Helyx.Message{role: :tool_result, tool_call_id: "c1", is_error: true} = aborted
     assert Helyx.Message.text(aborted) == "aborted"

@@ -9,7 +9,7 @@ defmodule Helyx.Provider.CodexTest do
 
   import Helyx.Test.OSHelpers
 
-  alias Helyx.{Event, HarnessIO, Message, Session, SessionFile}
+  alias Helyx.{Event, HarnessIO, Message, Session}
   alias Helyx.Provider.{Codex, Fake}
 
   @tid "019a0000-0000-7000-8000-000000000001"
@@ -252,7 +252,7 @@ defmodule Helyx.Provider.CodexTest do
     assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
 
     assert {:ok, %{harness_sessions: %{"codex" => {@tid, 1}}}} =
-             SessionFile.resume(ctx.sessions, ctx.work)
+             Session.File.resume(ctx.sessions, ctx.work)
   end
 
   test "a later turn and a resumed session resume the thread and send only the prompt",
@@ -331,7 +331,7 @@ defmodule Helyx.Provider.CodexTest do
              messages(events)
 
     assert {:ok, %{harness_sessions: %{"codex" => {@fresh, 3}}}} =
-             SessionFile.resume(ctx.sessions, ctx.work)
+             Session.File.resume(ctx.sessions, ctx.work)
   end
 
   test "a switch to a codex model replays the history, tool calls too", %{bin: bin} = ctx do

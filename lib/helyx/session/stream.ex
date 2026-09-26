@@ -83,7 +83,7 @@ defmodule Helyx.Session.Stream do
       {:tool_call, %Message.ToolCall{id: id, name: name, arguments: args}}, acc
       when is_binary(id) and is_binary(name) and is_non_struct_map(args) ->
         # The one place where tool call arguments enter the session from a
-        # provider (on resume, SessionFile applies the same function). An
+        # provider (on resume, Session.File applies the same function). An
         # integer over the digit limit is replaced here, before the first
         # JSON encode, which is quadratic in the digits (#79). The
         # transcript, the events, the session file, the tool, and the next

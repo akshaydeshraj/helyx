@@ -15,10 +15,10 @@ This is a rename of the decision, not a change of behaviour. The events, their o
 
 | # | Behaviour | Where, after #120 |
 | --- | --- | --- |
-| 1 | A steer aborts the turn and starts a new turn with the steer text | `handle_call({:steer, _}, ...)` in `Helyx.Session` |
-| 2 | Tool calls arrive with their results; the session records them and does not run them. A call with no result at the end gets an aborted result | `end_turn/2` in `Helyx.Session`; the `:message_end` and `:tool_result` events in `consume/4` of `Helyx.Session.Stream` |
-| 3 | The provider keeps its own conversation state: the session stores its id and passes `:harness_session_id` on the next call | `call_provider/1` in `Helyx.Session` (`Transcript.resumable/3`, the option); the `:harness_session` event in `Helyx.Session.Stream` |
-| 4 | The stream runs as a Task of the hands, so its OS processes are held and released there (ADR 0003, ADR 0004) | `start_stream/3` in `Helyx.Session` |
+| 1 | A steer aborts the turn and starts a new turn with the steer text | `handle_call({:steer, _}, ...)` in `Helyx.Session.Server` |
+| 2 | Tool calls arrive with their results; the session records them and does not run them. A call with no result at the end gets an aborted result | `end_turn/2` in `Helyx.Session.Server`; the `:message_end` and `:tool_result` events in `consume/4` of `Helyx.Session.Stream` |
+| 3 | The provider keeps its own conversation state: the session stores its id and passes `:harness_session_id` on the next call | `call_provider/1` in `Helyx.Session.Server` (`Transcript.resumable/3`, the option); the `:harness_session` event in `Helyx.Session.Stream` |
+| 4 | The stream runs as a Task of the hands, so its OS processes are held and released there (ADR 0003, ADR 0004) | `start_stream/3` in `Helyx.Session.Server` |
 
 ## Interface changes
 
@@ -36,7 +36,7 @@ This is a rename of the decision, not a change of behaviour. The events, their o
 - The `Helyx.Provider` moduledoc describes an external turn by the four behaviours in the table, not as "a harness provider".
 - `Helyx.Provider.ClaudeCode` and `Helyx.Provider.Codex` define `turn/0` as `:external` in place of `kind/0` as `:harness`.
 
-`Helyx.Session` and its modules, all internal:
+`Helyx.Session.Server` and its modules, all internal:
 
 - The `kind` field of `State` and of `Helyx.Session.Turn` becomes `turn_mode`, with the values `:local` and `:external`.
 - The `harness?` key of `Helyx.Session.Stream.run/1` becomes `external?`.
@@ -49,7 +49,7 @@ The old names are removed, with no alias and no delegate. Every caller is in thi
 These names are data, not decisions. They stay, because a rename changes the session file format (ADR 0001) or the event contract of the clients:
 
 - the stream event `{:harness_session, id, cut}`, the event type `:harness_session`, and its data keys
-- the session file entry `harness_session`, `Helyx.SessionFile.append_harness_session/3`, and `Helyx.Message.harness_id?/1`
+- the session file entry `harness_session`, `Helyx.Session.File.append_harness_session/3`, and `Helyx.Message.harness_id?/1`
 - the provider option `:harness_session_id`, and the `harness_sessions` field of the session state
 - `Helyx.HarnessIO`, a helper of `plugins/bundled`, not Core
 - the product term "harness provider" in `CONTEXT.md` and in the docs of ClaudeCode and Codex

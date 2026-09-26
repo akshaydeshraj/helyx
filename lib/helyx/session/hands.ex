@@ -1,4 +1,4 @@
-defmodule Helyx.Hands do
+defmodule Helyx.Session.Hands do
   # The time a cancelled stream Task gets to end by itself.
   @stream_stop_ms 2_000
 

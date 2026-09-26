@@ -1,4 +1,4 @@
-defmodule Helyx.Id do
+defmodule Helyx.Session.Id do
   @moduledoc false
   # One id scheme for sessions, turns, and session file entries.
 

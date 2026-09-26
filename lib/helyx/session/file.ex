@@ -1,4 +1,4 @@
-defmodule Helyx.SessionFile do
+defmodule Helyx.Session.File do
   @moduledoc """
   The session file: append-only JSON lines, one entry per line, per ADR 0001.
 
@@ -56,7 +56,7 @@ defmodule Helyx.SessionFile do
     defstruct [:file, :session_id, :model, :messages, harness_sessions: %{}]
 
     @type t :: %__MODULE__{
-            file: Helyx.SessionFile.t(),
+            file: Helyx.Session.File.t(),
             session_id: String.t(),
             model: String.t(),
             messages: [Message.t()],
@@ -537,7 +537,7 @@ defmodule Helyx.SessionFile do
   end
 
   defp append(%__MODULE__{path: path, leaf: leaf} = file, entry) do
-    id = Helyx.Id.new()
+    id = Helyx.Session.Id.new()
 
     entry =
       Map.merge(entry, %{

@@ -51,7 +51,7 @@ defmodule CodingAgent do
 
   @doc """
   Returns one sentence on one line that tells the user about an error from
-  `run/1`. It has a clause for every shape of `t:Helyx.SessionFile.error/0`,
+  `run/1`. It has a clause for every shape of `t:Helyx.Session.File.error/0`,
   for the model ref and provider errors, and for a tool that is not
   available. The `:too_large` text is a sentence already and passes
   unchanged. An error with no clause prints through `inspect/1`. Every result

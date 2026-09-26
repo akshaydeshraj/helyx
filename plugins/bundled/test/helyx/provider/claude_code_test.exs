@@ -7,7 +7,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
   import Helyx.Test.OSHelpers
 
-  alias Helyx.{Event, Message, Session, SessionFile}
+  alias Helyx.{Event, Message, Session}
   alias Helyx.Provider.{ClaudeCode, Fake}
 
   @sid "4b3c2d1e-0000-4000-8000-000000000001"
@@ -230,7 +230,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     assert [%{stop_reason: :end_turn}] = of_type(events, :agent_end)
 
     assert {:ok, %{harness_sessions: %{"claude-code" => {@sid, 1}}}} =
-             SessionFile.resume(ctx.sessions, ctx.work)
+             Session.File.resume(ctx.sessions, ctx.work)
   end
 
   test "a tool result over the limits arrives cut, with the notice", %{bin: bin, work: work} do
@@ -308,7 +308,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
              messages(events)
 
     assert {:ok, %{harness_sessions: %{"claude-code" => {@fresh, 3}}}} =
-             SessionFile.resume(ctx.sessions, ctx.work)
+             Session.File.resume(ctx.sessions, ctx.work)
   end
 
   test "a fresh session aborted before its first message is not resumed, in memory or after a restart",
