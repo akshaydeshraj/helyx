@@ -22,6 +22,19 @@ defmodule Helyx.CoreTest do
     assert Helyx.Core.plugins(name, Helyx.Provider) == [Test.Provider]
   end
 
+  test "the plugin table survives a restart of the sessions Registry" do
+    name = :"core_#{System.unique_integer([:positive])}"
+    {:ok, _} = start_supervised({Helyx.Core, name: name, plugins: [Test.Provider, Test.MultiA]})
+
+    # Core starts the Registry again from its child spec.
+    registry = Helyx.Core.sessions_registry(name)
+    old = Process.whereis(registry)
+    :ok = Supervisor.terminate_child(name, registry)
+    {:ok, new} = Supervisor.restart_child(name, registry)
+    assert new != old
+    assert Helyx.Core.plugins(name, Test.Multi) == [Test.MultiA]
+  end
+
   test "rejects two plugins for a single interface" do
     assert {:error, {:mode_violation, Test.Single, [Test.SingleA, Test.SingleB]}} =
              boot([Test.Provider, Test.SingleA, Test.SingleB])
