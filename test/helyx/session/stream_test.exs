@@ -102,6 +102,16 @@ defmodule Helyx.Session.StreamTest do
            ] = sent()
   end
 
+  test "an external tool result that is not valid UTF-8 is repaired after the size check",
+       %{core: core} do
+    # 65,536 invalid bytes pass the limit as sent; the repair makes each a
+    # 3-byte U+FFFD.
+    assert {:done, _} = run(core, "result_raw", provider: Helyx.Test.Harness, external?: true)
+
+    assert [{:ok, text}] = for({:stream_event, "t1", {:tool_result, _, r}} <- sent(), do: r)
+    assert text == String.duplicate("\uFFFD", 65_536)
+  end
+
   test "the error reason of the provider call is capped", %{core: core} do
     assert {:error, {:oops, @marker}} = run(core, "refuse_int")
   end
