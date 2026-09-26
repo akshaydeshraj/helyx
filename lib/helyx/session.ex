@@ -58,8 +58,7 @@ defmodule Helyx.Session do
   require Logger
 
   alias Helyx.{Context, Event, Message, ModelRef, SessionFile}
-
-  @queue_limit 32
+  alias Helyx.Session.{Queues, Transcript, Turn}
 
   @stop_reasons Message.stop_reasons()
 
@@ -70,25 +69,6 @@ defmodule Helyx.Session do
   defstruct [:id, :core]
 
   @type t :: %__MODULE__{id: String.t(), core: Helyx.Core.name()}
-
-  defmodule Turn do
-    @moduledoc false
-    # The turn in progress. `partial` is the assistant content so far as a
-    # reversed block list, or nil before the first stream event. `calls` are
-    # the tool calls still to answer, the head running. `rejected` are the
-    # tool calls of the current assistant message that get an error result
-    # and never run, because their arguments held an integer over the digit
-    # limit (see `Helyx.Message.cap_integers/1`). They are compared by value,
-    # because a provider can repeat a call id: a call that is equal to a
-    # rejected call after the cap is also rejected. One turn has many provider
-    # calls, so each provider call starts with an empty list.
-    # `model` and `provider` are fixed when the turn starts, so a model switch
-    # during the turn takes effect on the next one, and so does `kind`
-    # (`Helyx.Provider.kind/1`). `resumed` is the harness session id the
-    # turn passed to a harness provider, or nil.
-    @enforce_keys [:id, :model, :provider, :kind]
-    defstruct [:id, :model, :provider, :kind, :task, :partial, :resumed, calls: [], rejected: []]
-  end
 
   defmodule State do
     @moduledoc false
@@ -107,8 +87,7 @@ defmodule Helyx.Session do
       transcript: [],
       seq: 0,
       turn: nil,
-      steers: [],
-      follow_ups: [],
+      queues: %Queues{},
       provider_pids: MapSet.new(),
       # The last harness session per harness provider id: its id and the
       # number of transcript messages before it started.
@@ -327,7 +306,10 @@ defmodule Helyx.Session do
         # call gets an `aborted` error result before anyone can subscribe, so
         # the next provider call sees complete call and result pairs.
         aborted =
-          Enum.map(open_calls(state.transcript), &Message.tool_result(&1, {:error, "aborted"}))
+          Enum.map(
+            Transcript.open_calls(state.transcript),
+            &Message.tool_result(&1, {:error, "aborted"})
+          )
 
         {:ok, Enum.reduce(aborted, state, &append_message(&2, &1))}
 
@@ -378,7 +360,7 @@ defmodule Helyx.Session do
   end
 
   def handle_call(:queue_count, _from, %State{} = state) do
-    {:reply, queue_counts(state), state}
+    {:reply, Queues.counts(state.queues), state}
   end
 
   def handle_call(:model, _from, %State{model: ref} = state) do
@@ -448,14 +430,14 @@ defmodule Helyx.Session do
     %State{turn: turn} = state = start_assistant_message(state)
 
     {:noreply,
-     %{state | turn: %{turn | partial: Message.add_block(turn.partial, event)}}
+     %{state | turn: Turn.add_block(turn, event)}
      |> emit(:message_update, Map.new([event]))}
   end
 
   # Arrives before the stream event of the call it names (see consume/3).
   def handle_info({:rejected_call, turn_id, call}, %State{turn: %Turn{id: turn_id}} = state) do
     %State{turn: turn} = state
-    {:noreply, %{state | turn: %{turn | rejected: [call | turn.rejected]}}}
+    {:noreply, %{state | turn: Turn.reject(turn, call)}}
   end
 
   # The Task's reply is the terminal stream event. Its :DOWN follows and is
@@ -610,51 +592,60 @@ defmodule Helyx.Session do
     |> emit(:message_end, %{message: user})
   end
 
-  defp queue_reply(%State{steers: steers} = state, :steers, text)
-       when length(steers) < @queue_limit do
-    {:reply, :ok, emit_queue(%{state | steers: steers ++ [text]})}
+  defp queue_reply(%State{} = state, key, text) do
+    case Queues.push(state.queues, key, text) do
+      {:ok, queues} -> {:reply, :ok, emit_queue(%{state | queues: queues})}
+      {:error, :queue_full} = error -> {:reply, error, state}
+    end
   end
 
-  defp queue_reply(%State{follow_ups: follow_ups} = state, :follow_ups, text)
-       when length(follow_ups) < @queue_limit do
-    {:reply, :ok, emit_queue(%{state | follow_ups: follow_ups ++ [text]})}
+  defp emit_queue(%State{} = state), do: emit(state, :queue_update, Queues.counts(state.queues))
+
+  defp drop_queues(%State{queues: queues} = state) do
+    case Queues.clear(queues) do
+      ^queues -> state
+      cleared -> emit_queue(%{state | queues: cleared})
+    end
   end
-
-  defp queue_reply(%State{} = state, key, _text) when key in [:steers, :follow_ups],
-    do: {:reply, {:error, :queue_full}, state}
-
-  defp emit_queue(%State{} = state), do: emit(state, :queue_update, queue_counts(state))
-
-  defp queue_counts(%State{steers: steers, follow_ups: follow_ups}) do
-    %{steers: length(steers), follow_ups: length(follow_ups)}
-  end
-
-  defp drop_queues(%State{steers: [], follow_ups: []} = state), do: state
-  defp drop_queues(%State{} = state), do: emit_queue(%{state | steers: [], follow_ups: []})
 
   # A normal turn end starts a new turn with everything still queued, steers
   # first. The drain event goes out between the turns, with a nil turn id.
-  defp start_queued(%State{steers: [], follow_ups: []} = state), do: state
+  defp start_queued(%State{} = state) do
+    case Queues.drain(state.queues) do
+      {[], _queues} ->
+        state
 
-  defp start_queued(%State{steers: steers, follow_ups: follow_ups} = state) do
-    %{state | steers: [], follow_ups: []}
-    |> emit_queue()
-    |> begin_turn(steers ++ follow_ups)
+      {texts, queues} ->
+        %{state | queues: queues}
+        |> emit_queue()
+        |> begin_turn(texts)
+    end
   end
 
   # Queued steers join the transcript before the provider call they precede.
-  defp start_provider_call(%State{steers: [_ | _] = steers} = state) do
-    state = Enum.reduce(steers, %{state | steers: []}, &append_user(&2, &1))
-    start_provider_call(emit_queue(state))
+  defp start_provider_call(%State{} = state) do
+    case Queues.drain_steers(state.queues) do
+      {[], _queues} ->
+        call_provider(state)
+
+      {steers, queues} ->
+        Enum.reduce(steers, %{state | queues: queues}, &append_user(&2, &1))
+        |> emit_queue()
+        |> call_provider()
+    end
   end
 
-  defp start_provider_call(%State{turn: %Turn{id: turn_id} = turn} = state) do
+  defp call_provider(%State{turn: %Turn{id: turn_id} = turn} = state) do
     session = self()
     core = state.core
     provider = turn.provider
     model = turn.model.model
     kind = turn.kind
-    resumed = if kind == :harness, do: resumable(state, turn.model.provider)
+
+    resumed =
+      if kind == :harness,
+        do: Transcript.resumable(state.transcript, state.harness_sessions, turn.model.provider)
+
     base = %Context{messages: state.transcript, tools: state.tools}
     opts = [core: core, session_id: state.id, turn_id: turn_id, cwd: state.cwd]
     opts = if kind == :harness, do: opts ++ [harness_session_id: resumed], else: opts
@@ -698,33 +689,6 @@ defmodule Helyx.Session do
   defp start_stream(:harness, run, %State{turn: turn} = state) do
     :ok = Helyx.Hands.stream(state.hands, turn.id, turn.provider, run)
     state
-  end
-
-  # The harness session to resume: the provider's last one, when the last
-  # assistant message of the transcript came from this provider after that
-  # session started. A message of the harness session shows that it read
-  # the replay and the prompt. Otherwise the harness does not have the
-  # transcript's end (another provider answered last, or a fresh session
-  # ended before its first message), and a fresh session gets it from the
-  # provider.
-  defp resumable(state, provider) do
-    with {:ok, {harness_id, before}} <- Map.fetch(state.harness_sessions, provider),
-         # Enum.drop/2 shares the tail of the list; it does not copy it.
-         %Message{model: model} when is_binary(model) <-
-           last_assistant(Enum.drop(state.transcript, before)),
-         {:ok, %ModelRef{provider: ^provider}} <- ModelRef.parse(model) do
-      harness_id
-    else
-      _other -> nil
-    end
-  end
-
-  # The last assistant message, with no reversed copy of the transcript.
-  defp last_assistant(transcript) do
-    Enum.reduce(transcript, nil, fn
-      %Message{role: :assistant} = message, _last -> message
-      _message, last -> last
-    end)
   end
 
   # Forwards well-formed stream events to the session and returns the first
@@ -855,13 +819,13 @@ defmodule Helyx.Session do
     state = put_in(state.turn.calls, [])
     state = Enum.reduce(turn.calls, state, &record_result(&1, {:error, "aborted"}, &2))
     state = start_assistant_message(state)
-    assistant = assistant_message(state, stop_reason: stop_reason, usage: usage)
+    assistant = Turn.assistant_message(state.turn, stop_reason: stop_reason, usage: usage)
     state = emit(append_message(state, assistant), :message_end, %{message: assistant})
     {state, assistant, for(%Message.ToolCall{} = call <- assistant.content, do: call)}
   end
 
   defp run_tool(call, %State{turn: turn} = state) do
-    if call in turn.rejected do
+    if Turn.rejected?(turn, call) do
       # The result takes the path of a result from the hands, so the events
       # and the order of the calls stay the same.
       send(self(), {:tool_result, turn.id, call.id, {:error, @rejected_call_text}})
@@ -906,28 +870,11 @@ defmodule Helyx.Session do
   # Each tool call without a result gets an `aborted` error result in the
   # transcript, so the next provider call sees a complete pair.
   defp abort_open_calls(%State{} = state) do
-    Enum.reduce(open_calls(state.transcript), state, &record_result(&1, {:error, "aborted"}, &2))
-  end
-
-  # The tool calls in the transcript that have no tool result yet, in call
-  # order. During a turn this is exactly the calls still to answer; on a
-  # transcript restored after a crash it is the calls the crash orphaned.
-  # A result answers the first still-open earlier call with its id, so a
-  # call id a provider reuses in a later turn stays open until its own
-  # result arrives.
-  defp open_calls(transcript) do
-    Enum.reduce(transcript, [], fn
-      %Message{role: :assistant, content: content}, open ->
-        open ++ for %Message.ToolCall{} = call <- content, do: call
-
-      %Message{role: :tool_result, tool_call_id: id}, open ->
-        # Deleting nil is a no-op, so a result with no open call changes
-        # nothing.
-        List.delete(open, Enum.find(open, &(&1.id == id)))
-
-      _message, open ->
-        open
-    end)
+    Enum.reduce(
+      Transcript.open_calls(state.transcript),
+      state,
+      &record_result(&1, {:error, "aborted"}, &2)
+    )
   end
 
   # A partial assistant message is closed with a failure stop reason so
@@ -946,21 +893,9 @@ defmodule Helyx.Session do
 
   defp close_partial_message(state, stop_reason, reason) do
     emit(state, :message_end, %{
-      message: assistant_message(state, stop_reason: stop_reason),
+      message: Turn.assistant_message(state.turn, stop_reason: stop_reason),
       error: reason
     })
-  end
-
-  # The assistant message for the current turn, from the blocks so far.
-  defp assistant_message(%State{turn: %Turn{partial: partial, model: model}}, fields) do
-    struct!(
-      %Message{
-        role: :assistant,
-        content: Enum.reverse(partial),
-        model: ModelRef.to_string(model)
-      },
-      fields
-    )
   end
 
   defp close_turn(%State{} = state), do: %{state | turn: nil}
@@ -968,7 +903,7 @@ defmodule Helyx.Session do
   # Emits message_start for the assistant message on the first stream event.
   defp start_assistant_message(%State{turn: %Turn{partial: nil} = turn} = state) do
     state = %{state | turn: %{turn | partial: []}}
-    emit(state, :message_start, %{message: assistant_message(state, [])})
+    emit(state, :message_start, %{message: Turn.assistant_message(state.turn, [])})
   end
 
   defp start_assistant_message(state), do: state

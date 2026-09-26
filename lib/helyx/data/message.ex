@@ -56,6 +56,9 @@ defmodule Helyx.Message do
 
   @type block :: Text.t() | Thinking.t() | ToolCall.t() | Image.t()
   @type role :: :user | :assistant | :tool_result
+  @typedoc "A stream event that `add_block/2` adds to assistant content."
+  @type block_event ::
+          {:text_delta, String.t()} | {:thinking_delta, String.t()} | {:tool_call, ToolCall.t()}
   @type t :: %__MODULE__{
           role: role(),
           content: [block()],
@@ -215,10 +218,7 @@ defmodule Helyx.Message do
   build assistant content with this, so the delta vocabulary lives in one
   place.
   """
-  @spec add_block(
-          [block()],
-          {:text_delta, String.t()} | {:thinking_delta, String.t()} | {:tool_call, ToolCall.t()}
-        ) :: [block()]
+  @spec add_block([block()], block_event()) :: [block()]
   def add_block([%Text{text: t} = b | rest], {:text_delta, d}), do: [%{b | text: t <> d} | rest]
   def add_block(blocks, {:text_delta, d}), do: [%Text{text: d} | blocks]
 
