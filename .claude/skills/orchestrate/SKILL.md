@@ -37,7 +37,7 @@ codex_dir=$(/bin/ls -d "$HOME"/.claude/plugins/cache/openai-codex/codex/*/ | sor
 node "${codex_dir}scripts/codex-companion.mjs" adversarial-review "--wait --base origin/master <the invariant of the change, one sentence>"
 ```
 
-The invariant sentence names the entry points it covers, every accepted hole, every exception that the feature doc already states (for example, the write-failure policy of the session file) and every open hole that has a ticket. A reviewer that does not know a documented exception reports it as a defect.
+The invariant sentence names the entry points it covers, every accepted hole, every exception that the feature doc already states (for example, the write-failure policy of the session file) and every open hole that has a ticket. A reviewer that does not know a documented exception reports it as a defect. Write no text that starts with `--` in the sentence (for example a switch name such as `--model`): the companion script reads it as its own option and fails (#148). Name the switch in words.
 
 Judge every finding yourself. Reproduce it or read the code. A reviewer's claim is not a fact. Reject a finding whose reproduction enters below the boundary with a value no caller can pass; a fix for it would add defensive code. Record the rejection with the boundary that already covers the value. The invariant sentence also names the boundaries of the change, so the reviewer knows which checks are the designed ones.
 

@@ -84,3 +84,11 @@ Findings: simplify 1 (nit, skipped), standards 2 (minor), spec 0, failure path 0
 - Skipped (standards): rename `@options` to `@options_hint`.
 - Not changed (spec and failure path): a NUL byte in a directory argument shows as a byte list. A real OS argv cannot hold NUL.
 - Not changed (spec): `--=x` shows as `"--"` without `=x`. This does not break the invariant.
+
+## Orchestrator
+
+- Codex adversarial review, round 1 (after one failed run, see below): 1 confirmed finding. `OptionParser.parse/2` raised `ArgumentError` on `-=` and `-=value`, which pass the UTF-8 check. Reproduced. Fixed in round 5 by a rescue of `ArgumentError` by name around the parser.
+- Codex adversarial review, round 2: no finding.
+- The first Codex run failed: the invariant sentence held a switch name with two dashes, and the companion script read it as its own model option. The orchestrate skill now says to name a switch in words.
+- Accepted UX changes: the "not UTF-8" error, the one-sentence option error, and an unknown switch shown without its value.
+- Not filed: `mix helyx.graph` has the same parse pattern. It is a developer tool that only its author runs.

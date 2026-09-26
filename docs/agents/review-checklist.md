@@ -13,6 +13,7 @@ Invariants the review axes check on every diff. Add one when a review or a PR co
 ## Boundaries
 
 - Each input is checked at its boundary (see `AGENTS.md`, "Elixir guidelines"). The spec axis names the boundary of every new input.
+- A library function that parses boundary input can raise on some inputs, not only return an error. `OptionParser.parse/2` raises `ArgumentError` on `-=` (#148). At the boundary, contain the exceptions of such a parser by name, and probe it with generated input, not only with the cases a reviewer thinks of.
 - Inner code has no defensive handling: no fallback clause, `{:error, _}` return, `rescue`, or repair for a state that no caller can make. A reviewer reports such code as a finding, with every caller and the upstream check (`file:line`). A repeated check is a finding only when the earlier check still proves the same property; a documented safety check and a check of a limit that a transformation, an accumulation, or elapsed time introduces are not findings.
 - Later code uses the checked value. A new read of the source is a finding only when its value is used under the earlier check with no check of its own.
 - A boundary check rejects the smallest unit that permits safe continuation. The failure path names what one bad value destroys, and the feature doc states each case where missing identity, damaged structure, or an unresolved resource requires a larger failure.
