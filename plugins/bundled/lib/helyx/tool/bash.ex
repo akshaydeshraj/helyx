@@ -1,5 +1,5 @@
 defmodule Helyx.Tool.Bash do
-  @keep_bytes 4 * Helyx.Tool.max_bytes()
+  @keep_bytes 4 * Helyx.Text.max_bytes()
 
   @moduledoc """
   Runs a shell command in the working directory with `bash -c`.
@@ -86,7 +86,7 @@ defmodule Helyx.Tool.Bash do
 
     case consume(Helyx.Watchdog.start([bash, "-c", command], cwd, nil)) do
       {:not_started, reason} ->
-        {:error, "the command did not start: " <> Helyx.Tool.truncate(reason, :tail)}
+        {:error, "the command did not start: " <> Helyx.Text.truncate(reason, :tail)}
 
       {output, dropped?, status} ->
         {:ok, render(output, dropped?, status)}
@@ -129,7 +129,7 @@ defmodule Helyx.Tool.Bash do
     text =
       case output do
         "" -> "(no output)"
-        out -> Helyx.Tool.truncate(out, :tail)
+        out -> Helyx.Text.truncate(out, :tail)
       end
 
     text =

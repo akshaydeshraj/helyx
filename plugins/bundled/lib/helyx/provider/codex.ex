@@ -468,7 +468,7 @@ defmodule Helyx.Provider.Codex do
       item["status"] in ["failed", "declined"] or item["error"] != nil or
         (is_integer(item["exitCode"]) and item["exitCode"] != 0)
 
-    {if(failed?, do: :error, else: :ok), text}
+    {if(failed?, do: :error, else: :ok), Helyx.Text.truncate(text, :tail)}
   end
 
   # Input

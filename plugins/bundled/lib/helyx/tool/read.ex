@@ -11,7 +11,7 @@ defmodule Helyx.Tool.Read do
   An `offset` after the last line is an error that names the offset and the
   line count, so an offset that is too large does not look like an empty
   file. The error shows an offset above 1,000,000,000 as `over 1000000000`.
-  The line rule is that of `Helyx.Tool.truncate/3`: one trailing newline
+  The line rule is that of `Helyx.Text.truncate/3`: one trailing newline
   ends the last line, and more are blank lines that count. An offset at a
   trailing blank line is thus an ok result, and it can be empty. The empty
   file is the one exception to that rule: it has 0 lines here. Only line 1 of
@@ -20,7 +20,7 @@ defmodule Helyx.Tool.Read do
 
   @behaviour Helyx.Tool
 
-  # No file within the size limit of `Helyx.Tool.read_file/1` has this many
+  # No file within the size limit of `Helyx.Text.read_file/1` has this many
   # lines. The error shows no offset above it, and `truncate/3` gets no offset
   # above it, so neither the text nor the time grows with the digits of a
   # large integer.
@@ -54,7 +54,7 @@ defmodule Helyx.Tool.Read do
   @impl true
   def run(%{"path" => path} = args, cwd) when is_binary(path) do
     with {:ok, offset} <- offset(args["offset"]) do
-      case Helyx.Tool.read_file(Path.expand(path, cwd)) do
+      case Helyx.Text.read_file(Path.expand(path, cwd)) do
         {:ok, content} -> window(content, offset, path)
         {:error, reason} -> {:error, "cannot read #{path}: #{reason}"}
       end
@@ -67,7 +67,7 @@ defmodule Helyx.Tool.Read do
   # window past line 1 pays for the line count. An empty window at a blank
   # line is an ok result.
   defp window(content, offset, path) do
-    case Helyx.Tool.truncate(content, :head, min(offset, @max_shown_offset)) do
+    case Helyx.Text.truncate(content, :head, min(offset, @max_shown_offset)) do
       "" when offset > 1 -> empty_window(line_count(content), offset, path)
       window -> {:ok, window}
     end
@@ -81,7 +81,7 @@ defmodule Helyx.Tool.Read do
 
   defp empty_window(_total, _offset, _path), do: {:ok, ""}
 
-  # The line rule of `Helyx.Tool.truncate/3`, but an empty file has 0 lines:
+  # The line rule of `Helyx.Text.truncate/3`, but an empty file has 0 lines:
   # one trailing newline ends the last line. It walks the bytes and builds no
   # list, so a file of 10 MiB of newlines costs no memory here.
   defp line_count(""), do: 0

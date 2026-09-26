@@ -584,6 +584,20 @@ defmodule Helyx.Provider.CodexTest do
            ] = run_direct([Message.user("go")], work)
   end
 
+  test "a tool result over the limits arrives cut, with the notice", %{bin: bin, work: work} do
+    big = String.duplicate("x\n", 3_000)
+
+    fresh(bin, 1, @tid, [
+      completed(@tid, command("a", %{@done | aggregatedOutput: big})),
+      turn_end(@tid, "completed")
+    ])
+
+    events = run_direct([Message.user("go")], work)
+    assert [text] = for({:tool_result, "a", {:ok, t}} <- events, do: t)
+    assert text == Helyx.Text.truncate(big, :tail)
+    assert text =~ "[truncated: showing lines 1001-3000 of 3000]"
+  end
+
   # A message that closes while a call of the message before it still
   # runs waits for that call's result, so the session does not abort it.
   test "a message that closes before an earlier call's result waits for it",

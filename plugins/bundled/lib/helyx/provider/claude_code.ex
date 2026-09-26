@@ -196,7 +196,7 @@ defmodule Helyx.Provider.ClaudeCode do
     results =
       for %{"type" => "tool_result", "tool_use_id" => id} = block <- blocks do
         status = if block["is_error"] == true, do: :error, else: :ok
-        {:tool_result, id, {status, result_text(block["content"])}}
+        {:tool_result, id, {status, Helyx.Text.truncate(result_text(block["content"]), :tail)}}
       end
 
     case results do

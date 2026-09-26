@@ -147,7 +147,10 @@ defmodule Helyx.Test.Harness do
   #   "big_cut" a cut of 101 digits, over the digit limit
   #   "max_cut" a cut of 100 digits, at the digit limit
   #   "neg_cut" a cut of -1
-  #   "big_result" a tool call and its result of 3,000 lines
+  #   "result_N" a tool call and its result of N bytes
+  #   "result_multibyte" a result of 65,537 bytes: a 2-byte character
+  #              across the limit of 65,536
+  #   "result_raw" a result of 65,536 bytes that are not valid UTF-8
   #   "dup_id"  two tool calls with one id, then two results
   #   "open_call"  "dup_id" with no second result and no text after it
   #   "late_result"  a call, a text message, then the call's result
@@ -202,13 +205,13 @@ defmodule Helyx.Test.Harness do
     ]
   end
 
-  defp events("big_result") do
+  defp events("result_" <> kind) do
     call = %Helyx.Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
 
     [
       {:tool_call, call},
       {:message_end, :tool_use, %{}},
-      {:tool_result, "c1", {:ok, String.duplicate("x\n", 3_000)}}
+      {:tool_result, "c1", {:ok, result_text(kind)}}
     ]
   end
 
@@ -217,6 +220,10 @@ defmodule Helyx.Test.Harness do
   defp events("id0"), do: [{:harness_session, "", 0}]
   defp events("raw_id"), do: [{:harness_session, <<255>>, 0}]
   defp events("orphan"), do: [{:tool_result, "nope", {:ok, "lost"}}]
+
+  defp result_text("multibyte"), do: String.duplicate("x", 65_535) <> "é"
+  defp result_text("raw"), do: :binary.copy(<<255>>, 65_536)
+  defp result_text(bytes), do: String.duplicate("x", String.to_integer(bytes))
 end
 
 defmodule Helyx.Test.Provider do

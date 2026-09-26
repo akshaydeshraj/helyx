@@ -1,8 +1,8 @@
-defmodule Helyx.ToolTest do
+defmodule Helyx.TextTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  alias Helyx.Tool
+  alias Helyx.Text
 
   # The limits of truncate/2, stated independently of the code under test.
   @max_lines 2000
@@ -10,7 +10,7 @@ defmodule Helyx.ToolTest do
 
   property "truncate/2 stays valid UTF-8, within the limits, and on whole lines" do
     check all(text <- text(), keep <- member_of([:head, :tail])) do
-      out = Tool.truncate(text, keep)
+      out = Text.truncate(text, keep)
       assert String.valid?(out)
 
       stripped = String.replace_suffix(text, "\n", "")
@@ -104,24 +104,24 @@ defmodule Helyx.ToolTest do
   test "read_file/1 rejects a file that is not valid UTF-8", %{tmp_dir: dir} do
     path = Path.join(dir, "raw.bin")
     File.write!(path, <<"a", 255, "b">>)
-    assert Tool.read_file(path) == {:error, "binary file, 3 bytes"}
+    assert Text.read_file(path) == {:error, "binary file, 3 bytes"}
   end
 
   @tag :tmp_dir
   test "read_file/1 accepts multibyte UTF-8", %{tmp_dir: dir} do
     path = Path.join(dir, "multi.txt")
     File.write!(path, "héllo wörld €😀")
-    assert Tool.read_file(path) == {:ok, "héllo wörld €😀"}
+    assert Text.read_file(path) == {:ok, "héllo wörld €😀"}
   end
 
   test "short text is returned as is" do
-    assert Tool.truncate("a\nb", :head) == "a\nb"
-    assert Tool.truncate("a\nb", :tail) == "a\nb"
+    assert Text.truncate("a\nb", :head) == "a\nb"
+    assert Text.truncate("a\nb", :tail) == "a\nb"
   end
 
   test "head keeps the first 2000 lines and says what it shows" do
     text = Enum.map_join(1..2500, "\n", &to_string/1)
-    out = Tool.truncate(text, :head)
+    out = Text.truncate(text, :head)
     assert String.starts_with?(out, "1\n2\n")
 
     assert String.ends_with?(
@@ -132,14 +132,14 @@ defmodule Helyx.ToolTest do
 
   test "tail keeps the last 2000 lines and says what it shows" do
     text = Enum.map_join(1..2500, "\n", &to_string/1)
-    out = Tool.truncate(text, :tail)
+    out = Text.truncate(text, :tail)
     assert String.starts_with?(out, "[truncated: showing lines 501-2500 of 2500]\n501\n")
     assert String.ends_with?(out, "\n2500")
   end
 
   test "the byte limit cuts on a whole line" do
     text = Enum.map_join(1..100, "\n", fn _ -> String.duplicate("x", 1000) end)
-    out = Tool.truncate(text, :head)
+    out = Text.truncate(text, :head)
 
     assert String.ends_with?(
              out,
@@ -153,14 +153,14 @@ defmodule Helyx.ToolTest do
     text = Enum.map_join(1..2500, "\n", &to_string/1) <> "\n"
 
     assert String.ends_with?(
-             Tool.truncate(text, :head),
+             Text.truncate(text, :head),
              "[truncated: showing lines 1-2000 of 2500; read again with offset 2001]"
            )
   end
 
   test "a first line over the byte limit is cut to the limit" do
     big = String.duplicate("x", 60_000)
-    head = Tool.truncate(big <> "\nb", :head)
+    head = Text.truncate(big <> "\nb", :head)
 
     assert String.ends_with?(
              head,
@@ -169,7 +169,7 @@ defmodule Helyx.ToolTest do
 
     assert byte_size(head) < 51_300
 
-    tail = Tool.truncate("a\n" <> big, :tail)
+    tail = Text.truncate("a\n" <> big, :tail)
 
     assert String.starts_with?(
              tail,
@@ -181,40 +181,40 @@ defmodule Helyx.ToolTest do
 
   test "a cut line is named in the notice, at its absolute number (issue #50)" do
     first = String.duplicate("x", 51_500 - 11) <> "TAIL_MARKER"
-    refute Tool.truncate(first <> "\nline2", :head) =~ "TAIL_MARKER"
+    refute Text.truncate(first <> "\nline2", :head) =~ "TAIL_MARKER"
 
     assert String.ends_with?(
-             Tool.truncate("a\n" <> first <> "\nline2", :head, 2),
+             Text.truncate("a\n" <> first <> "\nline2", :head, 2),
              "\n[truncated: showing lines 2-2 of 3, line 2 cut at 51200 bytes; read again with offset 3]"
            )
 
     # One byte over the cap is cut; at the cap is not (see the test below).
-    assert Tool.truncate(String.duplicate("x", 51_201), :head) =~ "line 1 cut at 51200 bytes]"
-    assert Tool.truncate(String.duplicate("x", 51_201), :tail) =~ "line 1 cut at 51200 bytes]"
+    assert Text.truncate(String.duplicate("x", 51_201), :head) =~ "line 1 cut at 51200 bytes]"
+    assert Text.truncate(String.duplicate("x", 51_201), :tail) =~ "line 1 cut at 51200 bytes]"
 
     # The byte count is what is shown, after the part of a character at the cut edge is removed.
     euro = String.duplicate("€", 20_000)
-    assert Tool.truncate(euro, :head) =~ "line 1 cut at 51198 bytes]"
-    assert Tool.truncate(euro, :tail) =~ "line 1 cut at 51198 bytes]"
+    assert Text.truncate(euro, :head) =~ "line 1 cut at 51198 bytes]"
+    assert Text.truncate(euro, :tail) =~ "line 1 cut at 51198 bytes]"
   end
 
   test "a cut last line has no read again clause; a cut line with lines after it keeps it (issue #61)" do
     big = String.duplicate("x", 60_000)
     last = "\n[truncated: showing lines 3-3 of 3, line 3 cut at 51200 bytes]"
 
-    assert String.ends_with?(Tool.truncate("a\nb\n" <> big, :head, 3), last)
+    assert String.ends_with?(Text.truncate("a\nb\n" <> big, :head, 3), last)
     # One trailing newline is a terminator, not a line after the cut one.
-    assert String.ends_with?(Tool.truncate("a\nb\n" <> big <> "\n", :head, 3), last)
+    assert String.ends_with?(Text.truncate("a\nb\n" <> big <> "\n", :head, 3), last)
 
     # A blank line after the cut line is a line: offset 4 returns it.
     assert String.ends_with?(
-             Tool.truncate("a\nb\n" <> big <> "\n\n", :head, 3),
+             Text.truncate("a\nb\n" <> big <> "\n\n", :head, 3),
              "\n[truncated: showing lines 3-3 of 4, line 3 cut at 51200 bytes; read again with offset 4]"
            )
   end
 
   test "trailing blank lines count toward the limits" do
-    out = Tool.truncate("a" <> String.duplicate("\n", 60_000), :head)
+    out = Text.truncate("a" <> String.duplicate("\n", 60_000), :head)
 
     assert String.ends_with?(
              out,
@@ -226,14 +226,14 @@ defmodule Helyx.ToolTest do
     line = String.duplicate("€", 20_000)
 
     for keep <- [:head, :tail] do
-      out = Tool.truncate(line, keep)
+      out = Text.truncate(line, keep)
       assert String.valid?(out)
       assert out =~ "showing lines 1-1 of 1"
     end
   end
 
   test "a cut on text that was never valid loses three bytes at the cut edge" do
-    out = Tool.truncate(:binary.copy(<<255>>, 60_000), :head)
+    out = Text.truncate(:binary.copy(<<255>>, 60_000), :head)
 
     assert [
              cut,
@@ -260,13 +260,13 @@ defmodule Helyx.ToolTest do
       x = String.duplicate("x", pad)
 
       assert [head, "[truncated:" <> head_note] =
-               String.split(Tool.truncate(x <> shown <> rest, :head), "\n")
+               String.split(Text.truncate(x <> shown <> rest, :head), "\n")
 
       assert head == x <> shown
       assert head_note =~ note
 
       assert ["[truncated:" <> tail_note, tail] =
-               String.split(Tool.truncate(rest <> shown <> x, :tail), "\n")
+               String.split(Text.truncate(rest <> shown <> x, :tail), "\n")
 
       assert tail == shown <> x
       assert tail_note =~ note
@@ -276,7 +276,7 @@ defmodule Helyx.ToolTest do
   test "an invalid byte away from the cut edge is kept and does not change the cut (issue #68)" do
     # The cut lands two bytes inside a "€": only those two bytes go.
     line = "ab" <> <<255>> <> String.duplicate("€", 20_000)
-    out = Tool.truncate(line, :head)
+    out = Text.truncate(line, :head)
     assert [shown, note] = String.split(out, "\n")
     assert shown == "ab" <> <<255>> <> String.duplicate("€", 17_065)
     assert note =~ "line 1 cut at 51198 bytes]"
@@ -288,21 +288,21 @@ defmodule Helyx.ToolTest do
     kept = String.duplicate("😀", 12_799)
 
     assert ["[truncated:" <> note, tail] =
-             String.split(Tool.truncate(String.duplicate("😀", 20_000) <> partial, :tail), "\n")
+             String.split(Text.truncate(String.duplicate("😀", 20_000) <> partial, :tail), "\n")
 
     assert tail == kept <> partial
     assert note =~ "line 1 cut at 51198 bytes"
 
     assert [head, "[truncated:" <> note] =
-             String.split(Tool.truncate(partial <> String.duplicate("😀", 20_000), :head), "\n")
+             String.split(Text.truncate(partial <> String.duplicate("😀", 20_000), :head), "\n")
 
     assert head == partial <> kept
     assert note =~ "line 1 cut at 51198 bytes"
 
     # A cut between two characters loses nothing.
     xs = String.duplicate("x", 60_000)
-    assert Tool.truncate(xs <> partial, :tail) =~ "line 1 cut at 51200 bytes"
-    assert Tool.truncate(partial <> xs, :head) =~ "line 1 cut at 51200 bytes"
+    assert Text.truncate(xs <> partial, :tail) =~ "line 1 cut at 51200 bytes"
+    assert Text.truncate(partial <> xs, :head) =~ "line 1 cut at 51200 bytes"
   end
 
   test "an edge with no whole character within three bytes loses three bytes (issue #68)" do
@@ -311,13 +311,13 @@ defmodule Helyx.ToolTest do
     fill = String.duplicate("x", 51_196)
 
     assert ["[truncated:" <> note, tail] =
-             String.split(Tool.truncate(xs <> edge <> fill, :tail), "\n")
+             String.split(Text.truncate(xs <> edge <> fill, :tail), "\n")
 
     assert tail == <<0x80>> <> fill
     assert note =~ "line 1 cut at 51197 bytes"
 
     assert [head, "[truncated:" <> note] =
-             String.split(Tool.truncate(fill <> edge <> xs, :head), "\n")
+             String.split(Text.truncate(fill <> edge <> xs, :head), "\n")
 
     assert head == fill <> <<0x80>>
     assert note =~ "line 1 cut at 51197 bytes"
@@ -332,12 +332,12 @@ defmodule Helyx.ToolTest do
       note = "line 1 cut at #{byte_size(fill)} bytes"
 
       assert ["[truncated:" <> tail_note, ^fill] =
-               String.split(Tool.truncate(xs <> edge <> fill, :tail), "\n")
+               String.split(Text.truncate(xs <> edge <> fill, :tail), "\n")
 
       assert tail_note =~ note
 
       assert [^fill, "[truncated:" <> head_note] =
-               String.split(Tool.truncate(fill <> edge <> xs, :head), "\n")
+               String.split(Text.truncate(fill <> edge <> xs, :head), "\n")
 
       assert head_note =~ note
     end
@@ -348,7 +348,7 @@ defmodule Helyx.ToolTest do
 
     for n <- 1..3 do
       fill = String.duplicate("x", 51_200 - n)
-      out = Tool.truncate(xs <> :binary.copy(<<0x80>>, n) <> fill, :tail)
+      out = Text.truncate(xs <> :binary.copy(<<0x80>>, n) <> fill, :tail)
       assert ["[truncated:" <> note, ^fill] = String.split(out, "\n")
       assert note =~ "line 1 cut at #{51_200 - n} bytes"
     end
@@ -368,7 +368,7 @@ defmodule Helyx.ToolTest do
           <<0xF0, 0x80, 0x80>>
         ] do
       fill = String.duplicate("x", 51_200 - byte_size(edge))
-      out = Tool.truncate(fill <> edge <> xs, :head)
+      out = Text.truncate(fill <> edge <> xs, :head)
       assert [^fill, "[truncated:" <> note] = String.split(out, "\n")
       assert note =~ "line 1 cut at #{byte_size(fill)} bytes"
     end
@@ -379,16 +379,16 @@ defmodule Helyx.ToolTest do
       String.duplicate("a\n", 2000) <>
         "[truncated: showing lines 1-2000 of 2001; read again with offset 2001]"
 
-    assert Tool.truncate(text, :head) == text
+    assert Text.truncate(text, :head) == text
   end
 
   test "a line exactly at the byte limit is kept" do
     line = String.duplicate("x", 51_200)
-    assert Tool.truncate(line, :head) == line
-    assert Tool.truncate(line, :tail) == line
+    assert Text.truncate(line, :head) == line
+    assert Text.truncate(line, :tail) == line
 
     assert String.starts_with?(
-             Tool.truncate(line <> "\nb", :head),
+             Text.truncate(line <> "\nb", :head),
              line <> "\n[truncated: showing lines 1-1 of 2; read again with offset 2]"
            )
   end

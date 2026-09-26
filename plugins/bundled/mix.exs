@@ -32,6 +32,7 @@ defmodule Helyx.Plugins.MixProject do
       # only when it is loaded; a product that wants the TUI lists it (ADR 0005).
       {:ex_ratatui, "~> 0.14", optional: true},
       {:plug, "~> 1.16", only: :test},
+      {:stream_data, "~> 1.2", only: :test},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
   end

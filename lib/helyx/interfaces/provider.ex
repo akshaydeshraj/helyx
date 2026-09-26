@@ -24,8 +24,10 @@ defmodule Helyx.Provider do
       the end of the call, a provider sends every `message_end` that it did
       not send yet, and the session aborts the calls with no result
     * `{:tool_result, call_id, {:ok | :error, binary}}`: the result of a
-      tool call of a completed message; the session cuts the text like a
-      tool result (`Helyx.Tool.truncate/2`, `:tail`)
+      tool call of a completed message. The provider cuts the text to the
+      tool result limits before it sends the event, as a tool does; the
+      session does not cut it. A text over 65,536 bytes fails the turn with
+      `{:tool_result_too_large, bytes, 65_536}`
     * `{:harness_session, id, cut}`: the call started a fresh harness
       session with this id; `cut` is the number of transcript messages the
       provider left out of what it sent to it
