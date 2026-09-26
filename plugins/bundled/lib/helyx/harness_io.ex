@@ -19,6 +19,17 @@ defmodule Helyx.HarnessIO do
   def line_max_bytes, do: @line_max_bytes
   def replay_max_bytes, do: @replay_max_bytes
 
+  # The lookup of the harness program, with the check for perl: the
+  # watchdog needs perl, so without it the error names perl, not the exit
+  # of a run that never started.
+  def find(program) do
+    case {System.find_executable(program), System.find_executable("perl")} do
+      {nil, _} -> {:error, program <> " not found on PATH"}
+      {_, nil} -> {:error, "perl not found on PATH: #{program} runs under a perl watchdog"}
+      {exe, _} -> {:ok, exe}
+    end
+  end
+
   # Runs `argv` under the watchdog with `input` and puts the port in the
   # state. What came before the marker is perl's own output: the program
   # runs only after the go-ahead. A program that did not start gives the
@@ -103,12 +114,12 @@ defmodule Helyx.HarnessIO do
   def overdue?(nil), do: false
   def overdue?(deadline), do: remaining(deadline) == 0
 
-  # A value that is not text is empty.
+  # A value that is not text is empty. The text is cut at the cap, and a
+  # character cut in half and every invalid byte are dropped, so the text is
+  # valid UTF-8 (perl's warnings quote the environment as raw bytes).
   def cap_error(text) when not is_binary(text), do: ""
-  def cap_error(text) when byte_size(text) <= @error_max_bytes, do: text
-  # A character cut in half is dropped, so the text stays within the cap.
-  def cap_error(text),
-    do: text |> binary_part(0, @error_max_bytes) |> String.replace_invalid("")
+
+  def cap_error(text), do: text |> binary_slice(0, @error_max_bytes) |> String.replace_invalid("")
 
   # The prompt is the user messages at the end of the transcript; the
   # history is the rest. Both keep their order.

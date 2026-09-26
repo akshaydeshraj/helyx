@@ -190,13 +190,16 @@ defmodule Helyx.TUI.ViewModel do
     do: join_arguments("#{line} #{cut_line("#{key}")}=#{inspect(value)}", :maps.next(iterator))
 
   # One rule for an error notice or a tool call line that holds provider or
-  # model text: `inspect/1` escapes a character to up to three times its
-  # bytes and has no total limit over nested terms, so the text is cut at
-  # `@render_max_bytes`; a character cut in half is dropped.
+  # model text: `inspect/1` escapes a character to up to four times its
+  # bytes (a control or invalid byte renders as `\x01`) and has no total
+  # limit over nested terms, so the text is cut at `@render_max_bytes`; a
+  # character cut in half is dropped.
   defp cut_line(text),
     do: text |> binary_slice(0, @render_max_bytes) |> String.replace_invalid("")
 
-  defp error_text(error), do: error |> inspect() |> cut_line()
+  # `binaries: :as_strings` escapes a control or invalid byte, so an error
+  # text shows as text, not as a list of bytes.
+  defp error_text(error), do: error |> inspect(binaries: :as_strings) |> cut_line()
 
   defp stream(vm, delta), do: %{vm | streaming: Message.add_block(vm.streaming || [], delta)}
 

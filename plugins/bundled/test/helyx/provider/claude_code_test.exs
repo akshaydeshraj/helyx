@@ -184,6 +184,25 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
   @moduletag :tmp_dir
 
+  # The setup restores PATH.
+  test "with no perl on PATH, the stream returns an error that names perl",
+       %{bin: bin, work: work} do
+    System.put_env("PATH", bin)
+
+    assert {:error, "perl not found" <> _} =
+             ClaudeCode.stream("m", %Helyx.Context{messages: []}, cwd: work)
+  end
+
+  # The setup restores PATH.
+  test "perl gone from PATH after the check ends the stream with an error that names perl",
+       %{bin: bin, work: work} do
+    {:ok, stream} = ClaudeCode.stream("m", %Helyx.Context{messages: []}, cwd: work)
+    System.put_env("PATH", bin)
+
+    assert [{:error, {:not_started, "perl did not start: not found on PATH"}}] =
+             Enum.to_list(stream)
+  end
+
   test "a turn: text, tool calls, and tool results join the transcript, and the id is stored",
        %{bin: bin} = ctx do
     scenario(bin, 1, [

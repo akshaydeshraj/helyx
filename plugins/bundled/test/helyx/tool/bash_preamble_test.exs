@@ -51,6 +51,18 @@ defmodule Helyx.Tool.Bash.PreambleTest do
     refute File.exists?(ran)
   end
 
+  test "warnings over the tool result limits: the error still names the perl watchdog",
+       %{tmp_dir: dir} do
+    for value <- [String.duplicate("\n", 5000), String.duplicate("x", 60_000)] do
+      put_env("LC_MESSAGES", value)
+      # perl's warning holds environment values: the assertion message
+      # shows none of them.
+      {:error, text} = Helyx.Tool.Bash.run(%{"command" => "true"}, dir)
+      named? = String.starts_with?(text, "the command did not start: the perl watchdog")
+      assert named?, "the error does not start with the perl watchdog"
+    end
+  end
+
   test "the close with no marker leaves no process", %{tmp_dir: dir} do
     put_env("LC_MESSAGES", String.duplicate("x", 5000))
     test = self()

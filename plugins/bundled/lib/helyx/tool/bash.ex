@@ -84,21 +84,27 @@ defmodule Helyx.Tool.Bash do
   defp run_command(command, cwd) do
     bash = System.find_executable("bash") || "/bin/bash"
 
-    case consume(Helyx.Watchdog.start([bash, "-c", command], cwd, nil)) do
-      {:not_started, reason} ->
-        {:error, "the command did not start: " <> Helyx.Text.truncate(reason, :tail)}
+    result(Helyx.Watchdog.start([bash, "-c", command], cwd, nil))
+  end
 
-      {output, dropped?, status} ->
-        {:ok, render(output, dropped?, status)}
+  # The no-marker text names the perl watchdog at its head (see
+  # `Helyx.Watchdog.start/4`), so the head is kept, with the cut of the
+  # harness providers. A start report has its reason at the tail.
+  defp result({:no_marker, text}), do: not_started(Helyx.HarnessIO.cap_error(text))
+
+  defp result(started) do
+    case consume(started) do
+      {:not_started, reason} -> not_started(Helyx.Text.truncate(reason, :tail))
+      {output, dropped?, status} -> {:ok, render(output, dropped?, status)}
     end
   end
+
+  defp not_started(reason), do: {:error, "the command did not start: " <> reason}
 
   defp consume({:not_started, port, acc}) do
     {reason, _dropped?, _status} = collect(port, acc, false)
     {:not_started, reason}
   end
-
-  defp consume({:no_marker, text}), do: {:not_started, "the watchdog gave no marker: " <> text}
 
   defp consume({:started, port, pre, nonce, go}),
     do: start_report(collect(port, pre, false), pre, nonce <> " 1\n", go <> " 0\n")
