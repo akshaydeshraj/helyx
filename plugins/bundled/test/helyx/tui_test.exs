@@ -45,6 +45,27 @@ defmodule Helyx.TUI.Test.Provider.BadTurn do
   def turn, do: :bogus
 end
 
+defmodule Helyx.TUI.Test.Provider.Monitors do
+  @moduledoc false
+  # A provider whose `turn/0` monitors a short process. `Session.set_model/2`
+  # calls `turn/0` in its caller, so `/model monitors/...` leaves a `:DOWN`
+  # message of another monitor in the TUI process.
+  @behaviour Helyx.Provider
+
+  @impl true
+  def id, do: "monitors"
+
+  @impl true
+  def stream(_model, _context, _opts), do: {:ok, []}
+
+  @impl true
+  def turn do
+    # spawn_monitor/1: a monitor set after spawn/1 can give `:noproc`.
+    spawn_monitor(fn -> :ok end)
+    :local
+  end
+end
+
 defmodule Helyx.TUITest do
   # The app callbacks, driven directly: mount subscribes the caller, key
   # events edit and send the composer, session events fold into the view
@@ -67,6 +88,7 @@ defmodule Helyx.TUITest do
       Fake,
       Helyx.TUI.Test.Provider.Other,
       Helyx.TUI.Test.Provider.BadTurn,
+      Helyx.TUI.Test.Provider.Monitors,
       Helyx.TUI.Test.Tool.Slow
     ]
 
@@ -243,12 +265,27 @@ defmodule Helyx.TUITest do
     assert {:stop, _state} = TUI.handle_event(%Key{code: "c", modifiers: ["ctrl"]}, state)
   end
 
-  test "the TUI exits when the session dies", %{core: core} do
+  test "the TUI exits when the session dies, and only then", %{core: core} do
     state = mounted(core, "gone", [])
 
-    Process.exit(Session.pid(state.session), :kill)
-    assert_receive {:DOWN, _ref, :process, _pid, :killed} = down
+    # `/model` runs the provider's `turn/0` in the TUI process. The monitor
+    # that `turn/0` leaves is not the session's.
+    {:noreply, state} =
+      TUI.handle_event(%ExRatatui.Event.Paste{content: "/model monitors/m"}, state)
 
+    state = press(state, "enter")
+    assert Session.model(state.session) == "monitors/m"
+    assert_receive {:DOWN, _ref, :process, _pid, :normal} = other
+    assert {:noreply, ^state} = TUI.handle_info(other, state)
+
+    # Another monitor of the session: the same pid, another reference.
+    pid = Session.pid(state.session)
+    ref = Process.monitor(pid)
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed} = same_pid
+    assert {:noreply, ^state} = TUI.handle_info(same_pid, state)
+
+    assert_receive {:DOWN, _ref, :process, ^pid, :killed} = down
     assert catch_exit(TUI.handle_info(down, state)) == {:session_down, :killed}
   end
 

@@ -182,14 +182,18 @@ if Helyx.TUI.Available.available?() do
 
       # A monitor surfaces a dying session through run/1. A session that is
       # already gone has nothing to monitor; exit now rather than hang idle.
-      case Session.pid(session) do
-        nil -> exit({:session_down, :noproc})
-        pid -> Process.monitor(pid)
-      end
+      monitor =
+        case Session.pid(session) do
+          nil -> exit({:session_down, :noproc})
+          pid -> {Process.monitor(pid), pid}
+        end
 
       {:ok,
        %{
          session: session,
+         # The reference and pid of the session monitor. Only its `:DOWN`
+         # ends the TUI.
+         monitor: monitor,
          vm: ViewModel.new(Keyword.fetch!(opts, :model)),
          input: ExRatatui.textarea_new(),
          # Marker text to the full paste it stands for. Emptied with the
@@ -209,8 +213,11 @@ if Helyx.TUI.Available.available?() do
     end
 
     # A dead session leaves nothing to render; exiting surfaces the reason
-    # through run/1 instead of a noproc crash on the next keypress.
-    def handle_info({:DOWN, _ref, :process, _pid, reason}, _state) do
+    # through run/1 instead of a noproc crash on the next keypress. Plugin
+    # code also runs in this process: `/model` calls the provider's `turn/0`
+    # here (`Session.set_model/2`). A `:DOWN` of a monitor that such code
+    # leaves is not the session's, so the next clause ignores it.
+    def handle_info({:DOWN, ref, :process, pid, reason}, %{monitor: {ref, pid}}) do
       exit({:session_down, reason})
     end
 
