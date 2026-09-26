@@ -57,4 +57,5 @@ Invariants the review axes check on every diff. Add one when a review or a PR co
 - Truncation holds for trailing blank lines, for a line exactly at the byte limit, and cuts on a character boundary.
 - Two tools with one name are rejected at session start.
 - Truncation holds when one line is larger than the byte limit.
+- A `rescue error in ErlangError` also catches the exceptions that the BEAM normalizes, such as `SystemLimitError` and `ArgumentError`, and these have no `:original` field. Format a caught exception with `Exception.message/1`, never with a field of one exception type (#141).
 - A tool never loads unbounded input or buffers unbounded output. A model-chosen path can be a device or a huge file; a command can write forever. A result that dropped output says so.

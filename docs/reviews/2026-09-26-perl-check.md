@@ -88,3 +88,5 @@ Skipped:
 - Fixed: the text is now `Exception.message(error)`. A regression test in `watchdog_test.exs` passes a cwd that is not text, so `Port.open` raises `ArgumentError` deterministically, with no VM flag for the suite. The test also checks that the spawn ran, not the perl lookup.
 - Rerun round 8, reduced (spec and failure path; the fix is one code line in one file and a test): 1 finding on spec, the test also matched a failed perl lookup, fixed. The failure path was clean. It reproduced the port limit in a separate VM with `+Q 1024`: `{:error, "the command did not start: perl did not start: a system limit has been reached"}`.
 - Text change: a missing file was `perl did not start: :enoent` and is now `perl did not start: Erlang error: :enoent`. No test or doc depends on the old text.
+- Codex adversarial review, round 2: no finding.
+- Escape recorded: a line in `docs/agents/review-checklist.md`, Tools and hands, and a row in `docs/reviews/escapes.md`.
