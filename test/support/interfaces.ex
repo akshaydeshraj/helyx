@@ -102,32 +102,32 @@ defmodule Helyx.Test.ProviderOther do
   end
 end
 
-defmodule Helyx.Test.BadKind do
+defmodule Helyx.Test.BadTurn do
   @moduledoc false
-  # A provider whose `kind/0` is not `:model` or `:harness`.
+  # A provider whose `turn/0` is not `:local` or `:external`.
   @behaviour Helyx.Provider
 
   @impl true
-  def id, do: "bad_kind"
+  def id, do: "bad_turn"
 
   # The bad return is the point of this provider.
-  @dialyzer {:nowarn_function, kind: 0}
+  @dialyzer {:nowarn_function, turn: 0}
   @impl true
-  def kind, do: :bogus
+  def turn, do: :bogus
 
   @impl true
   def stream(_model, _context, _opts), do: {:ok, []}
 end
 
-defmodule Helyx.Test.RaisingKind do
+defmodule Helyx.Test.RaisingTurn do
   @moduledoc false
   @behaviour Helyx.Provider
 
   @impl true
-  def id, do: "raising_kind"
+  def id, do: "raising_turn"
 
   @impl true
-  def kind, do: raise("no kind")
+  def turn, do: raise("no turn")
 
   @impl true
   def stream(_model, _context, _opts), do: {:ok, []}
@@ -135,8 +135,8 @@ end
 
 defmodule Helyx.Test.Harness do
   @moduledoc false
-  # A harness provider whose model name selects its harness events. Each
-  # stream ends with a text delta and done.
+  # A provider with an external turn whose model name selects its harness
+  # events. Each stream ends with a text delta and done.
   #
   #   "id1"     a harness session id of 1 byte
   #   "id256"   a harness session id of 256 bytes, multibyte
@@ -160,7 +160,7 @@ defmodule Helyx.Test.Harness do
   def id, do: "harness"
 
   @impl true
-  def kind, do: :harness
+  def turn, do: :external
 
   @impl true
   def stream("open_call", _context, _opts),

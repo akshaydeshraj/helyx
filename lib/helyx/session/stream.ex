@@ -26,7 +26,7 @@ defmodule Helyx.Session.Stream do
           opts: keyword(),
           session: pid(),
           turn_id: String.t(),
-          harness?: boolean()
+          external?: boolean()
         }
 
   @doc """
@@ -44,7 +44,7 @@ defmodule Helyx.Session.Stream do
         opts: opts,
         session: session,
         turn_id: turn_id,
-        harness?: harness?
+        external?: external?
       }) do
     # Context building runs inside the Task so plugin code never blocks the
     # session and a plugin that raises fails the turn, not the session.
@@ -55,7 +55,7 @@ defmodule Helyx.Session.Stream do
 
     result =
       case provider.stream(model, context, opts) do
-        {:ok, stream} -> consume(stream, session, turn_id, harness?)
+        {:ok, stream} -> consume(stream, session, turn_id, external?)
         {:error, reason} -> {:error, reason}
       end
 
@@ -63,7 +63,7 @@ defmodule Helyx.Session.Stream do
     # and no malformed event in one brings an integer over the digit
     # limit to the session (see `Helyx.Message.cap_integers/1`). A raise
     # or an exit is not a terminal: the `:DOWN` handler of the session, or
-    # the hands for a harness stream, report it.
+    # the hands for the stream of an external turn, report it.
     Message.cap_integers(result)
   end
 
@@ -74,7 +74,7 @@ defmodule Helyx.Session.Stream do
   # tool call that is not valid UTF-8 is malformed: transcript text is
   # valid from the moment it exists, so the file and the providers never
   # see raw bytes.
-  defp consume(stream, session, turn_id, harness?) do
+  defp consume(stream, session, turn_id, external?) do
     Enum.reduce_while(stream, :stream_ended, fn
       {kind, payload} = event, acc
       when kind in [:text_delta, :thinking_delta] and is_binary(payload) ->
@@ -109,10 +109,11 @@ defmodule Helyx.Session.Stream do
       {:error, _} = terminal, _acc ->
         {:halt, terminal}
 
-      # Only a harness sends these; from a model provider they are malformed.
+      # Only a provider with an external turn sends these; in a local turn
+      # they are malformed.
       {tag, _, _} = event, acc
-      when harness? and tag in [:message_end, :tool_result, :harness_session] ->
-        case harness_event(event) do
+      when external? and tag in [:message_end, :tool_result, :harness_session] ->
+        case external_event(event) do
           {:ok, event} -> forward(true, event, session, turn_id, acc)
           {:error, _} = terminal -> {:halt, terminal}
         end
@@ -122,12 +123,12 @@ defmodule Helyx.Session.Stream do
     end)
   end
 
-  # The events of a harness provider. A message end is checked like the
+  # The events of an external turn. A message end is checked like the
   # `done` terminal. The provider cuts a result to the tool result limits;
   # a result over this limit was not cut, so it fails the turn. The check
   # measures the text as sent, before the UTF-8 repair of
   # `Helyx.Message.tool_result/2`, which can make it up to three times larger.
-  defp harness_event({:message_end, reason, usage} = event)
+  defp external_event({:message_end, reason, usage} = event)
        when reason in @stop_reasons and is_non_struct_map(usage) do
     case capped_usage(usage) do
       {:ok, usage} -> {:ok, {:message_end, reason, usage}}
@@ -135,7 +136,7 @@ defmodule Helyx.Session.Stream do
     end
   end
 
-  defp harness_event({:tool_result, id, {status, text}} = event)
+  defp external_event({:tool_result, id, {status, text}} = event)
        when is_binary(id) and status in [:ok, :error] and is_binary(text) do
     cond do
       not Message.valid_utf8?(id) -> malformed(event)
@@ -144,7 +145,7 @@ defmodule Helyx.Session.Stream do
     end
   end
 
-  defp harness_event({:harness_session, id, cut} = event) when is_integer(cut) and cut >= 0 do
+  defp external_event({:harness_session, id, cut} = event) when is_integer(cut) and cut >= 0 do
     # No integer over the digit limit reaches the session (see
     # `Helyx.Message.cap_integers/1`).
     if Message.harness_id?(id) and Message.cap_integers(cut) == cut,
@@ -152,7 +153,7 @@ defmodule Helyx.Session.Stream do
       else: malformed(event)
   end
 
-  defp harness_event(event), do: malformed(event)
+  defp external_event(event), do: malformed(event)
 
   defp malformed(event), do: {:error, {:bad_stream_event, event}}
 

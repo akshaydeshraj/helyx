@@ -10,14 +10,24 @@ defmodule Helyx.Session.Turn do
   # rejected call after the cap is also rejected. One turn has many provider
   # calls, so each provider call starts with an empty list.
   # `model` and `provider` are fixed when the turn starts, so a model switch
-  # during the turn takes effect on the next one, and so does `kind`
-  # (`Helyx.Provider.kind/1`). `resumed` is the harness session id the
-  # turn passed to a harness provider, or nil.
+  # during the turn takes effect on the next one, and so does `turn_mode`
+  # (`Helyx.Provider.turn/1`). `resumed` is the harness session id the
+  # turn passed to a provider with an external turn, or nil.
 
   alias Helyx.{Message, ModelRef}
 
-  @enforce_keys [:id, :model, :provider, :kind]
-  defstruct [:id, :model, :provider, :kind, :task, :partial, :resumed, calls: [], rejected: []]
+  @enforce_keys [:id, :model, :provider, :turn_mode]
+  defstruct [
+    :id,
+    :model,
+    :provider,
+    :turn_mode,
+    :task,
+    :partial,
+    :resumed,
+    calls: [],
+    rejected: []
+  ]
 
   @type t :: %__MODULE__{}
 

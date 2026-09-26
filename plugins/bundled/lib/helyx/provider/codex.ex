@@ -113,7 +113,7 @@ defmodule Helyx.Provider.Codex do
   def id, do: "codex"
 
   @impl true
-  def kind, do: :harness
+  def turn, do: :external
 
   # A delivery TERMs first too: the stream can end (a line over the cap,
   # the exit wait) while codex still runs a command.

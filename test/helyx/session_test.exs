@@ -12,8 +12,8 @@ defmodule Helyx.SessionTest do
       Helyx.Test.Provider,
       Helyx.Test.ProviderOther,
       Helyx.Test.Harness,
-      Helyx.Test.BadKind,
-      Helyx.Test.RaisingKind,
+      Helyx.Test.BadTurn,
+      Helyx.Test.RaisingTurn,
       Helyx.Test.Tool.Upcase,
       Helyx.Test.Tool.Kill,
       Helyx.Test.Tool.Slow,
@@ -184,30 +184,30 @@ defmodule Helyx.SessionTest do
       collect_until(:agent_end)
     end
 
-    test "a provider kind other than :model or :harness is refused at start and switch",
+    test "a provider turn other than :local or :external is refused at start and switch",
          %{core: core} do
-      assert {:error, {:bad_provider_kind, "bad_kind"}} =
-               Session.start(core, model: "bad_kind/m")
+      assert {:error, {:bad_provider_turn, "bad_turn"}} =
+               Session.start(core, model: "bad_turn/m")
 
-      assert {:error, {:bad_provider_kind, "raising_kind"}} =
-               Session.start(core, model: "raising_kind/m")
+      assert {:error, {:bad_provider_turn, "raising_turn"}} =
+               Session.start(core, model: "raising_turn/m")
 
       {:ok, session} = Session.start(core, model: "test/ok")
 
-      assert {:error, {:bad_provider_kind, "raising_kind"}} =
-               Session.set_model(session, "raising_kind/m")
+      assert {:error, {:bad_provider_turn, "raising_turn"}} =
+               Session.set_model(session, "raising_turn/m")
     end
 
     @tag :tmp_dir
-    test "a provider kind that raises is refused at resume", %{core: core, tmp_dir: dir} do
+    test "a provider turn that raises is refused at resume", %{core: core, tmp_dir: dir} do
       {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
       [path] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl"))
       GenServer.stop(Session.pid(session))
 
-      line = %{type: "model_change", id: "m1", parent_id: nil, ts: "t", model: "raising_kind/m"}
+      line = %{type: "model_change", id: "m1", parent_id: nil, ts: "t", model: "raising_turn/m"}
       File.write!(path, [JSON.encode!(line), "\n"], [:append])
 
-      assert {:error, {:bad_provider_kind, "raising_kind"}} =
+      assert {:error, {:bad_provider_turn, "raising_turn"}} =
                Session.resume(core, sessions_dir: dir)
     end
 
