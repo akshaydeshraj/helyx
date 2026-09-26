@@ -10,6 +10,15 @@ Invariants the review axes check on every diff. Add one when a review or a PR co
 - A design decision that the tools research (`docs/research/coding-tools.md`, issue #17) covered cites it in the feature doc, so the spec axis can check the design against how codex, opencode, and pi behave.
 - Every external resource in the diff (OS process, process group, port, file handle, socket, temp file) has a row in the feature doc's ownership table. A row whose release path dies with its owner is a design flag the spec axis raises (ADR 0004).
 
+## Boundaries
+
+- Each input is checked at its boundary (see `AGENTS.md`, "Elixir guidelines"). The spec axis names the boundary of every new input.
+- Inner code has no defensive handling: no fallback clause, `{:error, _}` return, `rescue`, or repair for a state that no caller can make. A reviewer reports such code as a finding, with every caller and the upstream check (`file:line`). A repeated check is a finding only when the earlier check still proves the same property; a documented safety check and a check of a limit that a transformation, an accumulation, or elapsed time introduces are not findings.
+- Later code uses the checked value. A new read of the source is a finding only when its value is used under the earlier check with no check of its own.
+- A boundary check rejects the smallest unit that permits safe continuation. The failure path names what one bad value destroys, and the feature doc states each case where missing identity, damaged structure, or an unresolved resource requires a larger failure.
+- A public plugin entry (a tool's `run/2`, a provider's `stream/3`) is a boundary for all of its arguments, because code outside the hands and the session can call it.
+- A finding needs a reachable input: its reproduction enters through a boundary. Source: the boundary review of 2026-09-26.
+
 ## Races and resource ownership
 
 - A race is closed structurally or stated as a hole. It is never accepted by window size or by who the caller is today. An open race is written in the ownership table as "open, ticket #N", the same vocabulary as an unbounded input.

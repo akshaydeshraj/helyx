@@ -39,7 +39,7 @@ node "${codex_dir}scripts/codex-companion.mjs" adversarial-review "--wait --base
 
 The invariant sentence names the entry points it covers, every accepted hole, every exception that the feature doc already states (for example, the write-failure policy of the session file) and every open hole that has a ticket. A reviewer that does not know a documented exception reports it as a defect.
 
-Judge every finding yourself. Reproduce it or read the code. A reviewer's claim is not a fact.
+Judge every finding yourself. Reproduce it or read the code. A reviewer's claim is not a fact. Reject a finding whose reproduction enters below the boundary with a value no caller can pass; a fix for it would add defensive code. Record the rejection with the boundary that already covers the value. The invariant sentence also names the boundaries of the change, so the reviewer knows which checks are the designed ones.
 
 - **Confirmed:** send it to the worker (SendMessage) with the reproduction. The worker fixes it through `/ship` rules: a code fix gets its rerun round. Then run the Codex review again.
 - **Rejected:** record it in the review record with the reason.

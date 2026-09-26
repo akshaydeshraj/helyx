@@ -57,6 +57,10 @@ Run from the repository root. The Mix projects are the root, `plugins/bundled` w
 - Tests end with `_test.exs` and mirror the `lib/` structure. Prefer async tests (`use ExUnit.Case, async: true`) unless the test touches shared state.
 - Write `@moduledoc` and `@doc` for public modules and functions. Use `@moduledoc false` for internal modules.
 - Prefer `Req` for HTTP; avoid `:httpoison`, `:tesla`, and `:httpc`.
+- Validate at boundaries. A boundary is where data comes from something this code does not control: client input, plugin output into Core (stream events, tool results, callback returns), the disk, external programs and networks, tool arguments from the model at the tool entry, terminal input, and config. Check there, and handle the error there. Inner code trusts the check: it has no fallback clause, error return, or repair for a state that no caller can make. A state that only a bug can make crashes ("let it crash"); a pattern match or a guard that crashes is fine.
+- Remove a repeated check only when the earlier check still proves the same property. Keep a documented safety check. Check the new limits that a transformation, an accumulation, or elapsed time introduces (text that expands, a buffer that grows, a deadline that approaches).
+- Use the checked value. If an operation reads a new value, validate that value before use. A prior check of external state does not remove the need to handle a failure when the state is used.
+- Reject the smallest unit that permits safe continuation. Keep unrelated data when its validity is known. State when missing identity, damaged structure, or an unresolved resource requires a larger failure.
 
 ## Module naming
 

@@ -12,7 +12,7 @@ The behaviours, public functions, and event shapes this feature adds or changes.
 
 ## Bounds
 
-Every input, buffer, and wait, with its bound. A bound that does not exist yet is written as "unbounded, ticket #N", never left out.
+Every input, buffer, and wait, with its bound. A bound that does not exist yet is written as "unbounded, ticket #N", never left out. Each row names where the bound is enforced. Explain any additional checks required by transformations, accumulation, elapsed time, or rendering.
 
 | What | Bound | Over the bound |
 | ---- | ----- | -------------- |
