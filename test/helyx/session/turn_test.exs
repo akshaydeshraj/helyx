@@ -6,7 +6,7 @@ defmodule Helyx.Session.TurnTest do
 
   defp turn do
     {:ok, model} = ModelRef.parse("fake/echo")
-    %Turn{id: "t1", model: model, provider: Helyx.Test.Provider, kind: :model, partial: []}
+    %Turn{id: "t1", model: model, provider: Helyx.Test.Provider, turn_mode: :local, partial: []}
   end
 
   test "assistant_message builds the content in stream order, with the fields" do

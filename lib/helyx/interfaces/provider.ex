@@ -12,11 +12,21 @@ defmodule Helyx.Provider do
     * `{:done, %{stop_reason: stop_reason, usage: map}}`: the call finished
     * `{:error, term}`: the call failed
 
-  A harness provider (`kind/0` returns `:harness`, ADR 0002) runs its own
-  loop and its own tools inside one call, so its stream can also carry:
+  A provider with an external turn (`turn/0` returns `:external`, ADR 0002)
+  runs the whole turn and its own tools inside one call. Four behaviours
+  follow from that flag:
+
+    * A steer aborts the turn and starts a new turn with the steer text.
+    * Tool calls arrive with their results. The session records them and
+      does not run them.
+    * The provider keeps its own conversation state. The session resumes
+      it by id.
+    * The stream runs under the session's hands.
+
+  Its stream can also carry:
 
     * `{:message_end, stop_reason, usage}`: the assistant message so far is
-      complete; its tool calls ran inside the harness. Send it once per
+      complete; its tool calls ran inside the provider. Send it once per
       message, only after content (a delta or a tool call) that no earlier
       `message_end` closed, and only when every call of the messages before
       it has its result: the session gives every call that is still open an
@@ -43,13 +53,13 @@ defmodule Helyx.Provider do
 
   The session calls `stream/3` with `opts` carrying `:core`, `:session_id`,
   `:turn_id`, and `:cwd`, so a provider can scope state and label its calls.
-  A harness provider also gets `:harness_session_id`: the id of the harness
-  session to resume, or nil for a fresh one. The session passes the id of
-  the provider's last `harness_session` only when the last assistant message
-  of the transcript came from this provider, so a lost id or a switch from
-  another provider gives nil.
+  A provider with an external turn also gets `:harness_session_id`: the id
+  of the harness session to resume, or nil for a fresh one. The session
+  passes the id of the provider's last `harness_session` only when the last
+  assistant message of the transcript came from this provider, so a lost
+  id or a switch from another provider gives nil.
 
-  A harness provider's stream runs as a Task of the session's hands
+  The stream of an external turn runs as a Task of the session's hands
   (`Helyx.Hands`), so it can hold the OS resources of its program with
   `Helyx.Tool.hold/1` and must then implement `release/3`, with the
   contract of `c:Helyx.Tool.release/3`. An abort returns only when the
@@ -89,21 +99,22 @@ defmodule Helyx.Provider do
   end
 
   @doc """
-  The kind of a provider plugin: `provider.kind()` when it is exported, else
-  `:model`. A `kind/0` that raises, throws, exits, or returns another value than `:model` or
-  `:harness` is an error. It is plugin code, so the session calls this in
-  the caller of a start, a resume, or a switch, and keeps the result.
+  The turn of a provider plugin: `provider.turn()` when it is exported, else
+  `:local`. A `turn/0` that raises, throws, exits, or returns another value
+  than `:local` or `:external` is an error. It is plugin code, so the session
+  calls this in the caller of a start, a resume, or a switch, and keeps the
+  result.
   """
-  @spec kind(module()) :: {:ok, :model | :harness} | :error
-  def kind(provider) do
-    kind = if function_exported?(provider, :kind, 0), do: provider.kind(), else: :model
-    if kind in [:model, :harness], do: {:ok, kind}, else: :error
+  @spec turn(module()) :: {:ok, :local | :external} | :error
+  def turn(provider) do
+    turn = if function_exported?(provider, :turn, 0), do: provider.turn(), else: :local
+    if turn in [:local, :external], do: {:ok, turn}, else: :error
   catch
     _class, _reason -> :error
   end
 
   @callback id() :: String.t()
-  @callback kind() :: :model | :harness
+  @callback turn() :: :local | :external
   @callback release(
               handles :: [term()],
               mode :: :deliver | :cancel | :retry,
@@ -113,5 +124,5 @@ defmodule Helyx.Provider do
   @callback stream(model :: String.t(), context :: Helyx.Context.t(), opts :: keyword()) ::
               {:ok, Enumerable.t()} | {:error, term()}
 
-  @optional_callbacks kind: 0, release: 3
+  @optional_callbacks turn: 0, release: 3
 end

@@ -39,7 +39,7 @@ Anything that renders a session from its events and sends prompts to it. A clien
 _Avoid_: frontend, UI, view
 
 **Steer**:
-A message delivered inside the current turn, before the next provider call. On a harness turn, it aborts the turn and starts a new one with the message.
+A message delivered inside the current turn, before the next provider call. On an external turn, it aborts the turn and starts a new one with the message.
 _Avoid_: interrupt, inject, interject
 
 **Follow-up**:
@@ -53,7 +53,7 @@ _Avoid_: cancel, stop, kill
 ## Providers
 
 **Provider**:
-A plugin that produces assistant messages for a session. There are two kinds: model provider and harness provider.
+A plugin that produces assistant messages for a session. A provider has a local turn or an external turn (`turn/0`). On a local turn, Helyx runs the turn and the tools. On an external turn, the provider runs the whole turn and its own tools in one call.
 _Avoid_: backend, model, LLM, driver
 
 **Model provider**:
@@ -61,7 +61,7 @@ A provider that calls a model API. Helyx runs the turn and the hands run the too
 _Avoid_: API provider, native provider
 
 **Harness provider**:
-A provider that drives an external agent program, such as Claude Code or Codex. The external program runs its own loop and its own tools. Helyx records the result.
+A provider with an external turn. It drives an external agent program, such as Claude Code or Codex. The external program runs its own loop and its own tools. Helyx records the result.
 _Avoid_: subprocess provider, CLI provider, wrapper
 
 **Harness session**:

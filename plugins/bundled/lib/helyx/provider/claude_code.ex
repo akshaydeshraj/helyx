@@ -73,7 +73,7 @@ defmodule Helyx.Provider.ClaudeCode do
   def id, do: "claude-code"
 
   @impl true
-  def kind, do: :harness
+  def turn, do: :external
 
   @impl true
   defdelegate release(handles, mode, deadline), to: Helyx.Watchdog

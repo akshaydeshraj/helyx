@@ -22,7 +22,7 @@ defmodule Helyx.Session.StreamTest do
       opts: [core: core, turn_id: "t1"],
       session: self(),
       turn_id: "t1",
-      harness?: Keyword.get(opts, :harness?, false)
+      external?: Keyword.get(opts, :external?, false)
     })
   end
 
@@ -94,7 +94,7 @@ defmodule Helyx.Session.StreamTest do
   end
 
   test "a harness provider can send harness events", %{core: core} do
-    assert {:done, _} = run(core, "id1", provider: Helyx.Test.Harness, harness?: true)
+    assert {:done, _} = run(core, "id1", provider: Helyx.Test.Harness, external?: true)
 
     assert [
              {:stream_event, "t1", {:harness_session, "a", 0}},
