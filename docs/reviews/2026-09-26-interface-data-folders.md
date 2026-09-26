@@ -34,3 +34,8 @@ bounds sensor skipped: TYPESAFE_API_KEY is not set
 1. `docs/reviews/2026-09-26-core-cleanup-plan.md:44` still names `lib/helyx/tool.ex`, and line 207 of the plan says the ticket updates "for example `lib/helyx/tool.ex` in this plan". Not changed: the ticket acceptance criteria say "Devlogs and reviews are dated records and keep the old paths", and the plan is in `docs/reviews/`. The ticket wins over the plan. The conflict is reported for a person to decide.
 
 No code changed in step 2, so no rerun round.
+
+## Orchestrator
+
+- Failure path 1: rejected. The ticket's acceptance criteria rule over the plan's example: the plan is a dated record in `docs/reviews/` and keeps the old path.
+- Codex adversarial review, round 1: approve, 0 findings.
