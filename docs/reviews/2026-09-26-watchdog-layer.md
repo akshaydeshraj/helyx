@@ -36,3 +36,8 @@ No findings. The release grace stays 500 ms for Claude Code and 5,000 ms for Cod
 ### Failure path
 
 No reproduced findings. A throwaway probe checked `write/2` with a `nil` port and a closed port, `stop/1` on a closed port, the arity of the release delegates, and the grace that reaches `Helyx.Watchdog.Group`. The results match `master`.
+
+## Orchestrator
+
+- Codex adversarial review, round 1: approve, 0 findings.
+- Accepted: the fourth watchdog call (`ClaudeCode.release/3`) moved too, and `exit_timeout` reuses `HarnessIO.stop/1`.
