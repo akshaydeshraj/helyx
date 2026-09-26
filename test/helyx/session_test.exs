@@ -245,15 +245,50 @@ defmodule Helyx.SessionTest do
       end
     end
 
-    test "a harness tool result is cut like a tool result", %{core: core} do
-      events = harness_turn(core, "big_result")
-      big = String.duplicate("x\n", 3_000)
+    test "a harness tool result of at most 65,536 bytes is recorded as the provider sent it",
+         %{core: core} do
+      for bytes <- [65_535, 65_536] do
+        events = harness_turn(core, "result_#{bytes}")
+
+        assert [%{message: result}] =
+                 for(%Event{type: :tool_execution_end, data: d} <- events, do: d)
+
+        assert Helyx.Message.text(result) == String.duplicate("x", bytes)
+        assert stop_reason(events) == :end_turn
+      end
+    end
+
+    test "the size check runs before the UTF-8 repair, which can make the text larger",
+         %{core: core} do
+      events = harness_turn(core, "result_raw")
 
       assert [%{message: result}] =
                for(%Event{type: :tool_execution_end, data: d} <- events, do: d)
 
-      assert Helyx.Message.text(result) == Helyx.Tool.truncate(big, :tail)
-      assert Helyx.Message.text(result) != big
+      assert Helyx.Message.text(result) == String.duplicate("�", 65_536)
+      assert stop_reason(events) == :end_turn
+    end
+
+    test "a harness tool result over 65,536 bytes fails the turn with no text, and the session goes on",
+         %{core: core} do
+      for {model, bytes} <- [{"result_65537", 65_537}, {"result_multibyte", 65_537}] do
+        {:ok, session} = Session.start(core, model: "harness/#{model}")
+        :ok = Session.subscribe(session)
+        :ok = Session.prompt(session, "hello")
+        events = collect_until(:agent_end)
+
+        assert List.last(events).data.error == {:tool_result_too_large, bytes, 65_536}
+        assert stop_reason(events) == :error
+
+        transcript = :sys.get_state(Session.pid(session)).transcript
+
+        assert [:user, :assistant, :tool_result] = Enum.map(transcript, & &1.role)
+        assert Helyx.Message.text(List.last(transcript)) == "aborted"
+
+        :ok = Session.set_model(session, "harness/id1")
+        :ok = Session.prompt(session, "again")
+        assert stop_reason(collect_until(:agent_end)) == :end_turn
+      end
     end
 
     test "a result goes to the first open call with its id", %{core: core} do

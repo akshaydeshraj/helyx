@@ -9,6 +9,11 @@ defmodule Helyx.Session.Stream do
 
   @stop_reasons Message.stop_reasons()
 
+  # The harness providers cut each tool result (`Helyx.Provider`). Every
+  # output of that cut is at most 51,201 bytes of lines and a notice of less
+  # than 200 bytes, so only a result that was not cut is over this limit.
+  @max_tool_result_bytes 65_536
+
   @type terminal ::
           {:done, %{stop_reason: atom(), usage: map()}} | {:error, term()} | :stream_ended
 
@@ -109,7 +114,7 @@ defmodule Helyx.Session.Stream do
       when harness? and tag in [:message_end, :tool_result, :harness_session] ->
         case harness_event(event) do
           {:ok, event} -> forward(true, event, session, turn_id, acc)
-          :error -> {:halt, {:error, {:bad_stream_event, event}}}
+          {:error, _} = terminal -> {:halt, terminal}
         end
 
       other, _acc ->
@@ -118,17 +123,25 @@ defmodule Helyx.Session.Stream do
   end
 
   # The events of a harness provider. A message end is checked like the
-  # `done` terminal; a result is cut like a tool result.
-  defp harness_event({:message_end, reason, usage})
+  # `done` terminal. The provider cuts a result to the tool result limits;
+  # a result over this limit was not cut, so it fails the turn. The check
+  # measures the text as sent, before the UTF-8 repair of
+  # `Helyx.Message.tool_result/2`, which can make it up to three times larger.
+  defp harness_event({:message_end, reason, usage} = event)
        when reason in @stop_reasons and is_non_struct_map(usage) do
-    with {:ok, usage} <- capped_usage(usage), do: {:ok, {:message_end, reason, usage}}
+    case capped_usage(usage) do
+      {:ok, usage} -> {:ok, {:message_end, reason, usage}}
+      :error -> malformed(event)
+    end
   end
 
-  defp harness_event({:tool_result, id, {status, text}})
+  defp harness_event({:tool_result, id, {status, text}} = event)
        when is_binary(id) and status in [:ok, :error] and is_binary(text) do
-    if Message.valid_utf8?(id),
-      do: {:ok, {:tool_result, id, {status, Helyx.Tool.truncate(text, :tail)}}},
-      else: :error
+    cond do
+      not Message.valid_utf8?(id) -> malformed(event)
+      byte_size(text) > @max_tool_result_bytes -> {:error, too_large(text)}
+      true -> {:ok, event}
+    end
   end
 
   defp harness_event({:harness_session, id, cut} = event) when is_integer(cut) and cut >= 0 do
@@ -136,10 +149,15 @@ defmodule Helyx.Session.Stream do
     # `Helyx.Message.cap_integers/1`).
     if Message.harness_id?(id) and Message.cap_integers(cut) == cut,
       do: {:ok, event},
-      else: :error
+      else: malformed(event)
   end
 
-  defp harness_event(_event), do: :error
+  defp harness_event(event), do: malformed(event)
+
+  defp malformed(event), do: {:error, {:bad_stream_event, event}}
+
+  # The error holds the size, never the text.
+  defp too_large(text), do: {:tool_result_too_large, byte_size(text), @max_tool_result_bytes}
 
   defp done_terminal(reason, {:ok, usage}, _terminal),
     do: {:done, %{stop_reason: reason, usage: usage}}

@@ -233,6 +233,21 @@ defmodule Helyx.Provider.ClaudeCodeTest do
              SessionFile.resume(ctx.sessions, ctx.work)
   end
 
+  test "a tool result over the limits arrives cut, with the notice", %{bin: bin, work: work} do
+    big = String.duplicate("x\n", 3_000)
+
+    scenario(bin, 1, [
+      init(@sid),
+      tool_use(@sid, "toolu_01", %{"command" => "seq"}),
+      tool_result(@sid, "toolu_01", big),
+      result(@sid, "Done.", 2)
+    ])
+
+    assert [text] = for({:tool_result, "toolu_01", {:ok, t}} <- run_direct([], work), do: t)
+    assert text == Helyx.Text.truncate(big, :tail)
+    assert text =~ "[truncated: showing lines 1001-3000 of 3000]"
+  end
+
   test "a later turn and a resumed session pass the id and send only the prompt",
        %{bin: bin} = ctx do
     scenario(bin, 1, reply(@sid, "Hi."))

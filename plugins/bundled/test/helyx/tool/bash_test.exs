@@ -61,7 +61,7 @@ defmodule Helyx.Tool.BashTest do
   end
 
   test "the kept tail starts on a character boundary (issue #51)" do
-    keep = 4 * Helyx.Tool.max_bytes()
+    keep = 4 * Helyx.Text.max_bytes()
 
     # The cut lands 0 to 3 bytes inside a 4-byte character.
     for pad <- 0..3 do

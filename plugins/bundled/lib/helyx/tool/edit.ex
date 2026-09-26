@@ -73,7 +73,7 @@ defmodule Helyx.Tool.Edit do
   end
 
   defp read(full, path) do
-    with {:error, reason} <- Helyx.Tool.read_file(full) do
+    with {:error, reason} <- Helyx.Text.read_file(full) do
       {:error, "cannot read #{path}: #{reason}"}
     end
   end
