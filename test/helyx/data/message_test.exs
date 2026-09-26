@@ -3,17 +3,6 @@ defmodule Helyx.MessageTest do
 
   alias Helyx.Message
 
-  test "tool output that is not valid UTF-8 is scrubbed at construction" do
-    call = %Message.ToolCall{id: "c1", name: "bash", arguments: %{}}
-
-    message = Message.tool_result(call, {:ok, <<"hi", 255>>})
-    assert Message.text(message) == "hi�"
-
-    error = Message.tool_result(call, {:error, <<255>>})
-    assert Message.text(error) == "�"
-    assert error.is_error
-  end
-
   test "cap_integers replaces only an integer of more than 100 digits, at any depth" do
     at = 10 ** 100 - 1
     over = 10 ** 100

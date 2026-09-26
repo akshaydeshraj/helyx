@@ -665,14 +665,9 @@ if Helyx.TUI.Available.available?() do
     # Model text and tool output reach the terminal raw through span content,
     # so an ESC, OSC, or CSI sequence in a file could retitle the terminal or
     # move the cursor. Tabs become spaces; other control characters drop.
-    defp sanitize(text) do
-      text
-      # Bash output is arbitrary bytes; the /u regex raises on invalid UTF-8,
-      # and a raw 0x9B byte is a one-byte CSI.
-      |> String.replace_invalid("")
-      |> String.replace("\t", "  ")
-      |> drop_controls()
-    end
+    # Core makes the text valid UTF-8 at its boundaries, so the /u regex
+    # does not raise, and a CSI can only be U+009B, which drops.
+    defp sanitize(text), do: text |> String.replace("\t", "  ") |> drop_controls()
 
     # All C0 and C1 control characters but tab and new line.
     defp drop_controls(text),

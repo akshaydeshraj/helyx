@@ -126,8 +126,9 @@ defmodule Helyx.Session.Stream do
   # The events of an external turn. A message end is checked like the
   # `done` terminal. The provider cuts a result to the tool result limits;
   # a result over this limit was not cut, so it fails the turn. The check
-  # measures the text as sent, before the UTF-8 repair of
-  # `Helyx.Message.tool_result/2`, which can make it up to three times larger.
+  # measures the text as sent. Then the text is made valid UTF-8, which can
+  # make it up to three times larger: this is the boundary of an external
+  # result, as the hands are for a tool of the session.
   defp external_event({:message_end, reason, usage} = event)
        when reason in @stop_reasons and is_non_struct_map(usage) do
     case capped_usage(usage) do
@@ -138,11 +139,11 @@ defmodule Helyx.Session.Stream do
 
   # The session uses the id only to find an open call, so an id that is
   # not valid UTF-8 is dropped there like an unknown id.
-  defp external_event({:tool_result, id, {status, text}} = event)
+  defp external_event({:tool_result, id, {status, text}})
        when is_binary(id) and status in [:ok, :error] and is_binary(text) do
     if byte_size(text) > @max_tool_result_bytes,
       do: {:error, too_large(text)},
-      else: {:ok, event}
+      else: {:ok, {:tool_result, id, scrub({status, text})}}
   end
 
   defp external_event({:harness_session, id, cut} = event) when is_integer(cut) and cut >= 0 do
@@ -154,6 +155,12 @@ defmodule Helyx.Session.Stream do
   end
 
   defp external_event(event), do: malformed(event)
+
+  # The rule of `scrub/1` in `Helyx.Session.Hands`, the other boundary of
+  # tool text. Valid text, the common case, is passed through without a copy.
+  defp scrub({status, text}) do
+    if String.valid?(text), do: {status, text}, else: {status, String.replace_invalid(text)}
+  end
 
   defp malformed(event), do: {:error, {:bad_stream_event, event}}
 

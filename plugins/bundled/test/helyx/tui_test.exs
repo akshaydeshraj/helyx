@@ -414,18 +414,17 @@ defmodule Helyx.TUITest do
     assert "  ]0;evil[2Jcol1  col2" in texts
     refute Enum.any?(texts, &String.contains?(&1, "\e"))
 
-    # Bash output is arbitrary bytes: invalid UTF-8 (a raw one-byte CSI)
-    # must render, not crash. Message.tool_result scrubs the byte to the
-    # replacement character before the TUI sees it.
-    broken = Helyx.Message.tool_result(call, {:ok, <<"a", 0x9B, "b">>})
+    # Tool text is valid UTF-8 when it reaches the TUI (the session and
+    # stream tests cover the repair), so a CSI is the character U+009B.
+    csi = Helyx.Message.tool_result(call, {:ok, <<"a", 0x9B::utf8, "[2Jb">>})
 
     vm = %ViewModel{
       ViewModel.new("fake/m")
-      | cells: [{:tool, call, ViewModel.call_line(call), broken}]
+      | cells: [{:tool, call, ViewModel.call_line(call), csi}]
     }
 
     texts = for line <- TUI.transcript_lines(vm, 80), span <- line.spans, do: span.content
-    assert "  a�b" in texts
+    assert "  a[2Jb" in texts
   end
 
   test "the transcript renders width-bounded lines with tool cells" do

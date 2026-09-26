@@ -75,7 +75,11 @@ defmodule Helyx.Message do
   @spec user(String.t()) :: t()
   def user(text) when is_binary(text), do: %__MODULE__{role: :user, content: [%Text{text: text}]}
 
-  @doc "Builds the tool result message for a call from `{:ok, text}` or `{:error, text}`."
+  @doc """
+  Builds the tool result message for a call from `{:ok, text}` or
+  `{:error, text}`. The text is valid UTF-8: the hands repair the output of
+  a tool, and `Helyx.Session.Stream` repairs an external result.
+  """
   @spec tool_result(ToolCall.t(), {:ok, String.t()} | {:error, String.t()}) :: t()
   def tool_result(%ToolCall{} = call, {:ok, text}), do: tool_result(call, text, false)
   def tool_result(%ToolCall{} = call, {:error, text}), do: tool_result(call, text, true)
@@ -86,17 +90,8 @@ defmodule Helyx.Message do
       tool_call_id: id,
       tool_name: name,
       is_error: is_error,
-      content: [%Text{text: scrub(text)}]
+      content: [%Text{text: text}]
     }
-  end
-
-  # Tool output is the one text source that can carry bytes that are not
-  # UTF-8: prompts are rejected in `Helyx.Session.prompt/2` and provider
-  # deltas fail the turn as malformed stream events. Scrubbing here keeps
-  # every consumer safe: the session file, and any provider that
-  # JSON-encodes the transcript. The valid path copies nothing.
-  defp scrub(text) do
-    if String.valid?(text, :fast_ascii), do: text, else: String.replace_invalid(text)
   end
 
   # A closed set: a provider normalizes its wire protocol into it, the
