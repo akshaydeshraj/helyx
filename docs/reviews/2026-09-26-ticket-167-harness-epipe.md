@@ -1,6 +1,6 @@
 # Review: a write after the go-ahead to a dead watchdog (#167)
 
-Base: `origin/master` at `ca7081d`. Three rounds: the first round, then two full rerun rounds.
+Base: `origin/master` at `ca7081d`. Four rounds: the first round, then three full rerun rounds.
 
 ## Change
 
@@ -16,7 +16,7 @@ Owner decision (2026-09-26, on #167): "Claude Code traps exits for the life of t
 bounds sensor skipped: TYPESAFE_API_KEY is not set
 ```
 
-The same output in all three rounds.
+The same output in all four rounds.
 
 ## Round 1
 
@@ -78,7 +78,32 @@ No findings. The docs match the code.
 
 No reproduced findings. Probed: `exit_timeout(:lost)` then a shutdown at the fresh run's hold; a shutdown queued after the lost deadline; a stale `:epipe` from the lost run's port (`Port.close/1` sends `:normal` at once and no later signal); an exit between the trap-off and `pass_exits/0`; the input write to a port that does not read.
 
+## Round 4
+
+Full round, after the Codex round 1 review of the branch. This is the third finding on one mechanism, the trap around the Claude Code start.
+
+### Codex finding
+
+Fixed, reproduced: a lost session's fresh run entered `start/2` with the trap on and built its input and argv before the trap reset and `pass_exits/0`. The build takes time that grows with the transcript, so a shutdown of the hands waited for it. Fix: the trap reset and `pass_exits/0` are the first operations of `start/2`. Test: "a shutdown queued behind the exit of a lost run ends the stream before the fresh run" now has a transcript of 1,000,000 messages and a 200 ms bound (red on the round-3 code: 660 ms, and 2.8 to 3.5 s in the failure-path check). `review-checklist.md` has a new line under "Races and resource ownership": a Task that traps exits turns the trap off before work whose time grows with an input that has no cap, on every path into the function.
+
+### Simplify
+
+Four agents. Reuse, efficiency, and altitude: no findings. Skipped: simplification proposed a test hook in production code in place of a test that depends on time; the test comment states the time bound and the measurement.
+
+### Standards
+
+No hard violations. Skipped: the history append copies the list once, in the setup, outside the timed part.
+
+### Spec
+
+1. Fixed: the new checklist line said that every read-loop step is bounded by its line cap. The Codex read step after `thread/start` builds the replay from the whole transcript with the trap on. The checklist line now limits the exemption to a step that only parses a line, and the Stream Task shutdown line of `coding-agent.md` states the Codex case as open.
+2. Fixed: this record had no round 4.
+
+### Failure path
+
+No new findings. The regression test fails 3 of 3 runs on the old order. Probed: the input write with a prompt of 1, 100, and 400 MB to a program that does not read (the shutdown ended the Task in 0 to 2 ms); `HarnessIO.stop/1` in `exit_timeout/1`; a read-loop step; `pass_exits/0` after the trap reset.
+
 ## Out of scope, reported
 
-- Codex traps exits from its start, as before this change, so a shutdown during its start (a hold call to the hands) waits the 2,000 ms kill. `coding-agent.md` states it.
+- Codex traps exits from its start, as before this change, so a shutdown during its start (a hold call to the hands) waits the 2,000 ms kill. The same holds for its replay build after `thread/start`, whose time grows with the transcript. `coding-agent.md` states both.
 - In the Codex interrupt path, `receive_end/3` does not take an `:epipe` port exit; its 1,000 ms wait bounds it.

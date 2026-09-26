@@ -96,15 +96,15 @@ defmodule Helyx.Provider.ClaudeCode do
   # which waits in hold calls to the hands, still ends at once on their
   # shutdown. No write is pending at the go-ahead, so no `:epipe` can come
   # before the trap. The input is then its own write, ended by a NUL. A
-  # lost session's fresh run starts with the trap on. So the trap goes off
-  # first, and then `pass_exits/0` acts on the exit messages that the trap
-  # made.
+  # lost session's fresh run starts with the trap on. So before any other
+  # work, the trap goes off and `pass_exits/0` acts on the exit messages
+  # that the trap made: the build of the input takes time that grows with
+  # the transcript, and a shutdown must not wait for it.
   defp start(run, resume) do
-    {input, cut} = input(run.messages, resume)
-    argv = ["/bin/sh", "-c", ~S(exec "$0" "$@" 2>/dev/null), run.exe | flags(run.model, resume)]
-
     Process.flag(:trap_exit, false)
     pass_exits()
+    {input, cut} = input(run.messages, resume)
+    argv = ["/bin/sh", "-c", ~S(exec "$0" "$@" 2>/dev/null), run.exe | flags(run.model, resume)]
     state = HarnessIO.start(argv, run.cwd, :open, %State{run: run, resume: resume, cut: cut})
     Process.flag(:trap_exit, true)
     if state.terminal == nil, do: HarnessIO.write(state, [input, <<0>>])

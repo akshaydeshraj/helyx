@@ -650,10 +650,16 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
   # The read loop traps exits (#167), so a shutdown of the hands behind the
   # lost run's exit status is a message. The fresh run acts on it before
-  # its start waits in a hold call to the hands. The test process stands in
-  # for the hands; the suspension holds the order of the two messages.
+  # it builds its input from the transcript and before its start waits in
+  # a hold call to the hands. The build of this transcript of 1,000,000
+  # messages takes longer than the 200 ms wait for the `:DOWN` (measured:
+  # the test fails on code that builds the input first). The test process
+  # stands in for the hands; the suspension holds the order of the two
+  # messages.
   test "a shutdown queued behind the exit of a lost run ends the stream before the fresh run",
        %{bin: bin, work: work, tmp_dir: tmp} do
+    assistant = %Message{role: :assistant, content: [%Message.Text{text: "ok"}]}
+    history = Enum.flat_map(1..500_000, fn _ -> [Message.user("hi"), assistant] end)
     # The program has all of its input when it writes its pid to `ready`.
     ready = Path.join(tmp, "ready")
     go = Path.join(tmp, "go")
@@ -670,7 +676,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     {pid, ref} =
       spawn_monitor(fn ->
         Process.put(:helyx_hands, test)
-        context = %Helyx.Context{messages: [Message.user("hi")]}
+        context = %Helyx.Context{messages: history ++ [Message.user("hi")]}
         {:ok, stream} = ClaudeCode.stream("haiku", context, cwd: work, harness_session_id: @sid)
         Enum.to_list(stream)
       end)
@@ -687,7 +693,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     Process.exit(pid, :shutdown)
     :erlang.resume_process(pid)
 
-    assert_receive {:DOWN, ^ref, :process, _pid, :shutdown}, 1_000
+    assert_receive {:DOWN, ^ref, :process, _pid, :shutdown}, 200
     refute_received {:"$gen_call", _from, {:hold, _handle}}
   end
 
