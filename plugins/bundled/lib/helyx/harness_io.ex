@@ -42,7 +42,7 @@ defmodule Helyx.HarnessIO do
       {:not_started, port, acc} ->
         arm_exit_wait(%{state | port: port}, {:error, {:not_started, cap_error(acc)}})
 
-      {:no_marker, text} ->
+      {:failed, text} ->
         %{state | done?: true, terminal: {:error, {:not_started, cap_error(text)}}}
     end
   end

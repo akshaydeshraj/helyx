@@ -127,7 +127,7 @@ defmodule Helyx.WatchdogTest do
   # A cwd that is not text makes `Port.open` raise `ArgumentError`. Like
   # `SystemLimitError` at the port limit, it has no `:original` field.
   test "a spawn that raises a normalized error returns a result that names perl" do
-    assert {:no_marker, "perl did not start: " <> reason} =
+    assert {:failed, "perl did not start: " <> reason} =
              Helyx.Watchdog.start(["true"], 123, nil)
 
     # The spawn ran: a failed perl lookup would pass the match above.
