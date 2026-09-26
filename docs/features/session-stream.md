@@ -1,0 +1,78 @@
+# Session stream
+
+## Goal
+
+Move the code that runs inside the provider Task out of `Helyx.Session` into one module, `Helyx.Session.Stream`. The session then holds the state, the queues, the transcript, and every decision, and one module holds the work of a provider call.
+
+Today `start_provider_call/1` builds a closure that runs in the provider Task: the context build, compaction, `provider.stream/3`, and the consumption of the stream (`consume/4`, `harness_event/1`, `done_terminal/3`, `capped_usage/1`, `forward/5`, `lib/helyx/session.ex:653-828`). The session module is 998 lines, and a reader must go through this code to read the turn loop. Issue #120, from the Core cleanup plan (`docs/reviews/2026-09-26-core-cleanup-plan.md`).
+
+This is a move, not a redesign. The events, their order, the checks, and the terminals do not change. The `kind` flag stays: #123 replaces it.
+
+## Interface changes
+
+A new internal module, `@moduledoc false`, at `lib/helyx/session/stream.ex`:
+
+```elixir
+@type terminal :: {:done, %{stop_reason: atom(), usage: map()}} | {:error, term()} | :stream_ended
+
+@spec run(%{
+        core: Helyx.Core.name(),
+        provider: module(),
+        model: String.t(),
+        context: Helyx.Context.t(),
+        opts: keyword(),
+        session: pid(),
+        turn_id: String.t(),
+        harness?: boolean()
+      }) :: terminal()
+```
+
+`run/1` runs in the provider Task. It builds the context with `Helyx.ModelContext.build/3`, runs `Helyx.Compaction.compact/3`, calls `provider.stream/3`, and consumes the stream. It sends the session the same messages as today:
+
+- `{:stream_event, turn_id, event}` for each event that passes the checks
+- `{:rejected_call, turn_id, call}` before the stream event of a call with an integer over the digit limit
+
+It returns the first terminal, with `Message.cap_integers/1` applied, as today at `session.ex:681`.
+
+The session keeps `start_provider_call/1` and `start_stream/3`. The closure becomes `fn -> Helyx.Session.Stream.run(args) end`. No public function, behaviour, or event shape changes.
+
+## Which checks move, and which stay
+
+The stream module owns the checks of stream events: the event shapes, `Message.valid_utf8?/1` on deltas and harness ids, `Message.cap_integers/1` and `Message.encodable?/1` on tool call arguments and usage, the stop-reason set (in `Helyx.Message` after #118), and the harness event rules.
+
+Some input reaches the session with no stream event. These checks stay at their boundary in the session:
+
+| Input | Where | Check |
+| --- | --- | --- |
+| `:DOWN` reason of a crashed provider Task | `handle_info/2`, `session.ex:470-475` | `Message.cap_integers/1` |
+| `:stream_end` terminal from the hands | `handle_info/2`, `session.ex:478-480` | `Message.cap_integers/1` |
+| client text | `prompt/2`, `steer/2`, `follow_up/2` | `Message.valid_utf8?/1` |
+
+The terminal cap at the end of `run/1` stays too. The session caps the `:stream_end` terminal again, because the hands can make a terminal of their own.
+
+## Bounds
+
+No new input, buffer, or wait. These rows of `docs/features/coding-agent.md` keep their values; only the module that applies them changes:
+
+| What | Bound | Over the bound |
+| ---- | ----- | -------------- |
+| integer in tool call arguments and in usage | 100 digits (`Helyx.Message.cap_integers/1`) | the integer is replaced; a call with a replaced integer is rejected with an error result |
+| stream event shape | the shapes of `Helyx.Provider` | the turn fails with `{:bad_stream_event, event}` |
+| harness tool result text | cut by `Helyx.Tool.truncate/2`, `:tail` | See the row "tool result text" (#121 changes this row) |
+
+The rows in `docs/features/coding-agent.md` that name `consume/3` or the session as the place of a check are updated to name `Helyx.Session.Stream`.
+
+## Ownership
+
+No new resource. The rows for the provider stream Task do not change: a model stream is a Task of the Core task supervisor, linked to the session; a harness stream is a Task of the hands (ADR 0003). `Helyx.Session.Stream` holds no resource; it runs inside that Task.
+
+## Tests
+
+- The session tests pass with no change to their assertions. They cover the event order, the rejected call, the malformed events, and the harness events.
+- A new `test/helyx/session/stream_test.exs` calls `run/1` directly with the test providers of `test/support/interfaces.ex` and a test process as `session`. It checks the messages that arrive and the terminal: a valid stream, a malformed event, an integer over the digit limit in arguments and in usage, invalid UTF-8 in a delta, and a harness event from a model provider.
+
+## Out of scope
+
+- The `kind` flag and its branches in the session: #123.
+- The truncation of harness tool results: #121 (`docs/features/tool-text-out-of-core.md`).
+- The split of the session into more modules: #119 and #124.
