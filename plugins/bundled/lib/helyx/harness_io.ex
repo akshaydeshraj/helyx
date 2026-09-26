@@ -1,7 +1,8 @@
 defmodule Helyx.HarnessIO do
   @moduledoc false
   # What the harness providers share (ADR 0005): every call into
-  # `Helyx.Watchdog`, the read of a program's stdout as JSON lines under a
+  # `Helyx.Watchdog`, the move of the port's link to a keeper (used by
+  # Claude Code), the read of a program's stdout as JSON lines under a
   # line cap, the exit wait after a terminal, the cut of program error
   # text, the split of the prompt from the history, and the byte cap of a
   # replay. It is not a plugin. `state` is a provider's run state with the
@@ -45,6 +46,42 @@ defmodule Helyx.HarnessIO do
       {:failed, text} ->
         %{state | done?: true, terminal: {:error, {:not_started, cap_error(text)}}}
     end
+  end
+
+  # Moves the caller's link to the port to a keeper process, and monitors
+  # the port instead (#167). A write to a watchdog that died closes the port
+  # with `:epipe` and sends no exit status; through a link, that exit would
+  # end the caller. The monitor gives it as `{:DOWN, _, :port, port,
+  # reason}`, after the port's data. The keeper traps exits and is linked to
+  # the caller and to the port: when the caller ends, it closes the port, so
+  # the watchdog still ends the group (ADR 0004); when the port closes, it
+  # ends. The caller unlinks only after the keeper holds its link, so the
+  # port always has a link to a process that closes it. The caller does not
+  # trap exits, so a shutdown ends it at once in every phase. Call it after
+  # `start/5` and before any other write: no write is pending until then.
+  def keep_port(%{port: nil} = state), do: state
+
+  def keep_port(%{port: port} = state) do
+    caller = self()
+
+    keeper =
+      spawn_link(fn ->
+        Process.flag(:trap_exit, true)
+        Process.link(port)
+        send(caller, {:kept, self()})
+
+        receive do
+          {:EXIT, _from, _reason} -> Helyx.Watchdog.close(port)
+        end
+      end)
+
+    receive do
+      {:kept, ^keeper} -> :ok
+    end
+
+    Process.unlink(port)
+    Port.monitor(port)
+    state
   end
 
   # The `Stream.resource/3` end: the closed port ends the program.

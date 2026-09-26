@@ -123,8 +123,8 @@ defmodule Helyx.Provider.HarnessEpipeTest do
     assert run(ClaudeCode, "haiku", stop) == [{:error, {:claude_code_exit, :epipe}}]
   end
 
-  # The trap starts at the go-ahead: an abort while the start waits for
-  # the hold of the command group still ends the stream at once.
+  # The stream does not trap exits: an abort while the start waits for the
+  # hold of the command group ends the stream at once.
   # The name holds no quote: `tmp_dir` puts it in the path that the fake
   # perl of `setup` holds unquoted.
   test "Claude Code: a shutdown of the hands during the start ends the stream at once",

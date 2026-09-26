@@ -648,14 +648,13 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     assert (System.monotonic_time(:millisecond) - started) in 5_000..7_999
   end
 
-  # The read loop traps exits (#167), so a shutdown of the hands behind the
-  # lost run's exit status is a message. The fresh run acts on it before
-  # it builds its input from the transcript and before its start waits in
-  # a hold call to the hands. The build of this transcript of 1,000,000
-  # messages takes longer than the 200 ms wait for the `:DOWN` (measured:
-  # the test fails on code that builds the input first). The test process
-  # stands in for the hands; the suspension holds the order of the two
-  # messages.
+  # A shutdown of the hands behind the lost run's exit status ends the
+  # stream before the fresh run builds its input from the transcript and
+  # before its start waits in a hold call to the hands. The build of this
+  # transcript of 1,000,000 messages takes longer than the 200 ms wait for
+  # the `:DOWN` (measured: the test fails on code that trapped exits and
+  # built the input first, #167). The test process stands in for the
+  # hands; the suspension holds the order of the two signals.
   test "a shutdown queued behind the exit of a lost run ends the stream before the fresh run",
        %{bin: bin, work: work, tmp_dir: tmp} do
     assistant = %Message{role: :assistant, content: [%Message.Text{text: "ok"}]}
@@ -695,6 +694,54 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
     assert_receive {:DOWN, ^ref, :process, _pid, :shutdown}, 200
     refute_received {:"$gen_call", _from, {:hold, _handle}}
+  end
+
+  # The line cap bounds each line, not the number of lines in the mailbox
+  # (#167). The program writes 1,000 JSON lines of 64 KB while the stream
+  # is suspended, so they are all queued before the shutdown. Their decode,
+  # 1.5 ms a line, takes longer than the 200 ms wait for the `:DOWN` (the
+  # test fails on code that traps exits in the read loop).
+  test "a shutdown behind queued stdout ends the stream at once",
+       %{bin: bin, work: work, tmp_dir: tmp} do
+    line = j(%{type: "other", pad: List.duplicate(1, 32_768)})
+    File.write!(Path.join(bin, "lines"), List.duplicate([line, "\n"], 1_000))
+    ready = Path.join(tmp, "ready")
+    go = Path.join(tmp, "go")
+    written = Path.join(tmp, "written")
+
+    scenario(
+      bin,
+      1,
+      [init(@sid)],
+      ~s(echo $$ > "#{ready}"\nwhile [ ! -e "#{go}" ]; do sleep 0.05; done\n) <>
+        ~s(cat "$d/lines"\necho $$ > "#{written}"\nsleep 30\n)
+    )
+
+    test = self()
+
+    {pid, ref} =
+      spawn_monitor(fn ->
+        Process.put(:helyx_hands, test)
+        context = %Helyx.Context{messages: [Message.user("hi")]}
+        {:ok, stream} = ClaudeCode.stream("haiku", context, cwd: work)
+        Enum.to_list(stream)
+      end)
+
+    for _hold <- 1..2 do
+      assert_receive {:"$gen_call", from, {:hold, _handle}}, 5_000
+      GenServer.reply(from, :ok)
+    end
+
+    program = wait_for_pid(ready)
+    :erlang.suspend_process(pid)
+    File.write!(go, "")
+    wait_for_pid(written)
+    Process.exit(pid, :shutdown)
+    :erlang.resume_process(pid)
+
+    assert_receive {:DOWN, ^ref, :process, _pid, :shutdown}, 200
+    # The keeper closes the port, so the watchdog ends the group.
+    assert group_gone_within?(program, 300)
   end
 
   defp wait_for_exit_status(pid, tries \\ 500) do

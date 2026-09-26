@@ -1,14 +1,17 @@
 # Review: a write after the go-ahead to a dead watchdog (#167)
 
-Base: `origin/master` at `ca7081d`. Four rounds: the first round, then three full rerun rounds.
+Base: `origin/master` at `ca7081d`. Five rounds: the first round, then four full rerun rounds. Rounds 1 to 4 describe the trap design that round 5 replaced.
 
 ## Change
 
-A write to a watchdog that died after the go-ahead closes the port with `:epipe` and sends no exit status. Each harness provider's read loop now takes a port exit that is not `:normal` as the end of the run, through its existing `exited/2`: the terminal is `{:error, {:claude_code_exit, :epipe}}` or `{:error, {:codex_exit, :epipe}}`, unless a terminal came before it. A `:lost` terminal still starts the fresh run. `Helyx.Provider.ClaudeCode` now traps exits from the go-ahead on. It starts the watchdog with open input and writes its input as its own write, ended by a NUL. Before the start, it turns the trap off and acts on the exit messages that the trap made (`pass_exits/0`), so a shutdown of the hands ends the start at once. Any other exit signal acts as it would without the trap. Codex keeps its trap from the start and its interrupt path.
+A write to a watchdog that died after the go-ahead closes the port with `:epipe` and sends no exit status. The final design (round 5):
 
-Invariant: no harness stream Task ends on the `:epipe` exit signal, no stream waits past its deadline or an abort because of it, and the shutdown of the hands ends the Claude Code stream Task at once in every phase (first start, read loop, a lost session's fresh run).
+- Codex traps exits from its start, as before. Its read loop takes a port exit that is not `:normal` as the end of the run, through its existing `exited/2`: the terminal is `{:error, {:codex_exit, :epipe}}`, unless a terminal came before it. It keeps its interrupt path.
+- Claude Code does not trap exits, except in the short go-ahead of `Helyx.Watchdog.start/4`. After the start and before its input write, `Helyx.HarnessIO.keep_port/1` moves the port's link to a keeper process. The keeper traps exits, is linked to the Task and to the port, and closes the port when the Task ends. The Task monitors the port. Its read loop takes the port's `:DOWN` as the end of the run: the terminal is `{:error, {:claude_code_exit, :epipe}}`, unless a terminal came before it. A `:lost` terminal still starts the fresh run. The input is its own write, ended by a NUL.
 
-Owner decision (2026-09-26, on #167): "Claude Code traps exits for the life of the port, as Codex does." The code traps from the go-ahead on, not from the port open. The reason is the round-1 finding below: a trap during the start makes the hands' shutdown wait 2,000 ms, which breaks "the hands' shutdown still stops the Task" of the same decision. No write is pending between the port open and the go-ahead, so no `:epipe` can come before the trap. This needs the owner's confirmation.
+Invariant: no harness stream Task ends on the `:epipe` exit signal, and the shutdown of the hands ends the Claude Code stream Task at once in every phase (first start, read loop with queued stdout, a lost session's fresh run). The port closes whenever the Task ends, so the watchdog ends the group (ADR 0004).
+
+Owner decision (2026-09-26, on #167): "Claude Code traps exits for the life of the port, as Codex does." The final design meets the intent of the decision but not its words. `:epipe` fails the turn with `{:claude_code_exit, :epipe}`, and any other exit signal ends the Task as before. The keeper traps exits, not the Task. The reason is four findings on the trap (rounds 1, 2, 4, and 5): with the trap on, a shutdown of the hands is a message, and it waits behind every step and every message before it. This needs the owner's confirmation.
 
 ## Bounds sensor
 
@@ -16,7 +19,7 @@ Owner decision (2026-09-26, on #167): "Claude Code traps exits for the life of t
 bounds sensor skipped: TYPESAFE_API_KEY is not set
 ```
 
-The same output in all four rounds.
+The same output in all five rounds.
 
 ## Round 1
 
@@ -102,6 +105,31 @@ No hard violations. Skipped: the history append copies the list once, in the set
 ### Failure path
 
 No new findings. The regression test fails 3 of 3 runs on the old order. Probed: the input write with a prompt of 1, 100, and 400 MB to a program that does not read (the shutdown ended the Task in 0 to 2 ms); `HarnessIO.stop/1` in `exit_timeout/1`; a read-loop step; `pass_exits/0` after the trap reset.
+
+## Round 5
+
+Full round, after the Codex round 2 review of the branch. This was the fourth finding on one mechanism, the trap of the Claude Code stream, so the fix removes the trap.
+
+### Codex finding
+
+Fixed, reproduced: the Claude Code read loop trapped exits, so a shutdown of the hands waited behind all stdout that was queued before it. The line cap bounds each line, not the number of lines. Codex probe: 6,000 queued lines of about 64 KB; the Task was alive 2,000 ms after the shutdown. Fix: the structural option (a). A plain unlink of the port was probed and rejected: a port with no link stays open after its owner dies, which breaks ADR 0004. So `Helyx.HarnessIO.keep_port/1` moves the link to a keeper process that traps exits and closes the port when the Task ends, and the Task monitors the port. The Task does not trap exits, so `pass_exits/0` and the trap flags in `ClaudeCode.start/2` are gone. Test: "a shutdown behind queued stdout ends the stream at once" (1,000 queued lines of 64 KB, a 200 ms bound, then the group is gone; red 3 of 3 runs on the round-4 code). The checklist line now states the structural rule: a Task that a shutdown must end at once does not trap exits.
+
+### Simplify
+
+No code change. Skipped: flush the port monitor in `stop/1`; a stale `:DOWN` stays only in the mailbox of a Task that is ending, and the read loop drops the `:DOWN` of a lost run's port.
+
+### Standards
+
+No hard violations. Fixed: the `HarnessIO` header now names the keeper. Skipped: move `keep_port/1` into `ClaudeCode`; it is port handling of a harness provider and the checklist names it as the pattern. Skipped: the name `keep_port/1`; its comment says what it does.
+
+### Spec
+
+1. Fixed: `coding-agent.md` said "never traps exits"; the go-ahead of `Helyx.Watchdog.start/4` still traps for one write and a port check. The line now names that exception.
+2. Fixed: this record described the trap design as final. The Change and Owner decision sections now describe the keeper.
+
+### Failure path
+
+No findings. Probed through `stream/3`: a `:kill` in the read loop, a normal end with no `stop/1`, a shutdown after a lost session's fresh run, and a normal completion. In each case the group was gone and no keeper was left. The keeper states before and after the unlink were checked by reasoning.
 
 ## Out of scope, reported
 
