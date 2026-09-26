@@ -50,3 +50,8 @@ No findings. The acceptance grep finds nothing. The spec agent agreed with the t
 ### Failure path
 
 No findings. The agent compared the callbacks with master line by line (only names, `via/2` visibility, and the `@doc false` differ), checked with a probe that `Helyx.Session.Server.child_spec/1` keeps `restart: :temporary`, and checked that the `:sys.get_state/1` readers in the tests still find `.transcript` and `.hands`.
+
+## Orchestrator
+
+- Codex adversarial review, round 1: approve, 0 findings.
+- Follow-up candidate, not filed: the client builds `%Server.State{}`; a keyword `start_link/1` would move the plugin lookup into the session process, which is a change of behaviour.
