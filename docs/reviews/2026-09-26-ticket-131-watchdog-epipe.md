@@ -98,3 +98,10 @@ Failure-path: 0 findings.
 The full bundled suite ran 50 times after round 6: 50 of 50 passed (325 tests and 1 property each), with the test "a watchdog killed before the go-ahead" of `bash_test.exs` in every run.
 
 Precommit passed after round 7 (root 194 tests; bundled 325 tests and 1 property; coding_agent 17 tests).
+
+## Orchestrator
+
+- Rebased on #150, #153, and #148. One mechanical conflict in the Ownership paragraph of `docs/features/coding-agent.md`: the text of #150 was kept and the #131 clause added. Precommit passed after the rebase.
+- Codex adversarial review, round 1: no finding.
+- An EPIPE on a write after the go-ahead is out of scope and filed as #167.
+- Not changed: the comment on `port_exit/1` says "as the signal would have", which is not exact for Codex, because Codex traps exits. No other port exit reason can occur there.
