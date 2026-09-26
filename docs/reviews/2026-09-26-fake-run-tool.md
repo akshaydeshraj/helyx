@@ -41,3 +41,8 @@ All acceptance criteria are met. No scope creep apart from one sentence in the `
 No findings. The helper body did not change. The helper is not loaded in the dev environment, and an app that depends on `helyx_plugins` does not get it in its test environment.
 
 Two points that were there before this change, not reproduced as defects: the `receive` does not check the call id, which is safe because each helper session has exactly one call; the helper does not stop its session, and the supervised Core of the test cleans it up.
+
+## Orchestrator
+
+- Devlog question: no per-ticket devlog. The orchestrator writes one devlog for the run.
+- Codex adversarial review, round 1: approve, 0 findings. Its note that the invariant was too broad is correct: `Helyx.TUI` is a client and calls `Helyx.Session` by design. The invariant is that no provider plugin calls a `Helyx.Session` function.
