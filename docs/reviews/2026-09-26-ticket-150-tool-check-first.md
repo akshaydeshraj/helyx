@@ -71,3 +71,10 @@ No path makes `Hands.start_link/1` fail. One reproduced finding is older than th
 - Open, out of scope: `Session.resume/2` resolves the model ref (`Helyx.Provider.find/2`, `turn/0`) after `Helyx.Session.File.resume/2`, which repairs a torn last line. A missing provider or a `turn/0` that raises then gives an error, but the file has lost its torn line. The model ref comes from the file, so a fix must split the read from the repair in `Session.File.resume/2`. The review checklist now records this as open. It needs a ticket.
 
 The round 2 fixes change only tests and Markdown, so no further round is needed.
+
+## Orchestrator
+
+- Codex adversarial review, round 1: no finding. The base did not change after the precommit run of the worker.
+- Accepted: the stricter return check of `check/0` (a value other than `:ok` or `{:error, string}` fails the start). The boundary rule requires it.
+- The open resume item is #104, which the owner accepted and closed. The checklist line now says so.
+- ADR 0004 names `Helyx.Watchdog.start/4` (from #152, item 6).
