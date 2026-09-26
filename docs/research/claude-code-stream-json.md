@@ -187,3 +187,55 @@ Program-to-host subtypes: `can_use_tool` and `mcp_message` (verified), `hook_cal
 ### Helyx abort with a command in its own group (2026-09-26)
 
 Four aborts through `Helyx.Session.abort/1` with `Helyx.Provider.ClaudeCode` (`2.1.283`, `haiku` and `sonnet`): a foreground `python3 -c "import time; time.sleep(90)"`, and in one run a background task of the same kind. Each abort returned in 537 to 613 ms, and `ps` found no process of the command 2 s later. The watchdog TERMs the program's group and KILLs it after 500 ms. The program ends its commands on the TERM within that time. The margin is small: a program with more children, or a slower machine, can need more than 500 ms, and a KILL then leaves the command groups running. `Helyx.Provider.Codex` already uses a TERM grace of 5 s for the same reason.
+
+## Verify before implementation (2026-09-27)
+
+Runs on 2026-09-27 with version `2.1.283`, `--model haiku`, in empty temporary directories, for the list "Verify before implementation" in `docs/features/long-lived-harness.md`. A Python script drove the program over stdio with the flags of the design: `--output-format stream-json --verbose --input-format stream-json --include-partial-messages --permission-mode bypassPermissions --replay-user-messages --strict-mcp-config`, no `-p`. Each program ran in a new session (its own process group). Times are the times at which the script read the line.
+
+### The signal that the program took a steer line (verified, 2 kinds, 1 run each, and the 24 turns below)
+
+- A line with a `uuid` gives `command_lifecycle` `queued` at once when the program reads it, in every run.
+- **During a tool call** (a steer into the running turn): after the tool result, the replay echo of the `uuid` came first, then `command_lifecycle` `started` 10 ms later, then the next model call. `completed` came just before the `result`. The `result` had `num_turns` 2.
+- **During the final text** (the line runs as the next turn): the `result` of the running turn came first, then `started` at the same millisecond, then the echo 1.07 s later, just before the `message_start` of the new model call. `completed` came after the `result` of the new turn.
+- So `started` comes within 10 ms of the tool result or of the `result` after which the program takes the line. The echo comes when the program writes the new request to the model, 0.7 to 1.8 s after the `result` in these runs.
+
+### `queued_turn_count` (verified, every `result` of these runs)
+
+- Every `result` in these runs had `queued_turn_count` 0, also when a line was queued before the `result` (`command_lifecycle` `queued` 1.3 s before it). The field does not show a queued user line.
+
+### Interrupt with `cancel_queued: true` while a steer line waits (verified, 4 runs)
+
+- Two runs during the final text, two during a foreground `Bash` `sleep 20`. The steer line had `command_lifecycle` `queued`, then the script sent `{"subtype":"interrupt","cancel_queued":true}`.
+- The response: `{"still_queued":[],"cancelled":["<uuid>"]}`. The `cancelled` list is new. Before the response, `command_lifecycle` `cancelled` for the `uuid`.
+- Then the `result` with `error_during_execution` and `terminal_reason` `aborted_streaming` or `aborted_tools`, with `queued_turn_count` 0. No echo and no `started` for the `uuid`, and no other `result` in 8 s.
+- The next user line ran as usual on the same process.
+- `init.capabilities` listed `interrupt_cancel_queued_v1` in each run.
+
+### A steer at the end of a turn (verified, 3 × 8 turns in 3 processes)
+
+- The script sent `Reply with just OK<i>.`, then wrote the steer line with a `uuid` at one of three points: at the `message_stop` stream event of the answer, at the `assistant` text line, or after the `result`.
+- At `message_stop`: in 4 of 8 turns the program read the line (`queued`) after it wrote the `result`; in 4 of 8 before. At the `assistant` line: 8 of 8 before the `result`, 0 to 30 ms before it. After the `result`: the line was read at once.
+- In all 24 turns the `result` of the first turn had `queued_turn_count` 0 and `num_turns` 1, and the line then ran as a turn of its own with its own `result`. It never joined the finished turn.
+- Gaps after that `result`, in the 16 turns where the line was written before it: `started` 0 to 10 ms; the echo 0.65 to 1.77 s; the `result` of the steer turn 0.89 to 2.06 s.
+- The provider tests of the two orders (`:rejected` with nothing written; the terminal that waits for the echo) need the provider. They are not part of this run.
+
+### `_meta["claudecode/toolUseId"]` (verified, 3 runs)
+
+- In each run the `tools/call` of the SDK MCP server had `"_meta":{"claudecode/toolUseId":"toolu_...","progressToken":2}`, and the id equalled the `id` of the `tool_use` block `mcp__helyx__secret_word` in the `assistant` line.
+
+### An open `mcp_message` at an interrupt (verified, 3 runs)
+
+- The script did not answer a `tools/call` and sent `interrupt` 2 s later.
+- The program sent **no** `control_cancel_request`. It sent a new `mcp_message` control request with the MCP notification `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":3,"reason":"AbortError: remote-cancel"}}`, where `requestId` is the JSON-RPC id of the open `tools/call`. Then the interrupt response, an `is_error` tool result, `[Request interrupted by user for tool use]`, and the `result` with `aborted_tools`.
+- A late answer to the open `tools/call`, 3 s after the `result`, gave no error and no line other than its echo. The next turn ran as usual.
+- With `--replay-user-messages`, the program also echoes each `control_response` that the host writes, as an output line of type `control_response`.
+- When the program sends `control_cancel_request` was not found.
+
+### `SIGTERM` to the group while a user line is queued (verified, 6 runs)
+
+- Three runs during the final text, three during a foreground `Bash` `sleep 25`. The queued line asked the model to run `touch <marker>` with `Bash`. The script sent `SIGTERM` to the program's process group 0.3 s after `command_lifecycle` `queued`.
+- Each run: exit status 143 after 0.87 to 1.68 s. The only `command_lifecycle` line of the `uuid` was `queued`: no `started`. No marker file 3 s after the exit. No `sleep 25` left.
+
+### Not run
+
+- The stop path end to end with the watchdog stdin cap: the cap is ticket #196, which is open. The TERM half of the path is the run above.
