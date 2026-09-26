@@ -178,8 +178,9 @@ defmodule Helyx.Watchdog do
   #     child died before the `exec`; a failure report is "<go> 0".
   #   * `{:not_started, port, acc}`: the watchdog did not fork; the rest of
   #     the stream up to the exit status is the reason.
-  #   * `{:no_marker, text}`: no marker; the port is closed. Also when perl
-  #     did not start, with no port. The text always names perl.
+  #   * `{:failed, text}`: no command ran, and the port is closed: perl did
+  #     not start (no port), the watchdog gave no marker, or it died before
+  #     the go-ahead. The text always names perl.
   #
   # Only a group marker leads to the go-ahead, after the group is held: a
   # command never runs without its group in the hands. With no marker, the
@@ -195,7 +196,7 @@ defmodule Helyx.Watchdog do
 
     case open_port(exe, options) do
       {:ok, port} -> handshake(port, nonce, input)
-      {:error, reason} -> {:no_marker, "perl did not start: " <> reason}
+      {:error, reason} -> {:failed, "perl did not start: " <> reason}
     end
   end
 
@@ -231,13 +232,70 @@ defmodule Helyx.Watchdog do
       # the watchdog, or never run (an argv over the OS limit).
       {:no_marker, text} ->
         close(port)
-        {:no_marker, "the perl watchdog gave no marker: " <> text}
+        {:failed, "the perl watchdog gave no marker: " <> text}
 
       {group, pre} ->
         Helyx.Tool.hold({:command, group})
         go = random_word()
-        write(port, [go, "\n", if(is_binary(input), do: input, else: "")])
-        {:started, port, pre, nonce, go}
+
+        case go_ahead(port, go) do
+          :sent ->
+            write_input(port, input)
+            {:started, port, pre, nonce, go}
+
+          :died ->
+            {:failed, "the perl watchdog died before the go-ahead: " <> pre}
+        end
+    end
+  end
+
+  # A watchdog that dies after the marker can close its stdin while the
+  # port is still open. The go-ahead write then gets EPIPE: the port closes
+  # with the exit reason `:epipe`, sends no exit status, and its exit
+  # signal would end the caller (#131). So the go-ahead traps exits. It is
+  # its own write, and the first on the pipe, so the pipe takes all of it
+  # or the write fails at once: no part of it waits in the port's queue.
+  # `Port.info/2` is a port signal, which the port takes after the write.
+  # A write that raised found the port closed. In both cases the watchdog
+  # died before the go-ahead. The input is a later write. A port that
+  # closes after `Port.info/2`, before the trap ends, leaves its exit
+  # message in the mailbox, which no receive of `go_ahead/2` takes. No
+  # write is pending then, so the close is not EPIPE.
+  defp go_ahead(port, go) do
+    trap = Process.flag(:trap_exit, true)
+
+    result =
+      cond do
+        not write(port, [go, "\n"]) -> :died
+        Port.info(port, :id) -> :sent
+        true -> port_exit(port)
+      end
+
+    Process.flag(:trap_exit, trap)
+    if not trap, do: pass_exits(port)
+    result
+  end
+
+  # The port closed. A `:normal` close comes after the watchdog's exit
+  # status, which is in the mailbox for the caller's read; any other reason
+  # ends the caller, as the signal would have.
+  defp port_exit(port) do
+    receive do
+      {:EXIT, ^port, :epipe} -> :died
+      {:EXIT, ^port, :normal} -> :sent
+      {:EXIT, ^port, reason} -> exit(reason)
+    end
+  end
+
+  # Acts on the exit signals that the trap made messages, as a process that
+  # does not trap exits does: a `:normal` one does nothing, any other ends
+  # the process. The port's own exit is left for `port_exit/1`.
+  defp pass_exits(port) do
+    receive do
+      {:EXIT, from, :normal} when from != port -> pass_exits(port)
+      {:EXIT, from, reason} when from != port -> exit(reason)
+    after
+      0 -> :ok
     end
   end
 
@@ -281,6 +339,10 @@ defmodule Helyx.Watchdog do
 
   defp random_word, do: Base.encode16(:crypto.strong_rand_bytes(8))
 
+  # The input follows the go-ahead as a later write (see `go_ahead/2`).
+  defp write_input(port, input) when is_binary(input), do: write(port, input)
+  defp write_input(_port, _input), do: :ok
+
   defp feed(nil), do: -1
   defp feed(:open), do: -2
   defp feed(input), do: byte_size(input)
@@ -288,7 +350,9 @@ defmodule Helyx.Watchdog do
   @doc false
   # Writes to the watchdog's stdin. A port whose watchdog already died is
   # closed and the write raises; the exit status is still in the mailbox for
-  # the caller's read.
+  # the caller's read. A watchdog that died while the port is open makes
+  # the write close the port with `:epipe`: the go-ahead handles that, a
+  # later write does not (#167).
   def write(port, data) do
     Port.command(port, data)
   rescue

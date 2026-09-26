@@ -87,10 +87,10 @@ defmodule Helyx.Tool.Bash do
     result(Helyx.Watchdog.start([bash, "-c", command], cwd, nil))
   end
 
-  # The no-marker text names the perl watchdog at its head (see
+  # The text of a failed start names perl at its head (see
   # `Helyx.Watchdog.start/4`), so the head is kept, with the cut of the
   # harness providers. A start report has its reason at the tail.
-  defp result({:no_marker, text}), do: not_started(Helyx.HarnessIO.cap_error(text))
+  defp result({:failed, text}), do: not_started(Helyx.HarnessIO.cap_error(text))
 
   defp result(started) do
     case consume(started) do
