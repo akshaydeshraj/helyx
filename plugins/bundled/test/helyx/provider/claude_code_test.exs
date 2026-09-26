@@ -648,6 +648,65 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     assert (System.monotonic_time(:millisecond) - started) in 5_000..7_999
   end
 
+  # The read loop traps exits (#167), so a shutdown of the hands behind the
+  # lost run's exit status is a message. The fresh run acts on it before
+  # its start waits in a hold call to the hands. The test process stands in
+  # for the hands; the suspension holds the order of the two messages.
+  test "a shutdown queued behind the exit of a lost run ends the stream before the fresh run",
+       %{bin: bin, work: work, tmp_dir: tmp} do
+    # The program has all of its input when it writes its pid to `ready`.
+    ready = Path.join(tmp, "ready")
+    go = Path.join(tmp, "go")
+
+    scenario(
+      bin,
+      1,
+      [lost(@sid)],
+      ~s(echo $$ > "#{ready}"\nwhile [ ! -e "#{go}" ]; do sleep 0.05; done\n)
+    )
+
+    test = self()
+
+    {pid, ref} =
+      spawn_monitor(fn ->
+        Process.put(:helyx_hands, test)
+        context = %Helyx.Context{messages: [Message.user("hi")]}
+        {:ok, stream} = ClaudeCode.stream("haiku", context, cwd: work, harness_session_id: @sid)
+        Enum.to_list(stream)
+      end)
+
+    for _hold <- 1..2 do
+      assert_receive {:"$gen_call", from, {:hold, _handle}}, 5_000
+      GenServer.reply(from, :ok)
+    end
+
+    wait_for_pid(ready)
+    :erlang.suspend_process(pid)
+    File.write!(go, "")
+    wait_for_exit_status(pid)
+    Process.exit(pid, :shutdown)
+    :erlang.resume_process(pid)
+
+    assert_receive {:DOWN, ^ref, :process, _pid, :shutdown}, 1_000
+    refute_received {:"$gen_call", _from, {:hold, _handle}}
+  end
+
+  defp wait_for_exit_status(pid, tries \\ 500) do
+    {:messages, messages} = Process.info(pid, :messages)
+
+    cond do
+      Enum.any?(messages, &match?({_port, {:exit_status, _}}, &1)) ->
+        :ok
+
+      tries == 0 ->
+        flunk("no exit status reached the stream")
+
+      true ->
+        Process.sleep(10)
+        wait_for_exit_status(pid, tries - 1)
+    end
+  end
+
   test "a line one byte over 16 MiB with its newline in one write is an error",
        %{bin: bin, work: work} do
     File.write!(Path.join(bin, "line"), [String.duplicate("x", 16_777_217), "\n"])

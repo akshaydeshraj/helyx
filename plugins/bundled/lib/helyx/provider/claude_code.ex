@@ -91,13 +91,36 @@ defmodule Helyx.Provider.ClaudeCode do
   # or nil for a fresh one. `open?` is true while the current assistant
   # message has content that no `message_end` closed, and `calls?` when that
   # content has a tool call. `terminal` holds the result until the exit.
+  #
+  # The run traps exits from the go-ahead on (#167), so the start itself,
+  # which waits in hold calls to the hands, still ends at once on their
+  # shutdown. No write is pending at the go-ahead, so no `:epipe` can come
+  # before the trap. The input is then its own write, ended by a NUL. A
+  # lost session's fresh run starts with the trap on. So the trap goes off
+  # first, and then `pass_exits/0` acts on the exit messages that the trap
+  # made.
   defp start(run, resume) do
     {input, cut} = input(run.messages, resume)
     argv = ["/bin/sh", "-c", ~S(exec "$0" "$@" 2>/dev/null), run.exe | flags(run.model, resume)]
 
-    state = %State{run: run, resume: resume, cut: cut}
+    Process.flag(:trap_exit, false)
+    pass_exits()
+    state = HarnessIO.start(argv, run.cwd, :open, %State{run: run, resume: resume, cut: cut})
+    Process.flag(:trap_exit, true)
+    if state.terminal == nil, do: HarnessIO.write(state, [input, <<0>>])
+    state
+  end
 
-    HarnessIO.start(argv, run.cwd, IO.iodata_to_binary(input), state)
+  # Acts on the exit messages as a process that does not trap exits acts on
+  # the signals: a `:normal` one does nothing, any other ends the run. A
+  # port's exit is from the lost run, whose port is closed.
+  defp pass_exits do
+    receive do
+      {:EXIT, from, reason} when is_port(from) or reason == :normal -> pass_exits()
+      {:EXIT, _from, reason} -> exit(reason)
+    after
+      0 -> :ok
+    end
   end
 
   # `--model=` and `--resume=` keep a value that starts with a dash a value.
@@ -111,7 +134,11 @@ defmodule Helyx.Provider.ClaudeCode do
 
   # Before the result the wait is the program's own loop, which an abort
   # ends; after it, one exit wait from the terminal, whatever the program
-  # still writes.
+  # still writes. A write to a watchdog that died after the go-ahead
+  # closes the port with `:epipe` and no exit status (#167), so that exit
+  # is the run's end. Any other exit signal acts as it would without the
+  # trap: a `:normal` one does nothing, any other ends the run. (Codex
+  # differs on purpose: it sends `turn/interrupt` first.)
   defp next(%{port: port} = state) do
     if HarnessIO.overdue?(state), do: exit_timeout(state), else: receive_next(port, state)
   end
@@ -120,6 +147,9 @@ defmodule Helyx.Provider.ClaudeCode do
     receive do
       {^port, {:data, data}} -> HarnessIO.lines(data, state, &translate/2)
       {^port, {:exit_status, status}} -> exited(status, %{state | port: nil})
+      {:EXIT, _from, :normal} -> {[], state}
+      {:EXIT, ^port, reason} -> exited(reason, %{state | port: nil})
+      {:EXIT, _from, reason} -> exit(reason)
     after
       HarnessIO.wait(state) -> exit_timeout(state)
     end
