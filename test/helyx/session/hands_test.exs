@@ -22,8 +22,17 @@ defmodule Helyx.Session.HandsTest do
   end
 
   defp start_hands(core, opts \\ []) do
-    {:ok, hands} =
-      Helyx.Session.Hands.start_link([core: core, cwd: File.cwd!(), session: self()] ++ opts)
+    {:ok, tools} = Helyx.Tool.specs(core)
+
+    opts =
+      [
+        core: core,
+        cwd: File.cwd!(),
+        session: self(),
+        tools: Map.new(tools, fn {tool, spec} -> {spec.name, tool} end)
+      ] ++ opts
+
+    {:ok, hands} = Helyx.Session.Hands.start_link(opts)
 
     hands
   end

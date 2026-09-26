@@ -80,18 +80,21 @@ defmodule Helyx.Session do
     # window for an orphan file from a failed start. A supervisor failure
     # after this point still leaves one; the feature doc records that hole.
     with {:ok, cwd} <- fetch_cwd(opts),
+         {:ok, tools} <- Helyx.Tool.specs(core),
          {:ok, {ref, provider, turn_mode}} <- resolve_model(core, Keyword.fetch!(opts, :model)),
-         {:ok, _tools} <- Helyx.Tool.by_name(core),
          {:ok, file} <- create_file(opts[:sessions_dir], id, cwd, ref) do
-      start_child(%State{
-        id: id,
-        core: core,
-        model: ref,
-        provider: provider,
-        turn_mode: turn_mode,
-        cwd: cwd,
-        file: file
-      })
+      start_child(
+        %State{
+          id: id,
+          core: core,
+          model: ref,
+          provider: provider,
+          turn_mode: turn_mode,
+          cwd: cwd,
+          file: file
+        },
+        tools
+      )
     end
   end
 
@@ -105,27 +108,31 @@ defmodule Helyx.Session do
   `:sessions_dir`, restoring the transcript and the current model. Every
   tool call without a result gets an `aborted` error result, so the next
   provider call sees complete call and result pairs. `:cwd` is checked as in
-  `start/2`, before the sessions directory is read.
+  `start/2`, and the tool specs as in `start/2`, both before the sessions
+  directory is read.
   """
   @spec resume(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, term()}
   def resume(core \\ Helyx.Core, opts) do
     dir = Keyword.fetch!(opts, :sessions_dir)
 
     with {:ok, cwd} <- fetch_cwd(opts),
+         {:ok, tools} <- Helyx.Tool.specs(core),
          {:ok, resumed} <- Helyx.Session.File.resume(dir, cwd),
-         {:ok, {ref, provider, turn_mode}} <- resolve_model(core, resumed.model),
-         {:ok, _tools} <- Helyx.Tool.by_name(core) do
-      start_child(%State{
-        id: resumed.session_id,
-        core: core,
-        model: ref,
-        provider: provider,
-        turn_mode: turn_mode,
-        cwd: cwd,
-        file: resumed.file,
-        transcript: resumed.messages,
-        harness_sessions: resumed.harness_sessions
-      })
+         {:ok, {ref, provider, turn_mode}} <- resolve_model(core, resumed.model) do
+      start_child(
+        %State{
+          id: resumed.session_id,
+          core: core,
+          model: ref,
+          provider: provider,
+          turn_mode: turn_mode,
+          cwd: cwd,
+          file: resumed.file,
+          transcript: resumed.messages,
+          harness_sessions: resumed.harness_sessions
+        },
+        tools
+      )
     end
   end
 
@@ -154,14 +161,16 @@ defmodule Helyx.Session do
     end
   end
 
-  defp start_child(%State{id: id, core: core} = state) do
+  defp start_child(%State{id: id, core: core} = state, tools) do
     # The plugin table of a Core does not change after start, so a plugin
     # resolved once here is the plugin a lookup per provider call would give.
     # Both interfaces are single-mode: one plugin or none (nil).
     state = %{
       state
       | model_context: List.first(Helyx.Core.plugins(core, Helyx.ModelContext)),
-        compaction: List.first(Helyx.Core.plugins(core, Helyx.Compaction))
+        compaction: List.first(Helyx.Core.plugins(core, Helyx.Compaction)),
+        tools: Enum.map(tools, fn {_tool, spec} -> spec end),
+        tool_modules: Map.new(tools, fn {tool, spec} -> {spec.name, tool} end)
     }
 
     with {:ok, _pid} <-

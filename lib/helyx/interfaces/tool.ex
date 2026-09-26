@@ -47,23 +47,64 @@ defmodule Helyx.Tool do
 
   @optional_callbacks check: 0, release: 3
 
-  @doc "Returns the registered tool plugins by name. Two tools with one name is an error."
-  @spec by_name(Helyx.Core.name()) ::
-          {:ok, %{String.t() => module()}} | {:error, {:duplicate_tool_name, String.t()}}
-  def by_name(core) do
-    tools = Helyx.Core.plugins(core, __MODULE__)
+  @doc """
+  Builds the spec of each registered tool plugin, checks it, and returns
+  the tools sorted by name. The session calls this once at start, so the
+  callbacks `name/0`, `description/0`, and `parameters/0` run once per
+  session, and every provider call uses the checked value.
 
-    case tools -- Enum.uniq_by(tools, & &1.name()) do
-      [] -> {:ok, Map.new(tools, &{&1.name(), &1})}
-      [dup | _] -> {:error, {:duplicate_tool_name, dup.name()}}
+  A spec is accepted when `name` is a non-empty string of valid UTF-8,
+  `description` is a string of valid UTF-8, and `parameters` is a map with
+  string keys at the top level that `Helyx.Message.encodable?/1` accepts.
+  Otherwise the result is `{:error, {:bad_tool_spec, label}}`: the label is
+  the name when the name is accepted, else the module name. Two tools with
+  one name give `{:error, {:duplicate_tool_name, name}}`.
+  """
+  @spec specs(Helyx.Core.name()) ::
+          {:ok, [{module(), spec()}]}
+          | {:error, {:bad_tool_spec, String.t()} | {:duplicate_tool_name, String.t()}}
+  def specs(core) do
+    tools =
+      core
+      |> Helyx.Core.plugins(__MODULE__)
+      |> Enum.map(
+        &{&1, %{name: &1.name(), description: &1.description(), parameters: &1.parameters()}}
+      )
+      |> Enum.sort_by(fn {_tool, spec} -> spec.name end)
+
+    with :ok <- check_specs(tools), :ok <- check_unique(tools), do: {:ok, tools}
+  end
+
+  defp check_specs(tools) do
+    Enum.find_value(tools, :ok, fn {tool, spec} ->
+      cond do
+        not text?(spec.name) or spec.name == "" ->
+          {:error, {:bad_tool_spec, inspect(tool)}}
+
+        not text?(spec.description) or not parameters?(spec.parameters) ->
+          {:error, {:bad_tool_spec, spec.name}}
+
+        true ->
+          nil
+      end
+    end)
+  end
+
+  defp check_unique(tools) do
+    names = Enum.map(tools, fn {_tool, spec} -> spec.name end)
+
+    case names -- Enum.uniq(names) do
+      [] -> :ok
+      [dup | _] -> {:error, {:duplicate_tool_name, dup}}
     end
   end
 
-  @doc "Returns the spec of a tool plugin, as plain terms."
-  @spec spec(module()) :: spec()
-  def spec(tool) do
-    %{name: tool.name(), description: tool.description(), parameters: tool.parameters()}
-  end
+  defp text?(value), do: is_binary(value) and String.valid?(value)
+
+  defp parameters?(value) when is_map(value),
+    do: Enum.all?(Map.keys(value), &is_binary/1) and Helyx.Message.encodable?(value)
+
+  defp parameters?(_value), do: false
 
   @doc """
   Holds an opaque handle of a resource the tool call created with the hands
