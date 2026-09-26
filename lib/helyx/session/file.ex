@@ -277,13 +277,16 @@ defmodule Helyx.Session.File do
     %{"type" => "image", "mime_type" => mime_type, "data" => data}
   end
 
-  # A field value this format does not know misses its decode clause; the
-  # rescue in resume/3 turns that into a rejected file.
+  # A bad value of a field that core needs (role, content, tool_call_id,
+  # tool_name, is_error) misses its decode clause; the rescue in resume/3
+  # turns that into a rejected file. The model, the stop reason, and the
+  # usage are optional: a bad one decodes as a missing one, so it does not
+  # lose the chat.
   defp decode_message(entry) do
     %Message{
       role: decode_role(entry["role"]),
       content: Enum.map(entry["content"], &decode_block/1),
-      model: optional_string(entry["model"]),
+      model: decode_model(entry["model"]),
       stop_reason: decode_stop_reason(entry["stop_reason"]),
       tool_call_id: optional_string(entry["tool_call_id"]),
       tool_name: optional_string(entry["tool_name"]),
@@ -300,9 +303,8 @@ defmodule Helyx.Session.File do
   # the atoms are interned in this module: a fresh VM that has loaded no
   # provider still decodes a saved file. A stop reason outside the set has
   # no encode clause, so the writer raises an error instead of appending an
-  # entry that a later resume would reject. Only nil means no stop reason:
-  # any other value outside the set, false too, has no clause.
-  defp decode_stop_reason(nil), do: nil
+  # entry that a later resume would read as no stop reason. On decode, any
+  # value outside the set, false too, is no stop reason.
   defp encode_stop_reason(nil), do: nil
 
   for reason <- Message.stop_reasons() do
@@ -310,14 +312,19 @@ defmodule Helyx.Session.File do
     defp encode_stop_reason(unquote(reason)), do: unquote(Atom.to_string(reason))
   end
 
+  defp decode_stop_reason(_value), do: nil
+
   defp optional_string(nil), do: nil
   defp optional_string(value) when is_binary(value), do: value
 
   defp decode_is_error(nil), do: false
   defp decode_is_error(value) when is_boolean(value), do: value
 
-  defp decode_usage(nil), do: %{}
+  defp decode_model(value) when is_binary(value), do: value
+  defp decode_model(_value), do: nil
+
   defp decode_usage(value) when is_map(value), do: Message.cap_integers(value)
+  defp decode_usage(_value), do: %{}
 
   defp decode_block(%{"type" => "text", "text" => text}) when is_binary(text),
     do: %Message.Text{text: text}
@@ -347,9 +354,10 @@ defmodule Helyx.Session.File do
   defp check_version(header), do: {:error, {:unknown_version, header["version"]}}
 
   # The writer only produces a header on line one, then messages, model
-  # changes, and harness sessions, every one with an id, every model and
-  # harness field a string. Anything else is on-disk corruption, never
-  # silently dropped, and never laundered by a later entry that overrides it.
+  # changes, and harness sessions, every one with an id, every model field a
+  # string. Anything else is on-disk corruption, never silently dropped, and
+  # never laundered by a later entry that overrides it. The harness fields
+  # are an optional label: harness_sessions/1 drops a bad one.
   defp check_entries([%{"type" => "session", "id" => id, "model" => model} | rest])
        when is_binary(id) and is_binary(model) do
     case Enum.find(rest, &(not valid_entry?(&1))) do
@@ -365,13 +373,7 @@ defmodule Helyx.Session.File do
   defp valid_entry?(%{"type" => "model_change", "id" => id, "model" => model}),
     do: is_binary(id) and is_binary(model)
 
-  defp valid_entry?(%{
-         "type" => "harness_session",
-         "id" => id,
-         "provider" => provider,
-         "harness_session_id" => harness_id
-       }),
-       do: is_binary(id) and is_binary(provider) and Message.harness_id?(harness_id)
+  defp valid_entry?(%{"type" => "harness_session", "id" => id}), do: is_binary(id)
 
   defp valid_entry?(_entry), do: false
 
@@ -387,15 +389,25 @@ defmodule Helyx.Session.File do
   # The last harness session entry of each provider wins: a lost harness
   # session is followed by a new entry for the same provider. Each keeps the
   # number of messages before it, so the session can tell whether the
-  # harness session has made a message since.
+  # harness session has made a message since. The label is optional: with
+  # none, the provider starts a fresh harness session. A bad id removes the
+  # label of its provider, so an earlier, stale label does not come back. An
+  # entry with no usable provider removes every label, because the reader
+  # cannot know which one it replaced.
   defp harness_sessions(entries) do
     {sessions, _count} =
       Enum.reduce(entries, {%{}, 0}, fn
         %{"type" => "message"}, {sessions, count} ->
           {sessions, count + 1}
 
-        %{"type" => "harness_session"} = entry, {sessions, count} ->
-          {Map.put(sessions, entry["provider"], {entry["harness_session_id"], count}), count}
+        %{"type" => "harness_session", "provider" => provider} = entry, {sessions, count}
+        when is_binary(provider) ->
+          if Message.harness_id?(entry["harness_session_id"]),
+            do: {Map.put(sessions, provider, {entry["harness_session_id"], count}), count},
+            else: {Map.delete(sessions, provider), count}
+
+        %{"type" => "harness_session"}, {_sessions, count} ->
+          {%{}, count}
 
         _entry, acc ->
           acc
