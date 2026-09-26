@@ -124,7 +124,8 @@ Runs on 2026-09-26 with `codex-cli 0.157.1` (the program updated itself from 0.1
 - Observed: `item/started` of a `dynamicToolCall`, then `{"method":"item/tool/call","id":0,"params":{"threadId","turnId","callId","namespace":null,"tool":"lookup_code","arguments":{"key":"alpha"}}}`. The answer `{"id":0,"result":{"contentItems":[{"type":"inputText","text":"ZEBRA-42"}],"success":true}}` reached the model.
 - Content items: `inputText`, `inputImage` (a remote URL is rejected), `inputAudio` (a `data:` URL only) (source).
 - An error answer, or an answer that does not parse, reaches the model as `success: false` with the text "dynamic tool request failed" or "dynamic tool response was invalid". The turn does not fail (source: `app-server/src/dynamic_tools.rs`).
-- `thread/resume` has no `dynamicTools` field (source). Whether the tools of a thread are still there after a resume in a new process was not verified.
+- `thread/resume` has no `dynamicTools` field (source). **The tools of a thread survive a resume in a new process** (verified, two runs). Process 1 started a thread with the tool `lookup_code`, ran one turn that called it, and ended by end of file on stdin. Process 2 sent `thread/resume` with no tools and asked for a new key. The server sent `item/tool/call` for `lookup_code`, and the answer that only the tool could give reached the model. This worked when process 2 sent `initialize` with `experimentalApi` and also when it did not, so only `thread/start` needs the experimental capability.
+- So the tool set is fixed when the thread starts. A client that needs another tool set starts a new thread.
 
 ### Other methods (verified unless marked)
 
