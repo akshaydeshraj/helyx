@@ -61,3 +61,9 @@ The round 1 doc fix holds. No event reaches `held` without the count check, no t
 - Fixed in the doc: the cap drops the rest of its line, not only the one event. Reproduced: with 9,999 held events, one `item/completed` line of a call with no start gives a call, a `message_end`, and a result; the call is held event 10,000, and the other two are dropped, so the transcript does not have the call. The row states this and points to "Known gap" of `docs/features/external-turn.md`.
 
 The round 2 fixes change only a comment and Markdown, so no further round is needed.
+
+## Orchestrator
+
+- Codex adversarial review, round 1: no finding. The base changed (#103 and #165 merged), so precommit ran again after the rebase and passed.
+- Accepted: the cap counts events, not bytes. The held volume is bounded by 10,000 events of at most 16 MiB each and by the user abort, as the transcript volume of one turn is. The owner chose a count cap at triage. A byte cap is a new decision.
+- Accepted: the two doc facts that differ from the ticket text (#101: at most 4 handles per Claude Code Task; #112: a held result does not show as `aborted`). The code confirms both.
