@@ -5,6 +5,7 @@ defmodule Helyx.Tool.BashTest do
 
   alias Helyx.Message.ToolCall
   alias Helyx.Provider.Fake
+  alias Helyx.Test.ToolRunner
 
   @moduletag :tmp_dir
 
@@ -15,7 +16,7 @@ defmodule Helyx.Tool.BashTest do
     %{
       core: core,
       run: fn args ->
-        Fake.run_tool(core, %ToolCall{id: "c", name: "bash", arguments: args}, dir)
+        ToolRunner.run_tool(core, %ToolCall{id: "c", name: "bash", arguments: args}, dir)
       end
     }
   end
