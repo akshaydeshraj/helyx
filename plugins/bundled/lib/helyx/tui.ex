@@ -25,7 +25,9 @@ if Helyx.TUI.Available.available?() do
 
     The TUI subscribes to one session and renders from `Helyx.TUI.ViewModel`,
     a pure fold over the session's events. It holds no session state of its
-    own. Keys:
+    own. It supports version 1 of the client contract (ADR 0006). For a
+    snapshot of another version it shows a message and not the session. Then
+    only Ctrl+C and the end of the session stop it. Keys:
 
       * typing fills the composer (`ExRatatui.Widgets.Textarea`: cursor
         movement, Home/End, Delete, Backspace). It grows to at most 8 lines
@@ -65,6 +67,10 @@ if Helyx.TUI.Available.available?() do
     alias ExRatatui.Widgets.{Block, Paragraph, Textarea}
     alias Helyx.{Message, Session}
     alias Helyx.TUI.ViewModel
+
+    # The one version of the client contract (ADR 0006) that this client
+    # supports. A snapshot of another version shows only a message.
+    @contract_version 1
 
     @dim %Style{modifiers: [:dim]}
     @bold %Style{modifiers: [:bold]}
@@ -198,6 +204,17 @@ if Helyx.TUI.Available.available?() do
           :exit, reason -> exit({:session_down, reason})
         end
 
+      case snapshot do
+        %Session.Snapshot{contract_version: @contract_version} ->
+          session_state(session, monitor, snapshot, opts)
+
+        # ADR 0006, section 5: say so, and do not read or render the session.
+        %Session.Snapshot{} ->
+          {:ok, %{unsupported: true, monitor: monitor}}
+      end
+    end
+
+    defp session_state(session, monitor, snapshot, opts) do
       vm = ViewModel.from_snapshot(snapshot)
       vm = if opts[:resumed], do: ViewModel.notice(vm, "resumed session"), else: vm
 
@@ -220,7 +237,11 @@ if Helyx.TUI.Available.available?() do
        }}
     end
 
+    # An unsupported session shows only its message; its events do nothing.
     @impl true
+    def handle_info({:helyx_event, _event}, %{unsupported: true} = state),
+      do: {:noreply, state}
+
     def handle_info({:helyx_event, event}, state) do
       {:noreply, settle(%{state | vm: ViewModel.apply(state.vm, event)})}
     end
@@ -249,6 +270,8 @@ if Helyx.TUI.Available.available?() do
         do: handle_event(paste, %{state | vm: ViewModel.clear_reason(state.vm)})
 
     def handle_event(%Key{code: "c", modifiers: ["ctrl"]}, state), do: {:stop, state}
+
+    def handle_event(_event, %{unsupported: true} = state), do: {:noreply, state}
 
     def handle_event(%Key{code: "esc", kind: "press"}, state) do
       # Abort waits for the hands to kill every OS process; a Task keeps that
@@ -507,6 +530,15 @@ if Helyx.TUI.Available.available?() do
     defp model_error({:invalid_model_ref, _ref}), do: "invalid model ref: use provider/model"
 
     @impl true
+    def render(%{unsupported: true}, frame) do
+      text =
+        "This client supports only client contract version #{@contract_version}, " <>
+          "and the session uses another version. Update the client. Ctrl+C quits."
+
+      area = %Rect{x: 0, y: 0, width: frame.width, height: frame.height}
+      [{%Paragraph{text: text, wrap: true}, area}]
+    end
+
     def render(state, frame) do
       area = %Rect{x: 0, y: 0, width: frame.width, height: frame.height}
 

@@ -22,6 +22,7 @@ The server owns the state, and the client only renders it (`AGENTS.md`, Project)
 
 ```elixir
 %Helyx.Session.Snapshot{
+  contract_version: pos_integer(), # 1 now; the rules are in ADR 0006, section 5 (#190)
   seq: non_neg_integer(),          # the seq of the last event sent before the snapshot; 0 if none
   messages: [Helyx.Message.t()],   # the transcript, oldest first
   turn: nil | %{
