@@ -1,8 +1,9 @@
 defmodule Helyx.Watchdog do
   @moduledoc false
   # Runs a program in its own process group under a perl watchdog, and
-  # releases the groups. The bash tool and the Claude Code provider share it;
-  # it is not a plugin, and neither plugin calls the other (ADR 0005).
+  # releases the groups. The bash tool and, through `Helyx.HarnessIO`, the
+  # harness providers share it; it is not a plugin, and no plugin calls
+  # another (ADR 0005).
   #
   # `start/4` opens the port, holds the watchdog with the hands, reads the
   # group marker, holds the command group, and only then sends the go-ahead,

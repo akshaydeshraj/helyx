@@ -121,7 +121,7 @@ defmodule Helyx.Provider.Codex do
   def release(handles, :deliver, deadline), do: release(handles, :cancel, deadline)
 
   def release(handles, mode, deadline),
-    do: Helyx.Watchdog.release(handles, mode, deadline, grace_ms: @term_grace_ms)
+    do: HarnessIO.release(handles, mode, deadline, grace_ms: @term_grace_ms)
 
   @impl true
   def stream(model, %Helyx.Context{messages: messages}, opts) do
@@ -428,7 +428,7 @@ defmodule Helyx.Provider.Codex do
   # The input ends, so the program exits by itself once it has written its
   # thread, within the exit wait.
   defp finish(state, terminal) do
-    Helyx.Watchdog.write(state.port, <<0>>)
+    HarnessIO.write(state, <<0>>)
     HarnessIO.arm_exit_wait(state, terminal)
   end
 
@@ -495,7 +495,7 @@ defmodule Helyx.Provider.Codex do
     do: send_line(state, %{id: id, method: @methods[id], params: params})
 
   defp send_line(state, %{} = map), do: send_line(state, JSON.encode!(map))
-  defp send_line(state, line), do: Helyx.Watchdog.write(state.port, [line, "\n"])
+  defp send_line(state, line), do: HarnessIO.write(state, [line, "\n"])
 
   # One entry per message, with its Responses API items: an assistant
   # message gives a message item per text and a `function_call` per tool
