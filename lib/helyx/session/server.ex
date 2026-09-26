@@ -29,7 +29,11 @@ defmodule Helyx.Session.Server do
       # The registered ModelContext and Compaction plugins, or nil for none.
       :model_context,
       :compaction,
+      # The checked tool specs of `Helyx.Tool.specs/1` at session start,
+      # which every provider call uses, and the tool module by name for the
+      # hands.
       tools: [],
+      tool_modules: %{},
       transcript: [],
       seq: 0,
       turn: nil,
@@ -58,9 +62,14 @@ defmodule Helyx.Session.Server do
     # both with it (ADR 0004).
     Process.flag(:trap_exit, true)
 
-    case Hands.start_link(core: state.core, cwd: state.cwd, session: self()) do
+    case Hands.start_link(
+           core: state.core,
+           cwd: state.cwd,
+           session: self(),
+           tools: state.tool_modules
+         ) do
       {:ok, hands} ->
-        state = %{state | hands: hands, tools: Hands.tools(hands)}
+        state = %{state | hands: hands}
 
         # A resumed transcript can end mid-turn, after a crash. Each open tool
         # call gets an `aborted` error result before anyone can subscribe, so

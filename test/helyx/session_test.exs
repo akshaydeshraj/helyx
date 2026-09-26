@@ -1020,6 +1020,131 @@ defmodule Helyx.SessionTest do
     assert stop_reason(collect_until(:agent_end)) == :end_turn
   end
 
+  describe "tool specs at the session boundary (#142)" do
+    # One bad test tool per rule of `Helyx.Tool.specs/1`, and one per
+    # failure class of a spec callback (raise, throw, exit), with the label
+    # the error gives. Each row holds the quoted callback bodies.
+    @empty Macro.escape(%{})
+    @bad_specs [
+      {Helyx.SessionTest.EmptyName, "", "d", @empty, "Helyx.SessionTest.EmptyName"},
+      {Helyx.SessionTest.AtomName, :bad, "d", @empty, "Helyx.SessionTest.AtomName"},
+      {Helyx.SessionTest.BytesName, <<"b", 255>>, "d", @empty, "Helyx.SessionTest.BytesName"},
+      {Helyx.SessionTest.NilDesc, "t", nil, @empty, "t"},
+      {Helyx.SessionTest.BytesDesc, "t", <<"d", 255>>, @empty, "t"},
+      {Helyx.SessionTest.ListParams, "t", "d", [], "t"},
+      {Helyx.SessionTest.AtomKeys, "t", "d", Macro.escape(%{type: "object"}), "t"},
+      {Helyx.SessionTest.TupleParams, "t", "d", Macro.escape(%{"type" => {:object}}), "t"},
+      {Helyx.SessionTest.BytesParams, "t", "d", Macro.escape(%{"type" => <<255>>}), "t"},
+      {Helyx.SessionTest.ThrowingEncoder, "t", "d",
+       Macro.escape(%{"type" => %Helyx.Test.FailingJSON{kind: :throw}}),
+       "Helyx.SessionTest.ThrowingEncoder"},
+      {Helyx.SessionTest.ExitingEncoder, "t", "d",
+       Macro.escape(%{"type" => %Helyx.Test.FailingJSON{kind: :exit}}),
+       "Helyx.SessionTest.ExitingEncoder"},
+      {Helyx.SessionTest.RaisingName, quote(do: raise("boom")), "d", @empty,
+       "Helyx.SessionTest.RaisingName"},
+      {Helyx.SessionTest.ThrowingDescription, "t", quote(do: throw(:boom)), @empty,
+       "Helyx.SessionTest.ThrowingDescription"},
+      {Helyx.SessionTest.ExitingParameters, "t", "d", quote(do: exit(:boom)),
+       "Helyx.SessionTest.ExitingParameters"}
+    ]
+
+    for {module, name, description, parameters, _label} <- @bad_specs do
+      defmodule module do
+        @moduledoc false
+        @behaviour Helyx.Tool
+
+        @impl true
+        def name, do: unquote(name)
+        @impl true
+        def description, do: unquote(description)
+        @impl true
+        def parameters, do: unquote(parameters)
+        @impl true
+        def run(_args, _cwd), do: {:ok, ""}
+      end
+    end
+
+    defmodule Counted do
+      @moduledoc false
+      # Each spec callback tells the test process that it ran.
+      @behaviour Helyx.Tool
+
+      defp ran(callback) do
+        send(:persistent_term.get({__MODULE__, :observer}), {:spec_callback, callback})
+      end
+
+      @impl true
+      def name, do: tap("counted", fn _ -> ran(:name) end)
+      @impl true
+      def description, do: tap("Counts.", fn _ -> ran(:description) end)
+      @impl true
+      def parameters, do: tap(%{"type" => "object"}, fn _ -> ran(:parameters) end)
+      @impl true
+      def run(_args, _cwd), do: {:ok, ""}
+    end
+
+    defp start_core(plugins) do
+      core = :"core_#{System.unique_integer([:positive])}"
+      start_supervised!({Helyx.Core, name: core, plugins: plugins}, id: core)
+      core
+    end
+
+    @tag :tmp_dir
+    test "start rejects each bad or failing spec, names the tool, and makes nothing", %{
+      tmp_dir: dir
+    } do
+      for {module, _name, _description, _parameters, label} <- @bad_specs do
+        core = start_core([Helyx.Test.Provider, Helyx.Test.Tool.Upcase, module])
+
+        assert {:error, {:bad_tool_spec, ^label}} =
+                 Session.start(core, model: "test/ok", sessions_dir: dir)
+
+        assert DynamicSupervisor.count_children(Helyx.Core.session_supervisor(core)).active == 0
+      end
+
+      assert File.ls!(dir) == []
+    end
+
+    @tag :tmp_dir
+    test "resume rejects a bad or failing spec before it reads or repairs the file",
+         %{core: core, tmp_dir: dir} do
+      {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
+      [path] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl"))
+      GenServer.stop(Session.pid(session))
+
+      # A torn last line, which a resume would repair.
+      File.write!(path, ~s({"type":"mess), [:append])
+      before = File.read!(path)
+
+      for {module, _name, _description, _parameters, label} <- @bad_specs do
+        bad = start_core([Helyx.Test.Provider, module])
+        assert {:error, {:bad_tool_spec, ^label}} = Session.resume(bad, sessions_dir: dir)
+        assert DynamicSupervisor.count_children(Helyx.Core.session_supervisor(bad)).active == 0
+      end
+
+      assert File.read!(path) == before
+    end
+
+    test "the spec callbacks run once per session, not per provider call" do
+      :persistent_term.put({Counted, :observer}, self())
+      on_exit(fn -> :persistent_term.erase({Counted, :observer}) end)
+      core = start_core([Helyx.Test.Provider, Counted])
+      {:ok, session} = Session.start(core, model: "test/ok")
+      :ok = Session.subscribe(session)
+
+      for text <- ["one", "two"] do
+        :ok = Session.prompt(session, text)
+        assert stop_reason(collect_until(:agent_end)) == :end_turn
+      end
+
+      for callback <- [:name, :description, :parameters],
+          do: assert_received({:spec_callback, ^callback})
+
+      refute_received {:spec_callback, _}
+    end
+  end
+
   describe "cwd at the session boundary (#140)" do
     @bad_cwds [:repo, ~c"/repo", <<"/repo", 255>>, "/re\0po"]
 

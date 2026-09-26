@@ -706,3 +706,14 @@ defmodule Helyx.Test.Tool.Unavailable do
   @impl true
   def check, do: {:error, "the frob is missing"}
 end
+
+defmodule Helyx.Test.FailingJSON do
+  @moduledoc false
+  # A value whose JSON encoder is plugin code that throws or exits.
+  defstruct [:kind]
+end
+
+defimpl JSON.Encoder, for: Helyx.Test.FailingJSON do
+  def encode(%{kind: :throw}, _encoder), do: throw(:boom)
+  def encode(%{kind: :exit}, _encoder), do: exit(:boom)
+end

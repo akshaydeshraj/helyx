@@ -66,12 +66,12 @@ defmodule Helyx.Session.Hands do
     # holds the handles per Task pid. `unconfirmed` holds the handles that
     # no release confirmed, per tool module. `release_ms` is the release
     # deadline of a delivery or a cancel, a seam for tests.
-    @enforce_keys [:core, :cwd, :session]
+    @enforce_keys [:core, :cwd, :session, :tools]
     defstruct [
       :core,
       :cwd,
       :session,
-      tools: %{},
+      :tools,
       tasks: %{},
       held: %{},
       unconfirmed: %{},
@@ -79,13 +79,13 @@ defmodule Helyx.Session.Hands do
     ]
   end
 
-  @doc "Starts the hands for a session. Takes `core:`, `cwd:`, and `session:`."
+  @doc """
+  Starts the hands for a session. Takes `core:`, `cwd:`, `session:`, and
+  `tools:`, the tool module by name, from the specs the session checked
+  with `Helyx.Tool.specs/1`.
+  """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, struct!(State, opts))
-
-  @doc "Returns the specs of the tools the hands can run."
-  @spec tools(pid()) :: [Helyx.Tool.spec()]
-  def tools(hands), do: GenServer.call(hands, :tools)
 
   @doc "Starts a tool call. The result is sent to the session."
   @spec run(pid(), String.t(), ToolCall.t()) :: :ok
@@ -126,15 +126,12 @@ defmodule Helyx.Session.Hands do
   def cancel_response(message, request),
     do: :gen_server.check_response(message, request)
 
-  # The tool table comes from Core. The session checks it for duplicate
-  # names before it starts the hands, so this match holds.
   @impl true
-  def init(%State{core: core} = state) do
+  def init(%State{tools: tools} = state) do
     Process.flag(:trap_exit, true)
-    {:ok, tools} = Helyx.Tool.by_name(core)
 
     case failed_check(tools) do
-      nil -> {:ok, %{state | tools: tools}}
+      nil -> {:ok, state}
       {name, reason} -> {:stop, {:tool_unavailable, name, reason}}
     end
   end
@@ -151,10 +148,6 @@ defmodule Helyx.Session.Hands do
   end
 
   @impl true
-  def handle_call(:tools, _from, state) do
-    {:reply, Enum.map(Map.values(state.tools), &Helyx.Tool.spec/1), state}
-  end
-
   def handle_call({:run, turn_id, call}, _from, state) do
     state = retry(state)
 
