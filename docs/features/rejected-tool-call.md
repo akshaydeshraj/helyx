@@ -15,7 +15,7 @@ Today, in `Helyx.Provider.OpenAI`, one tool call whose arguments are not valid J
 ```
 
 - The call goes into the assistant message as a normal tool call, in stream order. The provider puts the arguments it could decode, or `%{}` when it could decode none.
-- Core does not run the call. Its tool result is `{:error, "tool call not run: " <> reason}`. It takes the path of a result from the hands, so the events and the order of the calls do not change.
+- Core does not run the call. Its tool result is `{:error, "tool call not run: " <> reason}`. It takes the path of a result from the hands, so the events and the order of the calls do not change. A call of the same turn that is equal to a rejected call (the same id, name, and arguments) is also not run, as for the integer cap. Call ids are unique in a correct stream, so only a provider bug makes such a call.
 - The event is valid only on a local turn. On an external turn it fails the turn with `{:bad_stream_event, event}`, as a harness event on a local turn does today. An external provider runs its own tools and sends its own `{:tool_result, id, {:error, text}}`.
 
 Core, all internal:
@@ -47,7 +47,7 @@ No new resource.
 - Stream: a `{:rejected_tool_call, ...}` event gives `{:rejected_call, ...}` before the stream event; a reason that is not UTF-8 or is over 1,024 bytes fails the turn; the event on an external turn fails the turn.
 - Session: a turn with text, one good call, and one rejected call keeps the text, runs the good call, and gives the rejected call the error result with its reason. The next provider call gets both results.
 - OpenAI: bad JSON in one of two calls gives one `tool_call` and one `rejected_tool_call`; bad JSON in a call with no id fails the turn with no raw JSON in the error.
-- The integer cap tests pass with no change to their assertions.
+- The session tests of the integer cap pass with no change to their assertions. The stream and `Turn` tests of the integer cap change only for the reason that the rejection message now carries.
 
 ## Docs
 
