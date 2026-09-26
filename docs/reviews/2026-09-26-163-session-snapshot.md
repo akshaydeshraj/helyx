@@ -111,3 +111,12 @@ Findings: spec 0 (1 optional); failure path 0 (1 optional). The failure-path age
 | 2 | failure path (optional) | "After a failed turn" names a case that cannot occur today: a failed local turn has no calls that did not start, and a failed external turn closes only started calls. | Kept: the owner decision names it, and the statement stays true. The report names it. |
 
 The review is clean.
+
+## Orchestrator
+
+- Codex adversarial review, round 1: no finding. It ran on `079f2a4`, while the worker still changed the branch for the failed partial reply, so it did not count as the gate.
+- Codex adversarial review, round 2 (on `00472ff`, rebased on `36a8f39`): 1 finding, confirmed. An external turn that ends normally with calls in its last message records `aborted` results through `abort_open_calls/1` with no `tool_execution_start`, so the snapshot showed a closed cell that the live fold did not. Resolved as a wider accepted limit (owner rule: narrow the rule; a call that never started shows a closed `aborted` cell), with a regression test. The item model with session ids (draft ADR, client contract) removes the class.
+- Codex adversarial review, round 3 (on `e289e3b`): no finding.
+- Owner decisions, 2026-09-26: option 1 for `turn.running`; the notice "resumed session" only after `--resume`; notices and the partial reply of an aborted or failed turn are not rebuilt by a snapshot.
+- Accepted: the removal of the `:model` option of `Helyx.TUI.run/1` and of `CodingAgent.fetch_model/1`, the alive check before the TUI subscribes, and open tool cells matched by position.
+- After #163, issue #1 closes (its last open story waited for the snapshot).
