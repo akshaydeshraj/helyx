@@ -62,3 +62,9 @@ Simplify: the altitude and reuse agents asked for the type to be built from the 
 | --- | --- | --- |
 | Spec | 0 | None needed. |
 | Failure path | 0 | 19 probes: `true`, `0`, `""`, case and whitespace variants, `[]`, `{}`, duplicate keys on read; `false`, `true`, `:aborted`, `:error`, a string, and `0` on write. All rejected or raised before the write. |
+
+## Orchestrator
+
+- The fix for a stop reason of JSON `false`: accepted. The defect is in the encode and decode path that this ticket changes, and the new test adds an assertion without a change to an existing one.
+- No id check in `SessionFile.append_harness_session/3`: accepted for this ticket, because the check would change the caller's contract. Filed as #129.
+- Codex adversarial review, round 1: approve, 0 findings.
