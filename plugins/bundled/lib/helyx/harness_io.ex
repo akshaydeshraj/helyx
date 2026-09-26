@@ -1,11 +1,12 @@
 defmodule Helyx.HarnessIO do
   @moduledoc false
-  # What the harness providers share (ADR 0005): the read of a program's
-  # stdout as JSON lines under a line cap, the exit wait after a terminal,
-  # the cut of program error text, the split of the prompt from the
-  # history, and the byte cap of a replay. It is not a plugin. `state` is a
-  # provider's run state with the fields `buffer` (iodata), `size`,
-  # `terminal`, `deadline`, and `done?`.
+  # What the harness providers share (ADR 0005): every call into
+  # `Helyx.Watchdog`, the read of a program's stdout as JSON lines under a
+  # line cap, the exit wait after a terminal, the cut of program error
+  # text, the split of the prompt from the history, and the byte cap of a
+  # replay. It is not a plugin. `state` is a provider's run state with the
+  # fields `port`, `buffer` (iodata), `size`, `terminal`, `deadline`, and
+  # `done?`.
 
   @line_max_bytes 16 * 1024 * 1024
   # The wait for the exit after a terminal while the port is open, so the
@@ -38,6 +39,12 @@ defmodule Helyx.HarnessIO do
   # The `Stream.resource/3` end: the closed port ends the program.
   def stop(%{port: nil}), do: :ok
   def stop(%{port: port}), do: Helyx.Watchdog.close(port)
+
+  # Writes to the program's stdin through the watchdog.
+  def write(%{port: port}, data), do: Helyx.Watchdog.write(port, data)
+
+  # The provider's `release/3`. See `Helyx.Watchdog.Group`.
+  defdelegate release(handles, mode, deadline, opts \\ []), to: Helyx.Watchdog
 
   # The `next` of a run that is done: the terminal once, then the halt.
   def drain(%{terminal: nil} = state), do: {:halt, state}

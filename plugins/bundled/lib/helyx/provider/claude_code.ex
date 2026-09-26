@@ -76,7 +76,7 @@ defmodule Helyx.Provider.ClaudeCode do
   def turn, do: :external
 
   @impl true
-  defdelegate release(handles, mode, deadline), to: Helyx.Watchdog
+  defdelegate release(handles, mode, deadline), to: HarnessIO
 
   @impl true
   def stream(model, %Helyx.Context{messages: messages}, opts) do
@@ -140,7 +140,7 @@ defmodule Helyx.Provider.ClaudeCode do
     do: {[], %{state | done?: true, terminal: {:error, {:claude_code_exit, status}}}}
 
   defp exit_timeout(%{terminal: :lost} = state) do
-    Helyx.Watchdog.close(state.port)
+    HarnessIO.stop(state)
     {[], start(state.run, nil)}
   end
 
