@@ -96,3 +96,9 @@ The fix is Markdown only. Spec: 0 findings. Failure-path: 0 findings.
 - `Helyx.Core.plugins/2` waits up to 5,000 ms, and no row states it.
 - The TUI `:DOWN` clause matches any monitor, not only the monitor of the session.
 - The tool rows accept an exit signal and a missing deadline, but not the other effects of plugin code on the caller that the Provider id row now states.
+
+## Orchestrator
+
+- Codex adversarial review, round 1: no finding. The base did not change after the precommit run of the worker.
+- Accepted: one bad `id/0` fails every lookup (a unique match cannot be proven without it); a non-binary `id/0` is a bad id (boundary rule); the start and resume specs name `model_error()`.
+- Follow-ups: the check of `id/0` and of shared ids at Core boot goes to #165, which already changes the plugin table and removes the 5,000 ms wait of `Helyx.Core.plugins/2`. The TUI `:DOWN` clause is filed separately.
