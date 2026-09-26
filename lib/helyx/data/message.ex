@@ -100,7 +100,8 @@ defmodule Helyx.Message do
 
   # A closed set: a provider normalizes its wire protocol into it, the
   # session guards stream events with it, and the session file encodes it.
-  # A new stop reason is a change of the file format.
+  # A session file reader decodes a stop reason outside the set as nil, so
+  # an older reader reads a new stop reason as no stop reason.
   @stop_reasons [:end_turn, :tool_use, :max_tokens]
 
   # Claude Code's ids are UUIDs; 256 bytes leaves room for another harness.

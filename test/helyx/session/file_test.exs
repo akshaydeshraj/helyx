@@ -99,28 +99,87 @@ defmodule Helyx.Session.FileTest do
     assert resumed.file.leaf == last["id"]
   end
 
-  test "a harness session entry with a missing or bad field is rejected",
+  test "a harness session entry with a bad id removes the label of its provider",
        %{tmp_dir: dir} do
     bad = [
       ~s({"id":"x","type":"harness_session","provider":"claude-code"}),
-      ~s({"id":"x","type":"harness_session","harness_session_id":"a"}),
-      ~s({"id":"x","type":"harness_session","provider":1,"harness_session_id":"a"}),
       ~s({"id":"x","type":"harness_session","provider":"claude-code","harness_session_id":null}),
       # The id is 1 to 256 bytes; 257 bytes, multibyte, and empty are bad.
       ~s({"id":"x","type":"harness_session","provider":"claude-code","harness_session_id":"a#{String.duplicate("é", 128)}"}),
-      ~s({"id":"x","type":"harness_session","provider":"claude-code","harness_session_id":""}),
-      ~s({"type":"harness_session","provider":"claude-code","harness_session_id":"a"})
+      ~s({"id":"x","type":"harness_session","provider":"claude-code","harness_session_id":""})
     ]
 
     for {line, n} <- Enum.with_index(bad) do
       {:ok, file} = Session.File.create(dir, "sess#{n}", "/repo#{n}", "test/ok")
+
+      file
+      |> Session.File.append_harness_session("claude-code", "stale")
+      |> Session.File.append_harness_session("codex", "codex-1")
+
       File.write!(file.path, line <> "\n", [:append])
-      # A later valid entry does not launder a bad one mid-file.
-      Session.File.append_harness_session(file, "claude-code", "good")
 
-      assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo#{n}")
+      # The stale label does not come back; the other provider keeps its own.
+      assert {:ok, %{harness_sessions: sessions}} = Session.File.resume(dir, "/repo#{n}")
+      assert sessions == %{"codex" => {"codex-1", 0}}
     end
+  end
 
+  test "a harness session entry with no usable provider removes every label",
+       %{tmp_dir: dir} do
+    bad = [
+      ~s({"id":"x","type":"harness_session","harness_session_id":"a"}),
+      ~s({"id":"x","type":"harness_session","provider":1,"harness_session_id":"a"})
+    ]
+
+    for {line, n} <- Enum.with_index(bad) do
+      {:ok, file} = Session.File.create(dir, "sess#{n}", "/repo#{n}", "claude-code/opus")
+
+      file
+      |> Session.File.append_harness_session("claude-code", "old")
+      |> Session.File.append_harness_session("codex", "codex-1")
+
+      File.write!(file.path, line <> "\n", [:append])
+
+      Session.File.append_message(file, %Message{
+        role: :assistant,
+        model: "claude-code/opus",
+        content: [%Message.Text{text: "t"}]
+      })
+
+      # The reader cannot know which label the damaged entry replaced, so
+      # the later message of the old provider does not resume the old label.
+      assert {:ok, resumed} = Session.File.resume(dir, "/repo#{n}")
+      assert resumed.harness_sessions == %{}
+      assert [%Message{role: :assistant}] = resumed.messages
+
+      assert Helyx.Session.Transcript.resumable(
+               resumed.messages,
+               resumed.harness_sessions,
+               "claude-code"
+             ) == nil
+    end
+  end
+
+  test "a valid harness session entry after one with no provider sets a label",
+       %{tmp_dir: dir} do
+    {:ok, file} = Session.File.create(dir, "later", "/later", "test/ok")
+    line = ~s({"id":"x","type":"harness_session","harness_session_id":"a"})
+    File.write!(file.path, line <> "\n", [:append])
+    Session.File.append_harness_session(file, "claude-code", "good")
+
+    assert {:ok, %{harness_sessions: %{"claude-code" => {"good", 0}}}} =
+             Session.File.resume(dir, "/later")
+  end
+
+  test "a harness session entry with no entry id is rejected", %{tmp_dir: dir} do
+    {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
+    line = ~s({"type":"harness_session","provider":"claude-code","harness_session_id":"a"})
+    File.write!(file.path, line <> "\n", [:append])
+
+    assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo")
+  end
+
+  test "a harness session id of 256 bytes is kept", %{tmp_dir: dir} do
     # 256 bytes, multibyte, is the longest id kept; 255 bytes is kept too.
     for id <- [String.duplicate("é", 128), "a" <> String.duplicate("é", 127)] do
       cwd = "/long#{byte_size(id)}"
@@ -332,7 +391,7 @@ defmodule Helyx.Session.FileTest do
              for(%Message{usage: usage} <- resumed.messages, do: usage["in"])
   end
 
-  test "a message field with a wrong type is rejected", %{tmp_dir: dir} do
+  test "a tool call id with a wrong type is rejected", %{tmp_dir: dir} do
     entry = ~s({"id":"x","type":"message","role":"tool_result","tool_call_id":42,"content":[]})
     {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
     File.write!(file.path, entry <> "\n", [:append])
@@ -340,20 +399,25 @@ defmodule Helyx.Session.FileTest do
     assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo")
   end
 
-  test "a stop reason outside the format's set is rejected", %{tmp_dir: dir} do
-    entry = ~s({"id":"x","type":"message","role":"assistant","stop_reason":"banana","content":[]})
+  test "a bad usage, model, or stop reason decodes as a missing one", %{tmp_dir: dir} do
     {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
-    File.write!(file.path, entry <> "\n", [:append])
 
-    assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo")
-  end
+    entries = [
+      ~s({"id":"a","type":"message","role":"assistant","stop_reason":"banana","content":[]}),
+      ~s({"id":"b","type":"message","role":"assistant","stop_reason":false,"content":[]}),
+      ~s({"id":"c","type":"message","role":"assistant","model":42,"usage":[1],"content":[]}),
+      ~s({"id":"d","type":"message","role":"assistant","usage":"x","stop_reason":{},"content":[]})
+    ]
 
-  test "a stop reason of false is rejected", %{tmp_dir: dir} do
-    entry = ~s({"id":"x","type":"message","role":"assistant","stop_reason":false,"content":[]})
-    {:ok, file} = Session.File.create(dir, "sess1", "/repo", "test/ok")
-    File.write!(file.path, entry <> "\n", [:append])
+    File.write!(file.path, Enum.map(entries, &(&1 <> "\n")), [:append])
 
-    assert {:error, {:invalid_file, _}} = Session.File.resume(dir, "/repo")
+    assert {:ok, resumed} = Session.File.resume(dir, "/repo")
+    assert length(resumed.messages) == 4
+
+    for message <- resumed.messages do
+      assert %Message{role: :assistant, model: nil, stop_reason: nil, usage: usage} = message
+      assert usage == %{}
+    end
   end
 
   test "a content block with a wrong field type is rejected", %{tmp_dir: dir} do
