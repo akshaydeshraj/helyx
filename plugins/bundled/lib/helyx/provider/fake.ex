@@ -34,26 +34,6 @@ defmodule Helyx.Provider.Fake do
     Agent.update(scripts(core), &Map.put(&1, model, responses))
   end
 
-  @doc """
-  Runs one tool call through a session and returns the tool result message.
-  For tool plugin tests. `cwd` is the session's working directory.
-  """
-  @spec run_tool(Helyx.Core.name(), Helyx.Message.ToolCall.t(), String.t()) :: Helyx.Message.t()
-  def run_tool(core, %Helyx.Message.ToolCall{} = call, cwd) do
-    model = "run_tool_#{System.unique_integer([:positive])}"
-    :ok = script(core, model, [[call], ["Done."]])
-    {:ok, session} = Helyx.Session.start(core, model: "fake/#{model}", cwd: cwd)
-    :ok = Helyx.Session.subscribe(session)
-    :ok = Helyx.Session.prompt(session, "go")
-
-    receive do
-      {:helyx_event, %Helyx.Event{type: :tool_execution_end, data: %{message: message}}} ->
-        message
-    after
-      5_000 -> raise "no tool result for #{inspect(call)}"
-    end
-  end
-
   @impl true
   def stream("echo", %Helyx.Context{messages: messages}, _opts) do
     text =
