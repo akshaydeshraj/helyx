@@ -119,3 +119,9 @@ Clean. The doc numbers match a new measurement (0.18 to 2.67 ms for each start w
 No path broke the invariant. A start that fails in `Server.init/1` was not tested, because no boundary makes `init` fail.
 
 After round 5, the code is the same as the round-4 code. Only Markdown changed after round 5, so no further round is needed.
+
+## Orchestrator
+
+- The worker stopped after round 3 with a design choice: the explicit collection that the ticket named misses a caller that dies during the start, and a Task that closes that gap adds one transcript copy per start. The owner chose `hibernate_after: 0` only. The decision is on #103.
+- Rebased on #131 with no conflict. Precommit passed after the rebase.
+- Codex adversarial review, round 1: no finding.
