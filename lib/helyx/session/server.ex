@@ -8,7 +8,7 @@ defmodule Helyx.Session.Server do
   require Logger
 
   alias Helyx.{Context, Event, Message, ModelRef}
-  alias Helyx.Session.{Hands, Id, Queues, Transcript, Turn}
+  alias Helyx.Session.{Hands, Id, Queues, Snapshot, Transcript, Turn}
 
   defmodule State do
     @moduledoc false
@@ -122,6 +122,18 @@ defmodule Helyx.Session.Server do
   def handle_call({op, text}, _from, %State{} = state)
       when op in [:prompt, :steer, :follow_up] do
     {:reply, :ok, begin_turn(state, [text])}
+  end
+
+  def handle_call({:snapshot}, _from, %State{} = state) do
+    snapshot = %Snapshot{
+      seq: state.seq,
+      messages: state.transcript,
+      turn: snapshot_turn(state.turn),
+      model: ModelRef.to_string(state.model),
+      queue: Queues.counts(state.queues)
+    }
+
+    {:reply, snapshot, state}
   end
 
   def handle_call(:model, _from, %State{model: ref} = state) do
@@ -288,6 +300,20 @@ defmodule Helyx.Session.Server do
   end
 
   def terminate(_reason, _state), do: :ok
+
+  defp snapshot_turn(nil), do: nil
+
+  defp snapshot_turn(%Turn{} = turn) do
+    partial = if turn.partial, do: Turn.assistant_message(turn, [])
+    %{id: turn.id, partial: partial, running: Enum.map(started_calls(turn), & &1.id)}
+  end
+
+  # The calls that have had their `tool_execution_start`: a local turn runs
+  # its calls one at a time, the head first; an external turn started them
+  # all at its message end.
+  defp started_calls(%Turn{turn_mode: :local, calls: [head | _]}), do: [head]
+  defp started_calls(%Turn{turn_mode: :local, calls: []}), do: []
+  defp started_calls(%Turn{turn_mode: :external, calls: calls}), do: calls
 
   # Turn machinery
 

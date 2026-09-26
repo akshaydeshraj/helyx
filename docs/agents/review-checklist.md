@@ -34,6 +34,7 @@ Invariants the review axes check on every diff. Add one when a review or a PR co
 - Every `message_start` gets a `message_end` on the same turn, on success and on failure.
 - Every turn ends with `agent_end`, on success and on failure.
 - Sequence numbers increase by one per event within a session, with no gaps.
+- A rule that a snapshot equals the fold of the events is checked against every path that writes to the transcript: each write either has its event, or the difference is a stated limit. `grep` the callers of the transcript writers (`record_result`, `abort_open_calls`), not only the paths the ticket names. Source: #163, Codex round 2 (an external turn that ends normally records `aborted` results with no start event).
 
 ## Sessions and turns
 

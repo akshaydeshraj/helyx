@@ -170,7 +170,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
     {:ok, session} =
       Session.start(ctx.core, model: model, cwd: ctx.work, sessions_dir: ctx.sessions)
 
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
     session
   end
 
@@ -283,7 +283,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
     GenServer.stop(Session.pid(session))
     {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
     prompt(session, "back")
 
     assert "--resume=#{@sid}" in args(bin, 3)
@@ -354,7 +354,7 @@ defmodule Helyx.Provider.ClaudeCodeTest do
 
     GenServer.stop(Session.pid(session))
     {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
     prompt(session, "last")
 
     refute Enum.any?(args(bin, 5), &String.starts_with?(&1, "--resume"))

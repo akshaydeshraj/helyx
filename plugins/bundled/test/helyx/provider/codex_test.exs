@@ -154,7 +154,7 @@ defmodule Helyx.Provider.CodexTest do
     {:ok, session} =
       Session.start(ctx.core, model: model, cwd: ctx.work, sessions_dir: ctx.sessions)
 
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
     session
   end
 
@@ -317,7 +317,7 @@ defmodule Helyx.Provider.CodexTest do
 
     GenServer.stop(Session.pid(session))
     {:ok, session} = Session.resume(ctx.core, sessions_dir: ctx.sessions, cwd: ctx.work)
-    :ok = Session.subscribe(session)
+    {:ok, _} = Session.subscribe(session)
     prompt(session, "back")
 
     assert %{"params" => %{"threadId" => @tid}} = request(bin, 3, "thread/resume")
