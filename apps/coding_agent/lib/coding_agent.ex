@@ -52,11 +52,12 @@ defmodule CodingAgent do
   @doc """
   Returns one sentence on one line that tells the user about an error from
   `run/1`. It has a clause for every shape of `t:Helyx.Session.File.error/0`,
-  for the model ref and provider errors, and for a tool that is not
-  available. The `:too_large` text is a sentence already and passes
-  unchanged. An error with no clause prints through `inspect/1`. Every result
-  gets one clean pass: a whitespace run becomes one space, and a control
-  character or a byte that is not UTF-8 becomes `?`.
+  for the model ref and provider errors, for a bad working directory
+  (`:invalid_cwd`), and for a tool that is not available. The `:too_large`
+  text is a sentence already and passes unchanged. An error with no clause
+  prints through `inspect/1`. Every result gets one clean pass: a whitespace
+  run becomes one space, and a control character or a byte that is not UTF-8
+  becomes `?`.
   """
   @spec error_text(term()) :: String.t()
   def error_text(reason) do
@@ -98,7 +99,7 @@ defmodule CodingAgent do
   defp sentence({:terminal_init_failed, text}) when is_binary(text),
     do: "the terminal did not start: " <> text
 
-  defp sentence(:invalid_utf8), do: "the directory or the model ref is not UTF-8"
+  defp sentence(:invalid_cwd), do: "the directory is not UTF-8 or holds a NUL byte"
 
   # A POSIX code gets its system text. Any other atom is not one.
   defp sentence(reason) when is_atom(reason) do

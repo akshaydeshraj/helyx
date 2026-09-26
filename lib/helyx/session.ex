@@ -66,19 +66,21 @@ defmodule Helyx.Session do
 
   @doc """
   Starts a session under Core. `:model` is required. `:cwd` defaults to the
-  current directory. With `:sessions_dir` the session is written to disk as
-  it runs, as JSON lines under `<sessions_dir>/<project>/<session>.jsonl`;
-  without it nothing is persisted.
+  current directory. It must be a valid UTF-8 string with no NUL byte;
+  otherwise the result is `{:error, :invalid_cwd}` and nothing is created.
+  With `:sessions_dir` the session is written to disk as it runs, as JSON
+  lines under `<sessions_dir>/<project>/<session>.jsonl`; without it nothing
+  is persisted.
   """
   @spec start(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, term()}
   def start(core \\ Helyx.Core, opts) do
     id = Id.new()
-    cwd = Keyword.get_lazy(opts, :cwd, &File.cwd!/0)
 
     # The file is created only after the plugins resolve, which narrows the
     # window for an orphan file from a failed start. A supervisor failure
     # after this point still leaves one; the feature doc records that hole.
-    with {:ok, {ref, provider, turn_mode}} <- resolve_model(core, Keyword.fetch!(opts, :model)),
+    with {:ok, cwd} <- fetch_cwd(opts),
+         {:ok, {ref, provider, turn_mode}} <- resolve_model(core, Keyword.fetch!(opts, :model)),
          {:ok, _tools} <- Helyx.Tool.by_name(core),
          {:ok, file} <- create_file(opts[:sessions_dir], id, cwd, ref) do
       start_child(%State{
@@ -102,14 +104,15 @@ defmodule Helyx.Session do
   Resumes the most recent session for the working directory from
   `:sessions_dir`, restoring the transcript and the current model. Every
   tool call without a result gets an `aborted` error result, so the next
-  provider call sees complete call and result pairs.
+  provider call sees complete call and result pairs. `:cwd` is checked as in
+  `start/2`, before the sessions directory is read.
   """
   @spec resume(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, term()}
   def resume(core \\ Helyx.Core, opts) do
     dir = Keyword.fetch!(opts, :sessions_dir)
-    cwd = Keyword.get_lazy(opts, :cwd, &File.cwd!/0)
 
-    with {:ok, resumed} <- Helyx.Session.File.resume(dir, cwd),
+    with {:ok, cwd} <- fetch_cwd(opts),
+         {:ok, resumed} <- Helyx.Session.File.resume(dir, cwd),
          {:ok, {ref, provider, turn_mode}} <- resolve_model(core, resumed.model),
          {:ok, _tools} <- Helyx.Tool.by_name(core) do
       start_child(%State{
@@ -125,6 +128,18 @@ defmodule Helyx.Session do
       })
     end
   end
+
+  # The boundary for `cwd`. It goes into the session file as JSON, into the
+  # system prompt, and to `Port.open`, which cuts a string at a NUL byte.
+  defp fetch_cwd(opts), do: opts |> Keyword.get_lazy(:cwd, &File.cwd!/0) |> check_cwd()
+
+  defp check_cwd(cwd) when is_binary(cwd) do
+    if String.valid?(cwd) and not String.contains?(cwd, <<0>>),
+      do: {:ok, cwd},
+      else: {:error, :invalid_cwd}
+  end
+
+  defp check_cwd(_cwd), do: {:error, :invalid_cwd}
 
   # A model ref string to its parsed ref, its provider plugin, and the turn
   # of that plugin, for start, resume, and a switch alike. It runs in the

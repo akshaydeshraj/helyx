@@ -94,7 +94,8 @@ defmodule CodingAgentTest do
     assert CodingAgent.error_text({:too_large, "a\nb\e[2J"}) == "a b?[2J"
     assert CodingAgent.error_text({:invalid_file, <<"a", 0xFF, 0, "b">>}) =~ "damaged: a??b"
     refute CodingAgent.error_text({:repair_failed, %{__struct__: MapSet, map: 1}}) =~ "\n"
-    assert CodingAgent.error_text({:create_failed, :invalid_utf8}) =~ "file: the directory or"
+    assert CodingAgent.error_text(:invalid_cwd) =~ "the directory is not UTF-8"
+    assert CodingAgent.error_text({:create_failed, :eacces}) =~ "session file: permission denied"
     assert CodingAgent.error_text({:terminal_init_failed, "no tty"}) =~ "did not start: no tty"
     assert CodingAgent.error_text({:some, "other"}) == ~s({:some, "other"})
   end
