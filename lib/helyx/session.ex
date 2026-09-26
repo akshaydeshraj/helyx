@@ -62,6 +62,14 @@ defmodule Helyx.Session do
 
   @type t :: %__MODULE__{id: String.t(), core: Helyx.Core.name()}
 
+  @typedoc "An error that stops a model ref from resolving to a provider plugin."
+  @type model_error ::
+          {:invalid_model_ref, String.t()}
+          | {:unknown_provider, String.t()}
+          | {:ambiguous_provider, String.t()}
+          | {:bad_provider_turn, String.t()}
+          | {:bad_provider_id, module()}
+
   # Public API
 
   @doc """
@@ -70,12 +78,13 @@ defmodule Helyx.Session do
   otherwise the result is `{:error, :invalid_cwd}` and nothing is created.
   The tool specs (`Helyx.Tool.specs/1`) and the optional `check/0` of each
   tool (`Helyx.Tool.check_available/1`) run next, before any file or
-  process is created.
+  process is created. The model ref resolves as in `set_model/2`, with the
+  same errors.
   With `:sessions_dir` the session is written to disk as it runs, as JSON
   lines under `<sessions_dir>/<project>/<session>.jsonl`; without it nothing
   is persisted.
   """
-  @spec start(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, term()}
+  @spec start(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def start(core \\ Helyx.Core, opts) do
     id = Id.new()
 
@@ -113,9 +122,10 @@ defmodule Helyx.Session do
   tool call without a result gets an `aborted` error result, so the next
   provider call sees complete call and result pairs. `:cwd` is checked as in
   `start/2`, and the tool specs and the tool checks as in `start/2`, all
-  before the sessions directory is read.
+  before the sessions directory is read. The model ref of the file resolves
+  as in `set_model/2`, with the same errors.
   """
-  @spec resume(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, term()}
+  @spec resume(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, model_error() | term()}
   def resume(core \\ Helyx.Core, opts) do
     dir = Keyword.fetch!(opts, :sessions_dir)
 
@@ -252,20 +262,14 @@ defmodule Helyx.Session do
 
   @doc """
   Switches the session's model. The ref is parsed and its provider resolved
-  like the `:model` of `start/2`; a bad ref, an unknown provider, a
-  provider id that two plugins share, or a provider with a bad `turn/0` is
-  an error and the model stays as it was. The switch is written to the session
+  like the `:model` of `start/2`. Each error is a `t:model_error/0`, and the
+  model stays as it was. The switch is written to the session
   file as a `model_change` entry, so a resume restores it, and goes out as a
   `:model_change` event. A running turn keeps the model it started with; the
   next turn uses the new one.
   """
   @spec set_model(t(), String.t()) ::
-          :ok
-          | {:error,
-             {:invalid_model_ref, String.t()}
-             | {:unknown_provider, String.t()}
-             | {:ambiguous_provider, String.t()}
-             | {:bad_provider_turn, String.t()}}
+          :ok | {:error, model_error()}
   def set_model(%__MODULE__{id: id, core: core}, string) when is_binary(string) do
     with {:ok, {ref, provider, turn_mode}} <- resolve_model(core, string) do
       GenServer.call(Server.via(core, id), {:set_model, ref, provider, turn_mode})
