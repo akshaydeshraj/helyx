@@ -104,7 +104,7 @@ Runs on 2026-09-26 with `codex-cli 0.157.1` (the program updated itself from 0.1
 
 ### Interrupt (verified)
 
-- `turn/interrupt {threadId, turnId}` during `sleep 30`: the result `{}` came after 19 ms, then `thread/status/changed` `idle` and `turn/completed` with `"status":"interrupted"`. The running `commandExecution` got no `item/completed`. The server sends the result only after the turn has stopped (source).
+- `turn/interrupt {threadId, turnId}` during `sleep 30`: the result `{}` came after 19 ms, then `thread/status/changed` `idle` and `turn/completed` with `"status":"interrupted"`. The running `commandExecution` got no `item/completed` before the script ended (2026-09-27: the command keeps running, see "Verify before implementation"). The server sends the result only after the turn has stopped (source).
 - The next `turn/start` on the same process and thread worked 0.5 s later.
 
 ### Approvals
@@ -147,3 +147,57 @@ Runs on 2026-09-26 with `codex-cli 0.157.1` (the program updated itself from 0.1
 - **End of file on stdin during a running command:** the program exited with status 0 after about 0.07 s, and the command was gone 0.5 s later (two runs). The turn is saved as `interrupted`.
 - In stdio mode the program installs no graceful handler for `SIGTERM` and `SIGHUP` (source: `app-server/src/lib.rs`, `graceful_signal_restart_enabled`). This handler is the graceful restart of the server, not the cleanup of commands.
 - **`SIGTERM` to the program's group during a running command** (the wrapper and the binary, as the watchdog sends it): the program exited with status 0 after 0.04 s, and the command was gone 0.5 s later (two runs). So a TERM still ends the commands on 0.157.1, as on 0.155.0. The cause is not confirmed in the source; the likely path is `kill_on_drop` when the runtime ends.
+
+## Verify before implementation (2026-09-27)
+
+Runs on 2026-09-27 with `codex-cli 0.157.1`, the model `gpt-6-luna` with `model_reasoning_effort` `low`, in empty temporary directories, for the list "Verify before implementation" in `docs/features/long-lived-harness.md`. A Python script drove `codex app-server` over stdio, with `initialize` with `experimentalApi`, `approvalPolicy` `never`, and `sandbox` `danger-full-access` unless noted. Each program ran in a new session (its own process group). The user's configuration was loaded, and its hooks ran: a `stop` hook took 0.05 to 1.1 s between the last `item/completed` and `turn/completed`, with `hook/started` and `hook/completed` notifications. Times are the times at which the script read the line.
+
+### A `turn/steer` that crosses `turn/completed` (verified, 3 runs)
+
+- The script sent `turn/steer` when it read `hook/completed` of the `stop` hook, before it read `turn/completed`.
+- The answer: `{"error":{"code":-32600,"message":"no active turn to steer"},"id":...}`. It came 1 to 2 ms after the request and **before** the `turn/completed` notification of the turn.
+- No `turn/started` in the next 8 s. No new turn.
+
+### A steer after the final answer and before `turn/completed` (verified, 5 runs)
+
+- Sent at `item/completed` of the final `agentMessage` (1 run), at `thread/tokenUsage/updated` after it (2 runs), or at `hook/started` of the `stop` hook (2 runs).
+- Each was accepted with the running turn's id. The turn took one more model call: a `userMessage` item with the steer, a second `agentMessage` that obeyed it, and one `turn/completed` with `completed`, 2.8 to 3.2 s later.
+
+### `turn/steer` during the final answer (verified, 2 runs)
+
+- Sent at the first `item/agentMessage/delta` of a poem. Accepted. The items of the turn: `userMessage`, `agentMessage`, `userMessage` (the steer), `agentMessage`. The second answer obeyed the steer. So the turn took one more model call, and the first answer stayed in the turn as its own item.
+
+### The `userMessage` item of a steer (verified, 3 runs)
+
+- The steer's `userMessage` item carries the value of `clientUserMessageId` in a field named **`clientId`**: `{"type":"userMessage","id":"01a0...","clientId":"<clientUserMessageId>","content":[...]}`. The item has no field `clientUserMessageId`. The first user message of a turn from `turn/start` has `"clientId":null`.
+
+### `callId` of `item/tool/call` (verified, 5 calls in 3 runs)
+
+- `callId` equalled the `id` of the `dynamicToolCall` item, for example `exec-2aeb2f3a-9792-4b97-ac71-9ba1aef7ca69`.
+
+### An accepted steer, then `turn/interrupt` (verified, 2 runs)
+
+- `turn/steer` during a foreground `sleep 15`, accepted; `turn/interrupt` 0.5 s later. Result `{}`, then `turn/completed` with `interrupted`.
+- The steer was dropped: no `userMessage` item for it, no `turn/started` in the next 10 s, and the file that the steer asked for was not made. `thread/read` with `includeTurns` showed only the first user message in the interrupted turn.
+
+### `turn/interrupt` does not end a running command (verified, 7 runs)
+
+- During a foreground `sleep 17.3` (4 runs, one with `sandbox` `workspace-write`) or `sleep 15` (3 runs, with an accepted steer before the interrupt): the result `{}` and `turn/completed` with `interrupted` came as before.
+- **The command kept running.** `ps` found the `sleep` in its own process group 1 s after the interrupt, in each run.
+- When the command ended, 12.9 to 15.7 s after the interrupt, the program sent `item/completed` of that `commandExecution` with `"status":"completed"`, an item of the interrupted turn. In 2 runs it came during the next turn.
+- This corrects the notes in "Interrupt" above: the runs there did not wait for the end of the command.
+
+### An open `item/tool/call` at `turn/interrupt` (verified, 2 + 3 runs)
+
+- **Not answered** (2 runs): the script held the request and sent `turn/interrupt` 2 s later. The program sent **no** `serverRequest/resolved`. The result `{}` and `turn/completed` with `interrupted` came, and then, 2 ms after `turn/completed`, `item/completed` of the `dynamicToolCall` with `"status":"failed"`. A late answer to the request 3 s later gave no error and no notification. The next turn ran as usual.
+- **Answered first, as the design's abort orders it** (3 runs): the script answered the request with `"success":false` and the text `aborted`, then sent `turn/interrupt` at once. `item/completed` of the `dynamicToolCall` with `"status":"failed"` came before the interrupt result and `turn/completed`. No item of the turn came after `turn/completed`.
+
+### The tool set after a resume with a different tool set (verified, 2 runs)
+
+- Process 1: `thread/start` with `dynamicTools` `[lookup_code]`, one turn that called it, end of file on stdin.
+- Process 2: `thread/resume` with `"dynamicTools":[fetch_color]`. The server accepted the request with no error and ignored the field. A turn that asked for `fetch_color` got the answer `NO_FETCH_COLOR` and no tool call. A turn that asked for `lookup_code` called it.
+- So the thread keeps the tool set of `thread/start`. A resume does not change it and does not report the unused field.
+
+### Not run
+
+- The stop path end to end with the watchdog stdin cap: the cap is ticket #196, which is open. `SIGTERM` to the group is in "Processes on 0.157.1" above.
