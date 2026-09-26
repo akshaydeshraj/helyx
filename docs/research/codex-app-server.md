@@ -145,4 +145,5 @@ Runs on 2026-09-26 with `codex-cli 0.157.1` (the program updated itself from 0.1
 
 - Every command, and the helpers `node_repl` and `codex-code-mode-host`, still run in a process group of their own. The program starts a shell command with `setsid()`, or `setpgid(0,0)` when that fails, and with `kill_on_drop(true)` (source: `utils/pty/src/process_group.rs`, `core/src/spawn.rs`).
 - **End of file on stdin during a running command:** the program exited with status 0 after about 0.07 s, and the command was gone 0.5 s later (two runs). The turn is saved as `interrupted`.
-- In stdio mode the program installs no graceful handler for `SIGTERM` and `SIGHUP` (source: `app-server/src/lib.rs`, `graceful_signal_restart_enabled`).
+- In stdio mode the program installs no graceful handler for `SIGTERM` and `SIGHUP` (source: `app-server/src/lib.rs`, `graceful_signal_restart_enabled`). This handler is the graceful restart of the server, not the cleanup of commands.
+- **`SIGTERM` to the program's group during a running command** (the wrapper and the binary, as the watchdog sends it): the program exited with status 0 after 0.04 s, and the command was gone 0.5 s later (two runs). So a TERM still ends the commands on 0.157.1, as on 0.155.0. The cause is not confirmed in the source; the likely path is `kill_on_drop` when the runtime ends.
