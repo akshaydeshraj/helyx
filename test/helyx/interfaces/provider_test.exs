@@ -2,7 +2,7 @@ defmodule Helyx.ProviderTest do
   use ExUnit.Case, async: true
 
   # `Helyx.Provider.turn/1` reads `function_exported?/3`, which needs the
-  # module loaded. In a session, `Helyx.Provider.find/2` loads it first.
+  # module loaded. In a session, Core start loads it, because it calls `id/0`.
   setup do
     Code.ensure_loaded!(Helyx.Test.Provider)
     Code.ensure_loaded!(Helyx.Test.Harness)

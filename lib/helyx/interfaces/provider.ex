@@ -3,8 +3,10 @@ defmodule Helyx.Provider do
   Produces assistant messages for a session.
 
   A provider plugin implements this behaviour. `id/0` is the prefix in a model
-  ref such as `fake/echo`. `stream/3` returns an enumerable of stream events
-  for one provider call:
+  ref such as `fake/echo`. Core calls `id/0` once, at start: an `id/0` that
+  raises, throws, exits, or returns a value that is not a binary, or an id
+  that two providers share, stops Core from starting. `stream/3` returns an
+  enumerable of stream events for one provider call:
 
     * `{:text_delta, binary}`: a delta of assistant text
     * `{:thinking_delta, binary}`: a delta of thinking text
@@ -95,44 +97,14 @@ defmodule Helyx.Provider do
           | {:harness_session, String.t(), non_neg_integer()}
 
   @doc """
-  Finds the provider plugin whose id matches a model ref prefix. Two matches
-  are an error. It calls `id/0` of every provider plugin, because it must know
-  every id to know that a match is unique. An `id/0` that raises, throws,
-  exits, or returns a value that is not a binary fails the find with
-  `{:bad_provider_id, module}`, whatever the ref names. `id/0` is plugin
-  code, so the session calls this function in the caller of a start, a
-  resume, or a switch.
+  Finds the provider plugin whose id matches a model ref prefix. It reads the
+  ids that Core checked at start and calls no plugin code.
   """
   @spec find(Helyx.Core.name(), String.t()) ::
-          {:ok, module()}
-          | {:error,
-             {:unknown_provider, String.t()}
-             | {:ambiguous_provider, String.t()}
-             | {:bad_provider_id, module()}}
+          {:ok, module()} | {:error, {:unknown_provider, String.t()}}
   def find(core, id) do
-    with {:ok, ids} <- plugin_ids(Helyx.Core.plugins(core, __MODULE__)) do
-      match(for({plugin, ^id} <- ids, do: plugin), id)
-    end
-  end
-
-  defp match([plugin], _id), do: {:ok, plugin}
-  defp match([], id), do: {:error, {:unknown_provider, id}}
-  defp match(_plugins, id), do: {:error, {:ambiguous_provider, id}}
-
-  defp plugin_ids(plugins) do
-    Enum.reduce_while(plugins, {:ok, []}, fn plugin, {:ok, acc} ->
-      case checked_id(plugin) do
-        {:ok, id} -> {:cont, {:ok, [{plugin, id} | acc]}}
-        :error -> {:halt, {:error, {:bad_provider_id, plugin}}}
-      end
-    end)
-  end
-
-  defp checked_id(plugin) do
-    id = plugin.id()
-    if is_binary(id), do: {:ok, id}, else: :error
-  catch
-    _class, _reason -> :error
+    with :error <- Map.fetch(Helyx.Core.provider_ids(core), id),
+         do: {:error, {:unknown_provider, id}}
   end
 
   @doc """

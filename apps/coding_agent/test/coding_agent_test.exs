@@ -113,7 +113,6 @@ defmodule CodingAgentTest do
     assert CodingAgent.error_text({:tool_unavailable, "bash", "perl not found"}) ==
              "the bash tool is not available: perl not found"
 
-    assert CodingAgent.error_text({:ambiguous_provider, "x"}) =~ ~s(two providers have the id "x")
     assert CodingAgent.error_text({:too_large, "a\nb\e[2J"}) == "a b?[2J"
     assert CodingAgent.error_text({:invalid_file, <<"a", 0xFF, 0, "b">>}) =~ "damaged: a??b"
     refute CodingAgent.error_text({:repair_failed, %{__struct__: MapSet, map: 1}}) =~ "\n"
@@ -124,10 +123,21 @@ defmodule CodingAgentTest do
     assert CodingAgent.error_text({:bad_provider_turn, "x"}) ==
              ~s(the provider "x" has a bad turn/0)
 
-    assert CodingAgent.error_text({:bad_provider_id, Acme.Provider.X}) ==
-             "the provider plugin Acme.Provider.X has a bad id/0"
-
     assert CodingAgent.error_text({:some, "other"}) == ~s({:some, "other"})
+
+    # A Core start error names the plugins, and inspect/1 caps a long id (#169).
+    assert CodingAgent.error_text({:invalid_provider_id, Acme.Provider.X}) ==
+             "{:invalid_provider_id, Acme.Provider.X}"
+
+    # The worst case is a format character that inspect/1 escapes in 6 bytes.
+    for char <- ["\u{1D11E}", "\u{202E}"] do
+      text =
+        CodingAgent.error_text({:duplicate_provider_id, String.duplicate(char, 10_000), [A, B]})
+
+      assert text =~ "[A, B]"
+      assert byte_size(text) <= 24_700
+      refute text =~ ~r/[\x00-\x1F\x7F]/
+    end
   end
 
   defp collect_until(type, acc \\ []) do

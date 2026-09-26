@@ -41,6 +41,35 @@ defmodule Helyx.Core.Plugins do
     end
   end
 
+  @doc """
+  Maps each provider id to its plugin. It calls `id/0` of each provider once,
+  at Core start. An `id/0` that raises, throws, exits, or returns a value
+  that is not a binary is `{:invalid_provider_id, plugin}`. Two providers
+  with one id are `{:duplicate_provider_id, id, [first, second]}`.
+  """
+  @spec provider_ids([module()]) :: {:ok, %{String.t() => module()}} | {:error, term()}
+  def provider_ids(providers) do
+    Enum.reduce_while(providers, {:ok, %{}}, fn plugin, {:ok, ids} ->
+      case checked_id(plugin) do
+        {:ok, id} when is_map_key(ids, id) ->
+          {:halt, {:error, {:duplicate_provider_id, id, [ids[id], plugin]}}}
+
+        {:ok, id} ->
+          {:cont, {:ok, Map.put(ids, id, plugin)}}
+
+        :error ->
+          {:halt, {:error, {:invalid_provider_id, plugin}}}
+      end
+    end)
+  end
+
+  defp checked_id(plugin) do
+    id = plugin.id()
+    if is_binary(id), do: {:ok, id}, else: :error
+  catch
+    _class, _reason -> :error
+  end
+
   # Returns the error for an interface and its plugins, or nil when they fit.
   defp check_mode(interface, plugins) do
     case {Helyx.Interface.declaration(interface), plugins} do

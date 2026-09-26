@@ -58,3 +58,4 @@ One row per ticket that `/orchestrate` merged. An escape is a confirmed Codex fi
 | 2026-09-26 | #165 | r1: 0 simplify, 2 standards judgement (kept), 0 spec, 0 failure-path | r1: 0 | none needed |
 | 2026-09-26 | #111 | r1: 1 simplify (skipped), 1 standards (fixed), 2 spec (fixed), 1 failure-path (doc fix); r2 (reduced): 1 spec nit, 1 failure-path (doc fix) | r1: 0 | none needed |
 | 2026-09-26 | #164 | r1: 5 simplify, 4 standards judgement and 1 doc wording, 2 spec, 0 failure-path; r2 (reduced): 3 spec, 0; r3 (reduced): 1 spec (1 older, out of scope), 0; r4 (reduced): 0, 0 | r1: 0 | none needed |
+| 2026-09-26 | #169 | simplify: 5 (3 fixed); r1: 1 standards rule and 5 judgement (2 fixed), 3 spec (fixed), 0 failure-path; r2 (reduced): 0 spec, 2 failure-path (doc byte counts, fixed); r3 (reduced): 0, 0 | r1: 0 | none needed |

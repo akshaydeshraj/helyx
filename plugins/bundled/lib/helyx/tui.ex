@@ -480,16 +480,9 @@ if Helyx.TUI.Available.available?() do
       end
     end
 
-    # A notice shows at most the provider id, which the ref bounds cap, or
-    # the module of a bad `id/0`.
+    # A notice shows at most the provider id, which the ref bounds cap.
     defp model_error({:unknown_provider, id}), do: "unknown provider: #{id}"
-    defp model_error({:ambiguous_provider, id}), do: "two providers have the id #{id}"
     defp model_error({:bad_provider_turn, id}), do: "provider #{id} has a bad turn/0"
-
-    # The bound of the module text: the "Provider id" row of the bounds table
-    # in docs/features/coding-agent.md.
-    defp model_error({:bad_provider_id, module}),
-      do: "provider plugin #{inspect(module)} has a bad id/0"
 
     defp model_error({:invalid_model_ref, _ref}), do: "invalid model ref: use provider/model"
 
