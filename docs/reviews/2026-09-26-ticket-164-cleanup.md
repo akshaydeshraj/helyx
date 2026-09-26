@@ -61,3 +61,9 @@ Failure path: 0 findings. The strict test passed 20 times with seeds 1 to 20, an
 The fix changed doc text in `hands.ex` only.
 
 Spec: 0 findings. Failure path: 0 findings.
+
+## Orchestrator
+
+- The rebase on #111 had one mechanical conflict in `docs/features/coding-agent.md`: the Codex line from #111 and the stream shutdown line from this branch are both kept. Precommit ran again after the rebase and passed.
+- Codex adversarial review, round 1: no finding.
+- Noted, not in scope: one failure of the #103 supervisor test (`test/helyx/session_test.exs:1007`) in round 1 of the worker. It did not recur. The drain-event sentence in `server.ex` and `coding-agent.md` is older than this ticket.
