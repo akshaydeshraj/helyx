@@ -247,17 +247,6 @@ defmodule Helyx.Session.HandsTest do
     assert upcase(hands, "c2") == {:ok, "HI"}
   end
 
-  test "a tool whose check fails stops the session with a clear error" do
-    core = :"core_#{System.unique_integer([:positive])}"
-
-    start_supervised!(
-      {Helyx.Core, name: core, plugins: [Helyx.Test.Provider, Helyx.Test.Tool.Unavailable]}
-    )
-
-    assert {:error, {:tool_unavailable, "unavailable", "the frob is missing"}} =
-             Helyx.Session.start(core, model: "test/ok")
-  end
-
   # Polls until `n` running Tasks hold a handle, so cancel finds them held.
   defp await_held(hands, n, tries \\ 200) do
     cond do

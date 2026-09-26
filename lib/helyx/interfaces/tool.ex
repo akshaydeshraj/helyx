@@ -9,10 +9,11 @@ defmodule Helyx.Tool do
   model sees. `{:error, text}` marks the result as an error; a tool that
   raises is reported the same way.
 
-  The optional `check/0` runs when the hands start. A tool that needs
-  something from the system, an executable for example, reports it missing
-  there. Then the session fails to start with a clear error, and no call
-  fails later for that reason.
+  The optional `check/0` runs once per session start or resume, in the
+  caller, before any file or process is created (`check_available/1`). A
+  tool that needs something from the system, an executable for example,
+  reports it missing there. Then the session fails to start with a clear
+  error, and no call fails later for that reason.
 
   A tool that creates an OS resource, a process group for example, holds it
   with `hold/1` before the external work starts, and implements the
@@ -30,6 +31,10 @@ defmodule Helyx.Tool do
   """
 
   use Helyx.Interface, mode: :multi
+
+  # The fixed reasons of `check_available/1`.
+  @bad_check_value "check/0 returned a bad value"
+  @failed_check "check/0 raised, threw, or exited"
 
   @type spec :: %{name: String.t(), description: String.t(), parameters: map()}
 
@@ -98,6 +103,39 @@ defmodule Helyx.Tool do
   catch
     _class, _reason -> {:error, {:bad_tool_spec, inspect(tool)}}
   end
+
+  @doc """
+  Runs the optional `check/0` of each tool that `specs/1` returned, in that
+  order, and stops at the first failure. `{:error, reason}` with a reason
+  of valid UTF-8 gives `{:error, {:tool_unavailable, name, reason}}`, where
+  `name` is the checked spec name. Any other value but `:ok`, and a
+  `check/0` that raises, throws, or exits, give the same error with a fixed
+  reason, so a plugin failure never reaches the caller.
+  """
+  @spec check_available([{module(), spec()}]) ::
+          :ok | {:error, {:tool_unavailable, String.t(), String.t()}}
+  def check_available(tools) do
+    Enum.find_value(tools, :ok, fn {tool, spec} ->
+      case run_check(tool) do
+        :ok -> nil
+        {:error, reason} -> {:error, {:tool_unavailable, spec.name, reason}}
+      end
+    end)
+  end
+
+  defp run_check(tool) do
+    if function_exported?(tool, :check, 0), do: checked_result(tool.check()), else: :ok
+  catch
+    _class, _reason -> {:error, @failed_check}
+  end
+
+  defp checked_result(:ok), do: :ok
+
+  defp checked_result({:error, reason} = error) do
+    if text?(reason), do: error, else: {:error, @bad_check_value}
+  end
+
+  defp checked_result(_other), do: {:error, @bad_check_value}
 
   defp check_unique(tools) do
     names = Enum.map(tools, fn {_tool, spec} -> spec.name end)

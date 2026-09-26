@@ -1190,6 +1190,88 @@ defmodule Helyx.SessionTest do
     end
   end
 
+  describe "tool checks at the session boundary (#150)" do
+    # One test tool per failing `check/0`: the quoted body, and the reason
+    # the error gives.
+    @bad_checks [
+      {Helyx.SessionTest.CheckRaises, quote(do: raise("boom")),
+       "check/0 raised, threw, or exited"},
+      {Helyx.SessionTest.CheckThrows, quote(do: throw(:boom)),
+       "check/0 raised, threw, or exited"},
+      {Helyx.SessionTest.CheckExits, quote(do: exit(:boom)), "check/0 raised, threw, or exited"},
+      {Helyx.SessionTest.CheckBadValue, :yes, "check/0 returned a bad value"},
+      {Helyx.SessionTest.CheckAtomReason, {:error, :enoent}, "check/0 returned a bad value"},
+      {Helyx.SessionTest.CheckBytesReason, {:error, <<"x", 255>>}, "check/0 returned a bad value"}
+    ]
+
+    for {module, body, _reason} <- @bad_checks do
+      defmodule module do
+        @moduledoc false
+        @behaviour Helyx.Tool
+
+        @impl true
+        def name, do: "checked"
+        @impl true
+        def description, do: "d"
+        @impl true
+        def parameters, do: %{}
+        @impl true
+        def run(_args, _cwd), do: {:ok, ""}
+        @impl true
+        def check, do: unquote(body)
+      end
+    end
+
+    @cases [
+      {Helyx.Test.Tool.Unavailable, "unavailable", "the frob is missing"}
+      | for({module, _body, reason} <- @bad_checks, do: {module, "checked", reason})
+    ]
+
+    @tag :tmp_dir
+    test "start rejects a failed check, names the tool, and makes nothing", %{tmp_dir: dir} do
+      for {module, name, reason} <- @cases do
+        core = start_core([Helyx.Test.Provider, Helyx.Test.Tool.Upcase, module])
+
+        assert {:error, {:tool_unavailable, ^name, ^reason}} =
+                 Session.start(core, model: "test/ok", sessions_dir: dir)
+
+        assert DynamicSupervisor.count_children(Helyx.Core.session_supervisor(core)).active == 0
+      end
+
+      assert File.ls!(dir) == []
+    end
+
+    test "the check runs before the model ref resolves" do
+      core = start_core([Helyx.Test.Provider, Helyx.Test.Tool.Unavailable])
+
+      assert {:error, {:tool_unavailable, "unavailable", _reason}} =
+               Session.start(core, model: "nope/x")
+    end
+
+    @tag :tmp_dir
+    test "resume rejects a failed check before it reads or repairs the file",
+         %{core: core, tmp_dir: dir} do
+      {:ok, session} = Session.start(core, model: "test/ok", sessions_dir: dir)
+      [path] = Path.wildcard(Path.join(dir, "**/#{session.id}.jsonl"))
+      GenServer.stop(Session.pid(session))
+
+      # A torn last line, which a resume would repair.
+      File.write!(path, ~s({"type":"mess), [:append])
+      before = File.read!(path)
+
+      for {module, name, reason} <- @cases do
+        bad = start_core([Helyx.Test.Provider, module])
+
+        assert {:error, {:tool_unavailable, ^name, ^reason}} =
+                 Session.resume(bad, sessions_dir: dir)
+
+        assert DynamicSupervisor.count_children(Helyx.Core.session_supervisor(bad)).active == 0
+      end
+
+      assert File.read!(path) == before
+    end
+  end
+
   describe "cwd at the session boundary (#140)" do
     @bad_cwds [:repo, ~c"/repo", <<"/repo", 255>>, "/re\0po"]
 

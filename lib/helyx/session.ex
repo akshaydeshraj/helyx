@@ -68,6 +68,9 @@ defmodule Helyx.Session do
   Starts a session under Core. `:model` is required. `:cwd` defaults to the
   current directory. It must be a valid UTF-8 string with no NUL byte;
   otherwise the result is `{:error, :invalid_cwd}` and nothing is created.
+  The tool specs (`Helyx.Tool.specs/1`) and the optional `check/0` of each
+  tool (`Helyx.Tool.check_available/1`) run next, before any file or
+  process is created.
   With `:sessions_dir` the session is written to disk as it runs, as JSON
   lines under `<sessions_dir>/<project>/<session>.jsonl`; without it nothing
   is persisted.
@@ -81,6 +84,7 @@ defmodule Helyx.Session do
     # after this point still leaves one; the feature doc records that hole.
     with {:ok, cwd} <- fetch_cwd(opts),
          {:ok, tools} <- Helyx.Tool.specs(core),
+         :ok <- Helyx.Tool.check_available(tools),
          {:ok, {ref, provider, turn_mode}} <- resolve_model(core, Keyword.fetch!(opts, :model)),
          {:ok, file} <- create_file(opts[:sessions_dir], id, cwd, ref) do
       start_child(
@@ -108,8 +112,8 @@ defmodule Helyx.Session do
   `:sessions_dir`, restoring the transcript and the current model. Every
   tool call without a result gets an `aborted` error result, so the next
   provider call sees complete call and result pairs. `:cwd` is checked as in
-  `start/2`, and the tool specs as in `start/2`, both before the sessions
-  directory is read.
+  `start/2`, and the tool specs and the tool checks as in `start/2`, all
+  before the sessions directory is read.
   """
   @spec resume(Helyx.Core.name(), keyword()) :: {:ok, t()} | {:error, term()}
   def resume(core \\ Helyx.Core, opts) do
@@ -117,6 +121,7 @@ defmodule Helyx.Session do
 
     with {:ok, cwd} <- fetch_cwd(opts),
          {:ok, tools} <- Helyx.Tool.specs(core),
+         :ok <- Helyx.Tool.check_available(tools),
          {:ok, resumed} <- Helyx.Session.File.resume(dir, cwd),
          {:ok, {ref, provider, turn_mode}} <- resolve_model(core, resumed.model) do
       start_child(

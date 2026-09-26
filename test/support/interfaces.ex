@@ -742,8 +742,8 @@ end
 
 defmodule Helyx.Test.Tool.Unavailable do
   @moduledoc false
-  # A tool whose check always fails, so tests can see the hands refuse to
-  # start.
+  # A tool whose check always fails, so tests can see a session start or
+  # resume refuse it.
   @behaviour Helyx.Tool
 
   @impl true
