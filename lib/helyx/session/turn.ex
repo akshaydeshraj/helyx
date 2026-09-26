@@ -4,11 +4,12 @@ defmodule Helyx.Session.Turn do
   # reversed block list, or nil before the first stream event. `calls` are
   # the tool calls still to answer, the head running. `rejected` are the
   # tool calls of the current assistant message that get an error result
-  # and never run, because their arguments held an integer over the digit
-  # limit (see `Helyx.Message.cap_integers/1`). They are compared by value,
+  # and never run, each with its reason: the provider rejected the call, or
+  # its arguments held an integer over the digit limit (see
+  # `Helyx.Message.cap_integers/1`). They are compared by value,
   # because a provider can repeat a call id: a call that is equal to a
   # rejected call after the cap is also rejected. One turn has many provider
-  # calls, so each provider call starts with an empty list.
+  # calls, so each provider call starts with an empty map.
   # `model` and `provider` are fixed when the turn starts, so a model switch
   # during the turn takes effect on the next one, and so does `turn_mode`
   # (`Helyx.Provider.turn/1`). `resumed` is the harness session id the
@@ -26,7 +27,7 @@ defmodule Helyx.Session.Turn do
     :partial,
     :resumed,
     calls: [],
-    rejected: []
+    rejected: %{}
   ]
 
   @type t :: %__MODULE__{}
@@ -49,10 +50,11 @@ defmodule Helyx.Session.Turn do
     )
   end
 
-  @spec reject(t(), Message.ToolCall.t()) :: t()
-  def reject(%__MODULE__{rejected: rejected} = turn, call),
-    do: %{turn | rejected: [call | rejected]}
+  @spec reject(t(), Message.ToolCall.t(), String.t()) :: t()
+  def reject(%__MODULE__{rejected: rejected} = turn, call, reason),
+    do: %{turn | rejected: Map.put(rejected, call, reason)}
 
-  @spec rejected?(t(), Message.ToolCall.t()) :: boolean()
-  def rejected?(%__MODULE__{rejected: rejected}, call), do: call in rejected
+  # The reason of a rejected call, or nil for a call that runs.
+  @spec rejection(t(), Message.ToolCall.t()) :: String.t() | nil
+  def rejection(%__MODULE__{rejected: rejected}, call), do: Map.get(rejected, call)
 end

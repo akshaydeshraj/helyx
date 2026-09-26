@@ -49,6 +49,7 @@ Invariants the review axes check on every diff. Add one when a review or a PR co
 
 - A value from a plugin is checked by shape before it reaches a process that holds state. Match the whole tuple or struct, never elements by index.
 - Providers are compiled into the node. Shape is checked; individual field values are not.
+- One bad tool call from a provider is rejected alone when it has an id: it gets an error result (`{:rejected_tool_call, call, reason}`), and the text and the other calls of the message stay. Only a call with no id fails the turn. Neither the event nor the error holds the raw arguments.
 - A plugin callback that runs in the caller of a session start or resume (a tool spec callback, `turn/0`), and any plugin code that the check of its value runs (a JSON encoder of a plugin struct), has its raise, throw, and exit contained and returned as `{:error, reason}`. Open: `id/0` in `Helyx.Provider.find/2` is not contained yet (#153). Source: the Codex round 1 finding of #142.
 
 ## Tools and hands

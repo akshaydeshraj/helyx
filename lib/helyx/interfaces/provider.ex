@@ -9,6 +9,13 @@ defmodule Helyx.Provider do
     * `{:text_delta, binary}`: a delta of assistant text
     * `{:thinking_delta, binary}`: a delta of thinking text
     * `{:tool_call, Helyx.Message.ToolCall.t()}`: one complete tool call
+    * `{:rejected_tool_call, Helyx.Message.ToolCall.t(), reason}`: one tool
+      call that the session must not run, such as a call whose arguments
+      the provider could not decode. The call goes into the assistant
+      message in stream order, with the arguments the provider could
+      decode, or `%{}`. Its result is `{:error, "tool call not run: " <>
+      reason}`. `reason` is valid UTF-8 of at most 1,024 bytes; it must not
+      hold the raw arguments. Only a local turn accepts this event
     * `{:done, %{stop_reason: stop_reason, usage: map}}`: the call finished
     * `{:error, term}`: the call failed
 
@@ -80,6 +87,7 @@ defmodule Helyx.Provider do
           {:text_delta, String.t()}
           | {:thinking_delta, String.t()}
           | {:tool_call, Helyx.Message.ToolCall.t()}
+          | {:rejected_tool_call, Helyx.Message.ToolCall.t(), String.t()}
           | {:done, %{stop_reason: stop_reason(), usage: map()}}
           | {:error, term()}
           | {:message_end, stop_reason(), map()}

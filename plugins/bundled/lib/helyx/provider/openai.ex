@@ -439,33 +439,31 @@ defmodule Helyx.Provider.OpenAI do
   defp flush(%{finish: nil} = acc), do: {[], acc}
 
   defp flush(acc) do
-    results = acc.calls |> Enum.sort() |> Enum.map(fn {_index, call} -> tool_call(call) end)
+    events = acc.calls |> Enum.sort() |> Enum.map(fn {_index, call} -> tool_call(call) end)
 
-    case Enum.find(results, &match?({:error, _}, &1)) do
-      {:error, reason} ->
-        {[{:error, reason}], acc}
-
-      nil ->
-        calls = Enum.map(results, fn {:ok, call} -> {:tool_call, call} end)
-        done = {:done, %{stop_reason: acc.finish, usage: acc.usage}}
-        {calls ++ [done], acc}
+    case Enum.find(events, &match?({:error, _}, &1)) do
+      nil -> {events ++ [{:done, %{stop_reason: acc.finish, usage: acc.usage}}], acc}
+      error -> {[error], acc}
     end
   end
 
   defp tool_call(%{id: id, name: name, arguments: arguments}) do
+    call = %Helyx.Message.ToolCall{id: id, name: name, arguments: %{}}
+
     case IO.iodata_to_binary(arguments) do
-      "" -> {:ok, %Helyx.Message.ToolCall{id: id, name: name, arguments: %{}}}
-      json -> decode_arguments(id, name, json)
+      "" -> {:tool_call, call}
+      json -> decode_arguments(call, json)
     end
   end
 
-  defp decode_arguments(id, name, json) do
+  # A call with bad arguments gets an error result, so the model can
+  # correct it. A call with no id cannot: the next request names a result
+  # by the id of its call, so it fails the turn. Neither holds the raw JSON.
+  defp decode_arguments(call, json) do
     case JSON.decode(json) do
-      {:ok, arguments} when is_map(arguments) ->
-        {:ok, %Helyx.Message.ToolCall{id: id, name: name, arguments: arguments}}
-
-      _ ->
-        {:error, {:bad_tool_arguments, name, json}}
+      {:ok, arguments} when is_map(arguments) -> {:tool_call, %{call | arguments: arguments}}
+      _ when call.id == "" -> {:error, {:bad_tool_arguments, call.name}}
+      _ -> {:rejected_tool_call, call, "the arguments are not a valid JSON object"}
     end
   end
 

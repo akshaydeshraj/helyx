@@ -156,6 +156,7 @@ defmodule Helyx.Test.Harness do
   #   "dup_id"  two tool calls with one id, then two results
   #   "open_call"  "dup_id" with no second result and no text after it
   #   "late_result"  a call, a text message, then the call's result
+  #   "rejected"  a rejected tool call, valid only on a local turn
   @behaviour Helyx.Provider
 
   @impl true
@@ -217,6 +218,11 @@ defmodule Helyx.Test.Harness do
       {:message_end, :tool_use, %{}},
       {:tool_result, "c1", {:ok, result_text(kind)}}
     ]
+  end
+
+  defp events("rejected") do
+    call = %Helyx.Message.ToolCall{id: "r", name: "read", arguments: %{}}
+    [{:rejected_tool_call, call, "bad"}]
   end
 
   defp events("id256"), do: [{:harness_session, String.duplicate("é", 128), 0}]
@@ -441,6 +447,41 @@ defmodule Helyx.Test.Provider do
   def stream("harness_event", _context, _opts),
     do: {:ok, [{:text_delta, "hi"}, {:message_end, :end_turn, %{}}, done()]}
 
+  # Text, one good call, and one call the provider rejects; the next
+  # provider call echoes both results.
+  def stream("rejected", %Helyx.Context{messages: messages}, _opts) do
+    case List.last(messages) do
+      %Helyx.Message{role: :tool_result} ->
+        {:ok, echo_results(messages)}
+
+      _ ->
+        good = %Helyx.Message.ToolCall{id: "c1", name: "upcase", arguments: %{"text" => "one"}}
+        bad = %Helyx.Message.ToolCall{id: "c2", name: "upcase", arguments: %{}}
+
+        {:ok,
+         [
+           {:text_delta, "Trying"},
+           {:tool_call, good},
+           {:rejected_tool_call, bad, "the arguments are not a valid JSON object"},
+           {:done, %{stop_reason: :tool_use, usage: %{}}}
+         ]}
+    end
+  end
+
+  # A rejected call with a reason of N bytes, not valid UTF-8, or not text.
+  def stream("reject_bytes_" <> bytes, _context, _opts),
+    do: reject_with(String.duplicate("x", String.to_integer(bytes)))
+
+  # 512 2-byte characters, 1,024 bytes; then one more byte.
+  def stream("reject_multibyte_1024", _context, _opts),
+    do: reject_with(String.duplicate("é", 512))
+
+  def stream("reject_multibyte_1025", _context, _opts),
+    do: reject_with(String.duplicate("é", 512) <> "x")
+
+  def stream("reject_raw", _context, _opts), do: reject_with(<<"bad", 255>>)
+  def stream("reject_atom", _context, _opts), do: reject_with(:bad)
+
   def stream("bad_args", _context, _opts) do
     call = %Helyx.Message.ToolCall{id: "c", name: "bash", arguments: %{"text" => {1, 2}}}
     {:ok, [{:tool_call, call}, done()]}
@@ -485,6 +526,11 @@ defmodule Helyx.Test.Provider do
 
   def stream("overrun", _context, _opts) do
     {:ok, raise_after([{:text_delta, "kept"}, done()], "pulled past done")}
+  end
+
+  defp reject_with(reason) do
+    call = %Helyx.Message.ToolCall{id: "r", name: "upcase", arguments: %{}}
+    {:ok, [{:rejected_tool_call, call, reason}, done()]}
   end
 
   # A lazy tail that raises when pulled, so a consumer that reads past
