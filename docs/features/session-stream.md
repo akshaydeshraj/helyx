@@ -4,7 +4,7 @@
 
 Move the code that runs inside the provider Task out of `Helyx.Session` into one module, `Helyx.Session.Stream`. The session then holds the state, the queues, the transcript, and every decision, and one module holds the work of a provider call.
 
-Today `start_provider_call/1` builds a closure that runs in the provider Task: the context build, compaction, `provider.stream/3`, and the consumption of the stream (`consume/4`, `harness_event/1`, `done_terminal/3`, `capped_usage/1`, `forward/5`, `lib/helyx/session.ex:653-828`). The session module is 998 lines, and a reader must go through this code to read the turn loop. Issue #120, from the Core cleanup plan (`docs/reviews/2026-09-26-core-cleanup-plan.md`).
+Before this change, `call_provider/1` (called by `start_provider_call/1`) built a closure that runs in the provider Task: the context build, compaction, `provider.stream/3`, and the consumption of the stream (`consume/4`, `harness_event/1`, `done_terminal/3`, `capped_usage/1`, `forward/5` in `lib/helyx/session.ex`). The session module is 931 lines after #119, and a reader must go through this code to read the turn loop. Issue #120, from the Core cleanup plan (`docs/reviews/2026-09-26-core-cleanup-plan.md`).
 
 This is a move, not a redesign. The events, their order, the checks, and the terminals do not change. The `kind` flag stays: #123 replaces it.
 
@@ -32,9 +32,9 @@ A new internal module, `@moduledoc false`, at `lib/helyx/session/stream.ex`:
 - `{:stream_event, turn_id, event}` for each event that passes the checks
 - `{:rejected_call, turn_id, call}` before the stream event of a call with an integer over the digit limit
 
-It returns the first terminal, with `Message.cap_integers/1` applied, as today at `session.ex:681`.
+It returns the first terminal, with `Message.cap_integers/1` applied, as the closure did before this change.
 
-The session keeps `start_provider_call/1` and `start_stream/3`. The closure becomes `fn -> Helyx.Session.Stream.run(args) end`. No public function, behaviour, or event shape changes.
+The session keeps `start_provider_call/1`, `call_provider/1`, and `start_stream/3`. The closure becomes `fn -> Helyx.Session.Stream.run(args) end`. No public function, behaviour, or event shape changes.
 
 ## Which checks move, and which stay
 
@@ -44,8 +44,8 @@ Some input reaches the session with no stream event. These checks stay at their 
 
 | Input | Where | Check |
 | --- | --- | --- |
-| `:DOWN` reason of a crashed provider Task | `handle_info/2`, `session.ex:470-475` | `Message.cap_integers/1` |
-| `:stream_end` terminal from the hands | `handle_info/2`, `session.ex:478-480` | `Message.cap_integers/1` |
+| `:DOWN` reason of a crashed provider Task | the `:DOWN` clause of `handle_info/2` | `Message.cap_integers/1` |
+| `:stream_end` terminal from the hands | the `:stream_end` clause of `handle_info/2` | `Message.cap_integers/1` |
 | client text | `prompt/2`, `steer/2`, `follow_up/2` | `Message.valid_utf8?/1` |
 
 The terminal cap at the end of `run/1` stays too. The session caps the `:stream_end` terminal again, because the hands can make a terminal of their own.

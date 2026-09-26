@@ -60,8 +60,6 @@ defmodule Helyx.Session do
   alias Helyx.{Context, Event, Message, ModelRef, SessionFile}
   alias Helyx.Session.{Queues, Transcript, Turn}
 
-  @stop_reasons Message.stop_reasons()
-
   @rejected_call_text "tool call not run: an integer in the arguments has more than " <>
                         "#{Message.max_integer_digits()} digits"
 
@@ -434,7 +432,8 @@ defmodule Helyx.Session do
      |> emit(:message_update, Map.new([event]))}
   end
 
-  # Arrives before the stream event of the call it names (see consume/3).
+  # Arrives before the stream event of the call it names (see
+  # `Helyx.Session.Stream`).
   def handle_info({:rejected_call, turn_id, call}, %State{turn: %Turn{id: turn_id}} = state) do
     %State{turn: turn} = state
     {:noreply, %{state | turn: Turn.reject(turn, call)}}
@@ -636,39 +635,28 @@ defmodule Helyx.Session do
   end
 
   defp call_provider(%State{turn: %Turn{id: turn_id} = turn} = state) do
-    session = self()
-    core = state.core
-    provider = turn.provider
-    model = turn.model.model
     kind = turn.kind
+    harness? = kind == :harness
 
     resumed =
-      if kind == :harness,
+      if harness?,
         do: Transcript.resumable(state.transcript, state.harness_sessions, turn.model.provider)
 
-    base = %Context{messages: state.transcript, tools: state.tools}
-    opts = [core: core, session_id: state.id, turn_id: turn_id, cwd: state.cwd]
-    opts = if kind == :harness, do: opts ++ [harness_session_id: resumed], else: opts
+    opts = [core: state.core, session_id: state.id, turn_id: turn_id, cwd: state.cwd]
+    opts = if harness?, do: opts ++ [harness_session_id: resumed], else: opts
 
-    # Context building runs inside the Task so plugin code never blocks the
-    # session and a plugin that raises fails the turn, not the session.
-    run = fn ->
-      context = Helyx.ModelContext.build(core, base, opts)
-      context = Helyx.Compaction.compact(core, context, opts)
+    args = %{
+      core: state.core,
+      provider: turn.provider,
+      model: turn.model.model,
+      context: %Context{messages: state.transcript, tools: state.tools},
+      opts: opts,
+      session: self(),
+      turn_id: turn_id,
+      harness?: harness?
+    }
 
-      result =
-        case provider.stream(model, context, opts) do
-          {:ok, stream} -> consume(stream, session, turn_id, kind == :harness)
-          {:error, reason} -> {:error, reason}
-        end
-
-      # Every terminal leaves the Task through this cap, so no error reason
-      # and no malformed event in one brings an integer over the digit
-      # limit to the session (see `Helyx.Message.cap_integers/1`). A raise
-      # or an exit is not a terminal: the `:DOWN` handler, or the hands for
-      # a harness stream, report it.
-      Message.cap_integers(result)
-    end
+    run = fn -> Helyx.Session.Stream.run(args) end
 
     start_stream(kind, run, %{state | turn: %{turn | rejected: [], resumed: resumed}})
   end
@@ -690,104 +678,6 @@ defmodule Helyx.Session do
     :ok = Helyx.Hands.stream(state.hands, turn.id, turn.provider, run)
     state
   end
-
-  # Forwards well-formed stream events to the session and returns the first
-  # terminal event. A malformed event is a terminal error. Arguments or a
-  # usage that are a struct are malformed: `cap_integers/1` can turn a struct
-  # into a string, and the session file needs a plain map. A delta or a
-  # tool call that is not valid UTF-8 is malformed: transcript text is
-  # valid from the moment it exists, so the file and the providers never
-  # see raw bytes.
-  defp consume(stream, session, turn_id, harness?) do
-    Enum.reduce_while(stream, :stream_ended, fn
-      {kind, payload} = event, acc
-      when kind in [:text_delta, :thinking_delta] and is_binary(payload) ->
-        forward(Message.valid_utf8?(payload), event, session, turn_id, acc)
-
-      {:tool_call, %Message.ToolCall{id: id, name: name, arguments: args}}, acc
-      when is_binary(id) and is_binary(name) and is_non_struct_map(args) ->
-        # The one place where tool call arguments enter the session from a
-        # provider (on resume, SessionFile applies the same function). An
-        # integer over the digit limit is replaced here, before the first
-        # JSON encode, which is quadratic in the digits (#79). The
-        # transcript, the events, the session file, the tool, and the next
-        # provider request thus never hold it.
-        capped = Message.cap_integers(args)
-        # A new struct: the pattern also matches a call with one more key.
-        call = %Message.ToolCall{id: id, name: name, arguments: capped}
-        if capped != args, do: send(session, {:rejected_call, turn_id, call})
-        forward(Message.encodable?([id, name, capped]), {:tool_call, call}, session, turn_id, acc)
-
-      # The stop reason set is closed (`Message.stop_reasons/0`), and the
-      # session file holds only JSON. A terminal whose stop reason is outside
-      # the set, or whose usage the file cannot encode, fails the turn here,
-      # before the message exists, instead of raising in persist and silently
-      # turning persistence off for the rest of the session.
-      {:done, %{stop_reason: reason, usage: usage}} = terminal, _acc
-      when reason in @stop_reasons and is_non_struct_map(usage) ->
-        # A new plain map: the pattern also matches a struct and a map with
-        # more keys, and `end_turn/2` needs this shape after the cap at the
-        # Task exit.
-        {:halt, done_terminal(reason, capped_usage(usage), terminal)}
-
-      {:error, _} = terminal, _acc ->
-        {:halt, terminal}
-
-      # Only a harness sends these; from a model provider they are malformed.
-      {tag, _, _} = event, acc
-      when harness? and tag in [:message_end, :tool_result, :harness_session] ->
-        case harness_event(event) do
-          {:ok, event} -> forward(true, event, session, turn_id, acc)
-          :error -> {:halt, {:error, {:bad_stream_event, event}}}
-        end
-
-      other, _acc ->
-        {:halt, {:error, {:bad_stream_event, other}}}
-    end)
-  end
-
-  # The events of a harness provider. A message end is checked like the
-  # `done` terminal; a result is cut like a tool result.
-  defp harness_event({:message_end, reason, usage})
-       when reason in @stop_reasons and is_non_struct_map(usage) do
-    with {:ok, usage} <- capped_usage(usage), do: {:ok, {:message_end, reason, usage}}
-  end
-
-  defp harness_event({:tool_result, id, {status, text}})
-       when is_binary(id) and status in [:ok, :error] and is_binary(text) do
-    if Message.valid_utf8?(id),
-      do: {:ok, {:tool_result, id, {status, Helyx.Tool.truncate(text, :tail)}}},
-      else: :error
-  end
-
-  defp harness_event({:harness_session, id, cut} = event) when is_integer(cut) and cut >= 0 do
-    # No integer over the digit limit reaches the session (see
-    # `Helyx.Message.cap_integers/1`).
-    if Message.harness_id?(id) and Message.cap_integers(cut) == cut,
-      do: {:ok, event},
-      else: :error
-  end
-
-  defp harness_event(_event), do: :error
-
-  defp done_terminal(reason, {:ok, usage}, _terminal),
-    do: {:done, %{stop_reason: reason, usage: usage}}
-
-  defp done_terminal(_reason, :error, terminal), do: {:error, {:bad_stream_event, terminal}}
-
-  # The usage gets the same encodes as the arguments, so the same cap.
-  defp capped_usage(usage) do
-    usage = Message.cap_integers(usage)
-    if Message.encodable?(usage), do: {:ok, usage}, else: :error
-  end
-
-  defp forward(true = _valid, event, session, turn_id, acc) do
-    send(session, {:stream_event, turn_id, event})
-    {:cont, acc}
-  end
-
-  defp forward(false = _valid, event, _session, _turn_id, _acc),
-    do: {:halt, {:error, {:bad_stream_event, event}}}
 
   defp end_turn({:done, %{stop_reason: stop_reason, usage: usage}}, state) do
     {%State{turn: turn} = state, assistant, calls} = close_assistant(state, stop_reason, usage)
@@ -858,7 +748,7 @@ defmodule Helyx.Session do
     # A disk failure must not take the session down. The turn, or the model
     # switch, goes on in memory; persistence stays off for this session. Only
     # the disk write is caught: a value the file cannot encode is rejected
-    # at the stream boundary (see consume/3), and a model ref by
+    # at the stream boundary (see `Helyx.Session.Stream`), and a model ref by
     # `ModelRef.parse/1`, so an encode error here is a
     # bug and crashes loudly rather than silently losing the rest of the
     # session.
