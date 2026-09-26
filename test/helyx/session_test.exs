@@ -899,10 +899,11 @@ defmodule Helyx.SessionTest do
     assert_receive {:helyx_event, %Event{type: :tool_execution_start}}, 1_000
     :ok = Session.steer(session, "s")
     :ok = Session.follow_up(session, "f")
-    assert Session.queue_count(session) == %{steers: 1, follow_ups: 1}
+
+    assert_receive {:helyx_event, %Event{type: :queue_update, data: %{steers: 1, follow_ups: 1}}},
+                   1_000
 
     :ok = Session.abort(session)
-    assert Session.queue_count(session) == %{steers: 0, follow_ups: 0}
     events = collect_until(:agent_end)
     assert stop_reason(events) == :aborted
     assert List.last(queue_counts(events)) == %{steers: 0, follow_ups: 0}
@@ -919,17 +920,22 @@ defmodule Helyx.SessionTest do
 
     # One under the limit, then at the limit, with multibyte text.
     for n <- 1..31, do: :ok = Session.steer(session, "stér #{n}")
-    assert Session.queue_count(session) == %{steers: 31, follow_ups: 0}
     :ok = Session.steer(session, "stér 32 🚀")
     for n <- 1..32, do: :ok = Session.follow_up(session, "折り返し #{n}")
 
     # 64 accepted writes, one queue_update each.
-    for _ <- 1..64, do: assert_receive({:helyx_event, %Event{type: :queue_update}}, 1_000)
+    counts =
+      for _ <- 1..64 do
+        assert_receive {:helyx_event, %Event{type: :queue_update, data: data}}, 1_000
+        data
+      end
+
+    assert Enum.at(counts, 30) == %{steers: 31, follow_ups: 0}
+    assert List.last(counts) == %{steers: 32, follow_ups: 32}
 
     # One over the limit is rejected, changes nothing, and emits no event.
     assert Session.steer(session, "s33") == {:error, :queue_full}
     assert Session.follow_up(session, "f33") == {:error, :queue_full}
-    assert Session.queue_count(session) == %{steers: 32, follow_ups: 32}
     refute_receive {:helyx_event, %Event{type: :queue_update}}, 50
 
     :ok = Session.abort(session)
@@ -1589,7 +1595,6 @@ defmodule Helyx.SessionTest do
     # exits, and all of them together take less than `budget_ms`.
     defp timed_calls(session, budget_ms) do
       calls = [
-        queue_count: fn -> Session.queue_count(session) end,
         model: fn -> Session.model(session) end,
         set_model: fn -> Session.set_model(session, "test/stuck") end,
         steer: fn -> Session.steer(session, "steer") end,
@@ -1633,12 +1638,21 @@ defmodule Helyx.SessionTest do
       {session, _hands, _task} = start_stuck_turn(core)
 
       abort = Task.async(fn -> Session.abort(session) end)
-      collect_until(:agent_end)
+      assert queue_counts(collect_until(:agent_end)) == []
       :ok = Session.prompt(session, "dropped")
+
+      assert_receive {:helyx_event,
+                      %Event{type: :queue_update, data: %{steers: 0, follow_ups: 1}}},
+                     1_000
+
       assert :ok = Session.abort(session)
       assert :ok = Task.await(abort, 1_000)
 
-      assert Session.queue_count(session) == %{steers: 0, follow_ups: 0}
+      assert_receive {:helyx_event,
+                      %Event{type: :queue_update, data: %{steers: 0, follow_ups: 0}}},
+                     1_000
+
+      refute_receive {:helyx_event, %Event{type: :queue_update}}, 100
       refute_receive {:helyx_event, %Event{type: :agent_start}}, 100
     end
 

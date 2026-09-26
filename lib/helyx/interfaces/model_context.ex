@@ -11,13 +11,4 @@ defmodule Helyx.ModelContext do
   use Helyx.Interface, mode: :single
 
   @callback build(context :: Helyx.Context.t(), opts :: keyword()) :: Helyx.Context.t()
-
-  @doc "Runs the registered plugin on the context. No plugin returns it unchanged."
-  @spec build(Helyx.Core.name(), Helyx.Context.t(), keyword()) :: Helyx.Context.t()
-  def build(core, context, opts) do
-    case Helyx.Core.plugins(core, __MODULE__) do
-      [plugin] -> plugin.build(context, opts)
-      [] -> context
-    end
-  end
 end

@@ -39,6 +39,12 @@ defmodule Helyx.Session.HandsTest do
 
   defp call(id, name, arguments), do: %ToolCall{id: id, name: name, arguments: arguments}
 
+  defp cancel(hands, turn_id) do
+    request = Helyx.Session.Hands.request_cancel(hands, turn_id)
+    {:reply, result} = :gen_server.receive_response(request, :infinity)
+    result
+  end
+
   defp upcase(hands, id) do
     :ok = Helyx.Session.Hands.run(hands, "t1", call(id, "upcase", %{"text" => "hi"}))
     assert_receive {:tool_result, "t1", ^id, result}, 2_000
@@ -111,7 +117,7 @@ defmodule Helyx.Session.HandsTest do
       end)
 
       await_held(hands, 1)
-      assert Helyx.Session.Hands.cancel(hands, "t1") == :ok
+      assert cancel(hands, "t1") == :ok
       assert_received {:release, :cancel, [{:report, _}]}
       refute_receive {:stream_end, _, _}, 100
     end
@@ -132,7 +138,7 @@ defmodule Helyx.Session.HandsTest do
       end)
 
       await_held(hands, 1)
-      assert Helyx.Session.Hands.cancel(hands, "t1") == :ok
+      assert cancel(hands, "t1") == :ok
       assert_received :stopping
       assert_received {:release, :cancel, [{:report, _}]}
     end
@@ -148,7 +154,7 @@ defmodule Helyx.Session.HandsTest do
       end)
 
       await_held(hands, 1)
-      {elapsed, :ok} = :timer.tc(fn -> Helyx.Session.Hands.cancel(hands, "t1") end, :millisecond)
+      {elapsed, :ok} = :timer.tc(fn -> cancel(hands, "t1") end, :millisecond)
       assert elapsed in 2_000..3_000
       assert_received {:release, :cancel, [{:report, _}]}
     end
@@ -167,7 +173,7 @@ defmodule Helyx.Session.HandsTest do
 
     await_held(hands, 1)
 
-    assert {:error, text} = Helyx.Session.Hands.cancel(hands, "t1")
+    assert {:error, text} = cancel(hands, "t1")
     assert text =~ "could not be released"
     assert text =~ ":keep"
     assert_received {:release, :cancel, _handles}
@@ -235,7 +241,7 @@ defmodule Helyx.Session.HandsTest do
     await_held(hands, 2)
 
     # One after the other, the two releases would pass the deadline.
-    assert Helyx.Session.Hands.cancel(hands, "t1") == :ok
+    assert cancel(hands, "t1") == :ok
     assert upcase(hands, "c3") == {:ok, "HI"}
   end
 

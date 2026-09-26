@@ -874,7 +874,6 @@ defmodule Helyx.TUITest do
       state = press(state, "enter", ["alt"])
       assert {:notice, "unknown provider: nope"} = List.last(state.vm.cells)
       assert ExRatatui.textarea_get_value(state.input) == "/model nope/x"
-      assert Session.queue_count(state.session) == %{steers: 0, follow_ups: 0}
       refute_receive {:helyx_event, %Event{type: :queue_update}}, 50
 
       :ok = Session.abort(state.session)

@@ -124,10 +124,6 @@ defmodule Helyx.Session.Server do
     {:reply, :ok, begin_turn(state, [text])}
   end
 
-  def handle_call(:queue_count, _from, %State{} = state) do
-    {:reply, Queues.counts(state.queues), state}
-  end
-
   def handle_call(:model, _from, %State{model: ref} = state) do
     {:reply, ModelRef.to_string(ref), state}
   end
@@ -272,7 +268,7 @@ defmodule Helyx.Session.Server do
   # their exit signal. Every other message has a clause above, so any other
   # message is a bug and crashes the session.
   def handle_info(message, %State{aborting: {request, callers}} = state) do
-    case Hands.cancel_response(message, request) do
+    case :gen_server.check_response(message, request) do
       {:reply, result} ->
         with {:error, reason} <- result, do: Logger.warning("abort cleanup failed: " <> reason)
         Enum.each(callers, &GenServer.reply(&1, :ok))
@@ -344,12 +340,8 @@ defmodule Helyx.Session.Server do
 
   defp emit_queue(%State{} = state), do: emit(state, :queue_update, Queues.counts(state.queues))
 
-  defp drop_queues(%State{queues: queues} = state) do
-    case Queues.clear(queues) do
-      ^queues -> state
-      cleared -> emit_queue(%{state | queues: cleared})
-    end
-  end
+  defp drop_queues(%State{queues: queues} = state) when queues == %Queues{}, do: state
+  defp drop_queues(%State{} = state), do: emit_queue(%{state | queues: %Queues{}})
 
   # A normal turn end starts a new turn with everything still queued, steers
   # first. The drain event goes out between the turns, with a nil turn id.
