@@ -540,6 +540,37 @@ defmodule Helyx.SessionTest do
     assert Enum.map(events, & &1.seq) == Enum.to_list(1..length(events))
   end
 
+  test "a rejected call gets an error result with its reason; the text and the good call stay",
+       %{core: core} do
+    {:ok, session} = Session.start(core, model: "test/rejected")
+    :ok = Session.subscribe(session)
+
+    :ok = Session.prompt(session, "hello")
+    events = collect_until(:agent_end)
+
+    # The next provider call gets both results, in call order.
+    rejected = "tool call not run: the arguments are not a valid JSON object"
+    assert final_text(events) == "ONE|#{rejected}"
+
+    [first_end | _] =
+      for %{type: :message_end, data: %{message: %{role: :assistant} = m}} <- events, do: m
+
+    assert [
+             %Helyx.Message.Text{text: "Trying"},
+             %Helyx.Message.ToolCall{id: "c1"},
+             %Helyx.Message.ToolCall{id: "c2", arguments: %{}}
+           ] = first_end.content
+
+    ends = for %{type: :tool_execution_end, data: data} <- events, do: data.message
+
+    assert [
+             %Helyx.Message{tool_call_id: "c1", is_error: false},
+             %Helyx.Message{tool_call_id: "c2", is_error: true} = bad
+           ] = ends
+
+    assert Helyx.Message.text(bad) == rejected
+  end
+
   test "tool calls run one at a time, in call order", %{core: core} do
     {:ok, session} = Session.start(core, model: "test/serial")
     :ok = Session.subscribe(session)

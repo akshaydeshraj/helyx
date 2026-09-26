@@ -10,9 +10,6 @@ defmodule Helyx.Session.Server do
   alias Helyx.{Context, Event, Message, ModelRef}
   alias Helyx.Session.{Hands, Id, Queues, Transcript, Turn}
 
-  @rejected_call_text "tool call not run: an integer in the arguments has more than " <>
-                        "#{Message.max_integer_digits()} digits"
-
   defmodule State do
     @moduledoc false
     @enforce_keys [:id, :core, :model, :provider, :turn_mode, :cwd]
@@ -205,9 +202,11 @@ defmodule Helyx.Session.Server do
 
   # Arrives before the stream event of the call it names (see
   # `Helyx.Session.Stream`).
-  def handle_info({:rejected_call, turn_id, call}, %State{turn: %Turn{id: turn_id}} = state) do
-    %State{turn: turn} = state
-    {:noreply, %{state | turn: Turn.reject(turn, call)}}
+  def handle_info(
+        {:rejected_call, turn_id, call, reason},
+        %State{turn: %Turn{id: turn_id} = turn} = state
+      ) do
+    {:noreply, %{state | turn: Turn.reject(turn, call, reason)}}
   end
 
   # The Task's reply is the terminal stream event. Its :DOWN follows and is
@@ -248,7 +247,7 @@ defmodule Helyx.Session.Server do
   def handle_info({:tool_result, _turn_id, _call_id, _result}, state), do: {:noreply, state}
   def handle_info({:stream_event, _turn_id, _event}, state), do: {:noreply, state}
   def handle_info({:stream_end, _turn_id, _terminal}, state), do: {:noreply, state}
-  def handle_info({:rejected_call, _turn_id, _call}, state), do: {:noreply, state}
+  def handle_info({:rejected_call, _turn_id, _call, _reason}, state), do: {:noreply, state}
 
   # The hands are linked and vital: their death takes the session with it.
   def handle_info({:EXIT, pid, reason}, %State{hands: pid} = state) do
@@ -404,7 +403,7 @@ defmodule Helyx.Session.Server do
 
     run = fn -> Helyx.Session.Stream.run(args) end
 
-    start_stream(turn.turn_mode, run, %{state | turn: %{turn | rejected: [], resumed: resumed}})
+    start_stream(turn.turn_mode, run, %{state | turn: %{turn | rejected: %{}, resumed: resumed}})
   end
 
   # The Task is linked: the session traps exits, so a crash stays a message,
@@ -461,12 +460,14 @@ defmodule Helyx.Session.Server do
   end
 
   defp run_tool(call, %State{turn: turn} = state) do
-    if Turn.rejected?(turn, call) do
+    case Turn.rejection(turn, call) do
+      nil ->
+        :ok = Hands.run(state.hands, turn.id, call)
+
       # The result takes the path of a result from the hands, so the events
       # and the order of the calls stay the same.
-      send(self(), {:tool_result, turn.id, call.id, {:error, @rejected_call_text}})
-    else
-      :ok = Hands.run(state.hands, turn.id, call)
+      reason ->
+        send(self(), {:tool_result, turn.id, call.id, {:error, "tool call not run: " <> reason}})
     end
 
     emit(state, :tool_execution_start, %{tool_call: call})

@@ -29,8 +29,8 @@ defmodule Helyx.Session.StreamTest do
   # The messages the run sent to the session, in order.
   defp sent(acc \\ []) do
     receive do
-      {tag, "t1", _} = message when tag in [:stream_event, :rejected_call] ->
-        sent([message | acc])
+      {:stream_event, "t1", _} = message -> sent([message | acc])
+      {:rejected_call, "t1", _, _} = message -> sent([message | acc])
     after
       0 -> Enum.reverse(acc)
     end
@@ -64,7 +64,8 @@ defmodule Helyx.Session.StreamTest do
     messages = sent()
 
     assert [
-             {:rejected_call, "t1", %Message.ToolCall{id: "c1"} = rejected},
+             {:rejected_call, "t1", %Message.ToolCall{id: "c1"} = rejected,
+              "an integer in the arguments has more than 100 digits"},
              {:stream_event, "t1", {:tool_call, first}} | _
            ] =
              messages
@@ -74,7 +75,48 @@ defmodule Helyx.Session.StreamTest do
 
     # The call at the limit passes and is not rejected.
     assert Enum.any?(messages, &match?({:stream_event, _, {:tool_call, %{id: "c3"}}}, &1))
-    refute Enum.any?(messages, &match?({:rejected_call, _, %{id: "c3"}}, &1))
+    refute Enum.any?(messages, &match?({:rejected_call, _, %{id: "c3"}, _}, &1))
+  end
+
+  test "a rejected tool call is sent with its reason before its stream event", %{core: core} do
+    assert {:done, _} = run(core, "rejected")
+    reason = "the arguments are not a valid JSON object"
+
+    assert [
+             {:stream_event, "t1", {:text_delta, "Trying"}},
+             {:stream_event, "t1", {:tool_call, %Message.ToolCall{id: "c1"}}},
+             {:rejected_call, "t1", %Message.ToolCall{id: "c2"} = rejected, ^reason},
+             {:stream_event, "t1", {:tool_call, rejected}}
+           ] = sent()
+  end
+
+  # The bound is on bytes: 512 "é" are 1,024 bytes, and one more "x" is over.
+  for {model, bytes} <- [
+        {"reject_bytes_1023", 1023},
+        {"reject_bytes_1024", 1024},
+        {"reject_multibyte_1024", 1024}
+      ] do
+    test "a reason from #{model} passes", %{core: core} do
+      assert {:done, _} = run(core, unquote(model))
+      assert [{:rejected_call, "t1", _, reason}, {:stream_event, "t1", _}] = sent()
+      assert byte_size(reason) == unquote(bytes)
+    end
+  end
+
+  for model <- ["reject_bytes_1025", "reject_multibyte_1025", "reject_raw", "reject_atom"] do
+    test "a rejected tool call from #{model} is a malformed event", %{core: core} do
+      assert {:error, {:bad_stream_event, {:rejected_tool_call, _, _}}} =
+               run(core, unquote(model))
+
+      assert sent() == []
+    end
+  end
+
+  test "a rejected tool call on an external turn is a malformed event", %{core: core} do
+    assert {:error, {:bad_stream_event, {:rejected_tool_call, %Message.ToolCall{id: "r"}, "bad"}}} =
+             run(core, "rejected", provider: Helyx.Test.Harness, external?: true)
+
+    assert sent() == []
   end
 
   test "an integer over the digit limit in usage is capped, and the extra key dropped",

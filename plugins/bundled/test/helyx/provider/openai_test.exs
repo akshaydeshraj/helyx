@@ -277,6 +277,61 @@ defmodule Helyx.Provider.OpenAITest do
            ]
   end
 
+  @not_object "the arguments are not a valid JSON object"
+
+  test "bad JSON in one of two calls rejects that call alone" do
+    chunks = [
+      sse([
+        delta(%{content: "Hi"}),
+        delta(%{tool_calls: [%{id: "c1", function: %{name: "read", arguments: ~s({"a": 1})}}]}),
+        delta(%{tool_calls: [%{id: "c2", function: %{name: "bash", arguments: ~s({"b": )}}]}),
+        delta(%{}, "tool_calls"),
+        "[DONE]"
+      ])
+    ]
+
+    assert Enum.to_list(OpenAI.events(chunks)) == [
+             {:text_delta, "Hi"},
+             {:tool_call,
+              %Helyx.Message.ToolCall{id: "c1", name: "read", arguments: %{"a" => 1}}},
+             {:rejected_tool_call,
+              %Helyx.Message.ToolCall{id: "c2", name: "bash", arguments: %{}}, @not_object},
+             {:done, %{stop_reason: :tool_use, usage: %{}}}
+           ]
+  end
+
+  test "JSON that is not an object rejects the call" do
+    chunks = [
+      sse([
+        delta(%{tool_calls: [%{id: "c1", function: %{name: "read", arguments: "[1]"}}]}),
+        delta(%{}, "tool_calls"),
+        "[DONE]"
+      ])
+    ]
+
+    assert [
+             {:rejected_tool_call, %Helyx.Message.ToolCall{id: "c1", arguments: %{}},
+              @not_object},
+             {:done, _}
+           ] = Enum.to_list(OpenAI.events(chunks))
+  end
+
+  test "bad JSON in a call with no id fails the turn with no raw JSON" do
+    json = ~s({"secret": ) <> String.duplicate("x", 1_000)
+
+    chunks = [
+      sse([
+        delta(%{content: "Hi"}),
+        delta(%{tool_calls: [%{index: 0, function: %{name: "bash", arguments: json}}]}),
+        delta(%{}, "tool_calls"),
+        "[DONE]"
+      ])
+    ]
+
+    assert Enum.to_list(OpenAI.events(chunks)) ==
+             [{:text_delta, "Hi"}, {:error, {:bad_tool_arguments, "bash"}}]
+  end
+
   test "a missing api key is an error before any request" do
     System.delete_env("OPENCODE_API_KEY")
     context = %Helyx.Context{messages: [Helyx.Message.user("hi")]}

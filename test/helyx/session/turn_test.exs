@@ -32,15 +32,15 @@ defmodule Helyx.Session.TurnTest do
 
   test "a rejected call is found by value, also under another struct instance" do
     call = %Message.ToolCall{id: "c1", name: "read", arguments: %{"n" => "capped"}}
-    turn = Turn.reject(turn(), call)
+    turn = Turn.reject(turn(), call, "why")
 
-    assert Turn.rejected?(turn, %Message.ToolCall{
+    assert Turn.rejection(turn, %Message.ToolCall{
              id: "c1",
              name: "read",
              arguments: %{"n" => "capped"}
-           })
+           }) == "why"
 
-    refute Turn.rejected?(turn, %{call | arguments: %{}})
-    refute Turn.rejected?(turn(), call)
+    assert Turn.rejection(turn, %{call | arguments: %{}}) == nil
+    assert Turn.rejection(turn(), call) == nil
   end
 end

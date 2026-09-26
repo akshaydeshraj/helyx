@@ -14,6 +14,12 @@ defmodule Helyx.Session.Stream do
   # than 200 bytes, so only a result that was not cut is over this limit.
   @max_tool_result_bytes 65_536
 
+  # The reason of a rejected call (`Helyx.Provider`), and the reason Core
+  # gives a call with an integer over the digit limit.
+  @max_reason_bytes 1_024
+  @integer_reason "an integer in the arguments has more than " <>
+                    "#{Message.max_integer_digits()} digits"
+
   @type terminal ::
           {:done, %{stop_reason: atom(), usage: map()}} | {:error, term()} | :stream_ended
 
@@ -31,8 +37,9 @@ defmodule Helyx.Session.Stream do
 
   @doc """
   Runs one provider call. Sends the session `{:stream_event, turn_id, event}`
-  for each event that passes the checks, and `{:rejected_call, turn_id, call}`
-  before the stream event of a call with an integer over the digit limit.
+  for each event that passes the checks, and `{:rejected_call, turn_id, call,
+  reason}` before the stream event of a call that the provider rejected or
+  that has an integer over the digit limit.
   """
   @spec run(args()) :: terminal()
   def run(%{
@@ -80,19 +87,16 @@ defmodule Helyx.Session.Stream do
       when kind in [:text_delta, :thinking_delta] and is_binary(payload) ->
         forward(String.valid?(payload), event, session, turn_id, acc)
 
-      {:tool_call, %Message.ToolCall{id: id, name: name, arguments: args}}, acc
-      when is_binary(id) and is_binary(name) and is_non_struct_map(args) ->
-        # The one place where tool call arguments enter the session from a
-        # provider (on resume, Session.File applies the same function). An
-        # integer over the digit limit is replaced here, before the first
-        # JSON encode, which is quadratic in the digits (#79). The
-        # transcript, the events, the session file, the tool, and the next
-        # provider request thus never hold it.
-        capped = Message.cap_integers(args)
-        # A new struct: the pattern also matches a call with one more key.
-        call = %Message.ToolCall{id: id, name: name, arguments: capped}
-        if capped != args, do: send(session, {:rejected_call, turn_id, call})
-        forward(Message.encodable?([id, name, capped]), {:tool_call, call}, session, turn_id, acc)
+      {:tool_call, call}, acc ->
+        tool_call(call, nil, session, turn_id, acc)
+
+      # A call the provider rejected. Only a local turn answers it:
+      # an external provider sends its own error result. The reason is
+      # transcript text: the bound keeps the result text small, and
+      # `tool_call/5` checks that it is valid UTF-8.
+      {:rejected_tool_call, call, reason}, acc
+      when not external? and is_binary(reason) and byte_size(reason) <= @max_reason_bytes ->
+        tool_call(call, reason, session, turn_id, acc)
 
       # The stop reason set is closed (`Message.stop_reasons/0`), and the
       # session file holds only JSON. A terminal whose stop reason is outside
@@ -122,6 +126,43 @@ defmodule Helyx.Session.Stream do
         {:halt, {:error, {:bad_stream_event, other}}}
     end)
   end
+
+  # The one place where tool call arguments enter the session from a
+  # provider (on resume, Session.File applies the same function). An
+  # integer over the digit limit is replaced here, before the first JSON
+  # encode, which is quadratic in the digits (#79). The transcript, the
+  # events, the session file, the tool, and the next provider request thus
+  # never hold it. A call with such an integer is rejected, as is a call the
+  # provider rejected (`reason` not nil). The rejection goes to the session
+  # only when the call passed every check, before its stream event.
+  defp tool_call(
+         %Message.ToolCall{id: id, name: name, arguments: args},
+         rejected,
+         session,
+         turn_id,
+         acc
+       )
+       when is_binary(id) and is_binary(name) and is_non_struct_map(args) do
+    capped = Message.cap_integers(args)
+    # A new struct: the pattern also matches a call with one more key.
+    call = %Message.ToolCall{id: id, name: name, arguments: capped}
+    reason = rejected || if capped != args, do: @integer_reason
+
+    # A reason that is not valid UTF-8 does not encode.
+    if Message.encodable?([id, name, capped, rejected]) do
+      if reason, do: send(session, {:rejected_call, turn_id, call, reason})
+      forward(true, {:tool_call, call}, session, turn_id, acc)
+    else
+      {:halt, malformed(call_event(call, rejected))}
+    end
+  end
+
+  defp tool_call(call, rejected, _session, _turn_id, _acc),
+    do: {:halt, malformed(call_event(call, rejected))}
+
+  # The event of a call, for the error of a malformed one.
+  defp call_event(call, nil), do: {:tool_call, call}
+  defp call_event(call, reason), do: {:rejected_tool_call, call, reason}
 
   # The events of an external turn. A message end is checked like the
   # `done` terminal. The provider cuts a result to the tool result limits;
