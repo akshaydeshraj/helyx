@@ -211,13 +211,8 @@ defmodule Helyx.Session do
   follow-up, and a full queue returns `{:error, :queue_full}`.
   """
   @spec prompt(t(), String.t()) :: :ok | {:error, :turn_running | :invalid_utf8 | :queue_full}
-  def prompt(%__MODULE__{id: id, core: core}, text) when is_binary(text) do
-    if String.valid?(text) do
-      GenServer.call(Server.via(core, id), {:prompt, text})
-    else
-      {:error, :invalid_utf8}
-    end
-  end
+  def prompt(%__MODULE__{} = session, text) when is_binary(text),
+    do: send_text(session, :prompt, text)
 
   @doc """
   Steers the running turn. The text joins the queued steers and is delivered
@@ -226,13 +221,8 @@ defmodule Helyx.Session do
   returns `{:error, :queue_full}`.
   """
   @spec steer(t(), String.t()) :: :ok | {:error, :invalid_utf8 | :queue_full}
-  def steer(%__MODULE__{id: id, core: core}, text) when is_binary(text) do
-    if String.valid?(text) do
-      GenServer.call(Server.via(core, id), {:steer, text})
-    else
-      {:error, :invalid_utf8}
-    end
-  end
+  def steer(%__MODULE__{} = session, text) when is_binary(text),
+    do: send_text(session, :steer, text)
 
   @doc """
   Queues a follow-up prompt. It starts a new turn after the current turn ends
@@ -240,18 +230,15 @@ defmodule Helyx.Session do
   valid UTF-8. A full queue returns `{:error, :queue_full}`.
   """
   @spec follow_up(t(), String.t()) :: :ok | {:error, :invalid_utf8 | :queue_full}
-  def follow_up(%__MODULE__{id: id, core: core}, text) when is_binary(text) do
+  def follow_up(%__MODULE__{} = session, text) when is_binary(text),
+    do: send_text(session, :follow_up, text)
+
+  defp send_text(%__MODULE__{id: id, core: core}, op, text) do
     if String.valid?(text) do
-      GenServer.call(Server.via(core, id), {:follow_up, text})
+      GenServer.call(Server.via(core, id), {op, text})
     else
       {:error, :invalid_utf8}
     end
-  end
-
-  @doc "Reads the queue counts, as in the `:queue_update` event."
-  @spec queue_count(t()) :: %{steers: non_neg_integer(), follow_ups: non_neg_integer()}
-  def queue_count(%__MODULE__{id: id, core: core}) do
-    GenServer.call(Server.via(core, id), :queue_count)
   end
 
   @doc "The session's current model ref, as a `provider/model` string."

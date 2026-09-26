@@ -30,14 +30,9 @@ defmodule Helyx.Text do
   end
 
   defp read_bounded(full) do
-    case File.open(full, [:read, :binary]) do
-      {:ok, io} ->
-        data = IO.binread(io, @max_file_bytes + 1)
-        :ok = File.close(io)
-        bounded(data)
-
-      {:error, _} = error ->
-        bounded(error)
+    case File.open(full, [:read, :binary], &IO.binread(&1, @max_file_bytes + 1)) do
+      {:ok, data} -> bounded(data)
+      {:error, _} = error -> bounded(error)
     end
   end
 

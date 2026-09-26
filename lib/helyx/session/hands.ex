@@ -39,13 +39,14 @@ defmodule Helyx.Session.Hands do
   unconfirmed handle an error terminal. While a handle is unconfirmed the
   stream is refused with an error terminal, like a tool call.
 
-  `cancel/2` aborts a turn: it kills the turn's tool and stream Tasks and calls
-  `release/3` with `:cancel` for their handles, one release Task per tool,
-  in parallel, with one deadline. It returns only when every release has
-  returned or timed out. An unconfirmed handle is reported as an error.
-  A tool Task is killed at once. A stream Task gets a `:shutdown` exit
-  signal and #{@stream_stop_ms} ms before the kill: a provider whose Task
-  traps exits can use them to ask its program to stop the turn.
+  A cancel request (`request_cancel/2`) aborts a turn: the hands kill the
+  turn's tool and stream Tasks and call `release/3` with `:cancel` for
+  their handles, one release Task per tool, in parallel, with one deadline.
+  The answer arrives only when every release has returned or timed out. An
+  unconfirmed handle is reported as an error. A tool Task is killed at
+  once. A stream Task gets a `:shutdown` exit signal and #{@stream_stop_ms} ms
+  before the kill: a provider whose Task traps exits can use them to ask
+  its program to stop the turn.
   """
 
   use GenServer
@@ -85,7 +86,8 @@ defmodule Helyx.Session.Hands do
 
   @doc "Starts a tool call. The result is sent to the session."
   @spec run(pid(), String.t(), ToolCall.t()) :: :ok
-  def run(hands, turn_id, %ToolCall{} = call), do: GenServer.call(hands, {:run, turn_id, call})
+  def run(hands, turn_id, %ToolCall{} = call),
+    do: GenServer.call(hands, {:start, turn_id, call})
 
   @doc """
   Starts the stream of a harness provider call: `fun` runs in a Task of the
@@ -95,32 +97,18 @@ defmodule Helyx.Session.Hands do
   """
   @spec stream(pid(), String.t(), module(), (-> term())) :: :ok
   def stream(hands, turn_id, provider, fun) when is_function(fun, 0),
-    do: GenServer.call(hands, {:stream, turn_id, provider, fun})
+    do: GenServer.call(hands, {:start, turn_id, {provider, fun}})
 
   @doc """
-  Cancels the turn's tool Tasks and releases their handles. Returns when
-  every release has returned, or an error naming the unconfirmed handles.
-  """
-  @spec cancel(pid(), String.t()) :: :ok | {:error, String.t()}
-  def cancel(hands, turn_id), do: GenServer.call(hands, {:cancel, turn_id}, :infinity)
-
-  @doc """
-  Sends the request of `cancel/2` and returns at once, so the caller stays
-  free during the release. The answer arrives as a message; give each message
-  to `cancel_response/2`.
+  Asks the hands to cancel the turn's tool and stream Tasks and release
+  their handles. Sends the request and returns at once, so the caller stays
+  free during the release. Read the answer with
+  `:gen_server.check_response/2` or `:gen_server.receive_response/2`: `:ok`
+  when every release has returned, or an error naming the unconfirmed
+  handles.
   """
   @spec request_cancel(pid(), String.t()) :: :gen_server.request_id()
   def request_cancel(hands, turn_id), do: :gen_server.send_request(hands, {:cancel, turn_id})
-
-  @doc """
-  Reads a message as the answer to a `request_cancel/2`: `{:reply, result}`
-  with the result of `cancel/2`, `{:error, {reason, hands}}` when the hands
-  died, or `:no_reply` when the message is not the answer.
-  """
-  @spec cancel_response(term(), :gen_server.request_id()) ::
-          {:reply, :ok | {:error, String.t()}} | {:error, {term(), term()}} | :no_reply
-  def cancel_response(message, request),
-    do: :gen_server.check_response(message, request)
 
   @impl true
   def init(%State{} = state) do
@@ -129,23 +117,14 @@ defmodule Helyx.Session.Hands do
   end
 
   @impl true
-  def handle_call({:run, turn_id, call}, _from, state) do
+  # A tool call or a harness stream.
+  def handle_call({:start, turn_id, job}, _from, state) do
     state = retry(state)
 
     if state.unconfirmed == %{} do
-      {:reply, :ok, start_task(state, turn_id, call)}
+      {:reply, :ok, start(state, turn_id, job)}
     else
-      {:reply, :ok, refuse(state, turn_id, call.id)}
-    end
-  end
-
-  def handle_call({:stream, turn_id, provider, fun}, _from, state) do
-    state = retry(state)
-
-    if state.unconfirmed == %{} do
-      {:reply, :ok, spawn_task(state, turn_id, :stream, provider, fun)}
-    else
-      {:reply, :ok, refuse(state, turn_id, :stream)}
+      {:reply, :ok, refuse(state, turn_id, job_id(job))}
     end
   end
 
@@ -244,11 +223,17 @@ defmodule Helyx.Session.Hands do
 
   defp outcome(turn_id, call_id, result), do: {:tool_result, turn_id, call_id, scrub(result)}
 
-  defp start_task(state, turn_id, call) do
+  defp start(state, turn_id, %ToolCall{} = call) do
     tool = if File.dir?(state.cwd), do: Map.get(state.tools, call.name, :unknown), else: :no_cwd
     cwd = state.cwd
     spawn_task(state, turn_id, call.id, tool, fn -> run_tool(tool, call, cwd) end)
   end
+
+  defp start(state, turn_id, {provider, fun}),
+    do: spawn_task(state, turn_id, :stream, provider, fun)
+
+  defp job_id(%ToolCall{id: id}), do: id
+  defp job_id({_provider, _fun}), do: :stream
 
   # `id` is the call id, or `:stream` for a provider stream; `module` is the
   # tool or the provider whose `release/3` gets the Task's handles.

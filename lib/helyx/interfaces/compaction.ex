@@ -10,13 +10,4 @@ defmodule Helyx.Compaction do
   use Helyx.Interface, mode: :single
 
   @callback compact(context :: Helyx.Context.t(), opts :: keyword()) :: Helyx.Context.t()
-
-  @doc "Runs the registered plugin on the context. No plugin returns it unchanged."
-  @spec compact(Helyx.Core.name(), Helyx.Context.t(), keyword()) :: Helyx.Context.t()
-  def compact(core, context, opts) do
-    case Helyx.Core.plugins(core, __MODULE__) do
-      [plugin] -> plugin.compact(context, opts)
-      [] -> context
-    end
-  end
 end

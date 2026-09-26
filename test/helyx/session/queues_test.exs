@@ -48,9 +48,7 @@ defmodule Helyx.Session.QueuesTest do
     assert Queues.drain_steers(rest) == {[], rest}
   end
 
-  test "clear empties both queues" do
-    queues = %Queues{} |> push!(:steers, "s1") |> push!(:follow_ups, "f1")
-    assert Queues.clear(queues) == %Queues{}
+  test "drain of empty queues returns nothing" do
     assert Queues.drain(%Queues{}) == {[], %Queues{}}
   end
 end

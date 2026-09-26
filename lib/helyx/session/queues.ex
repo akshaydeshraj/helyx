@@ -32,7 +32,4 @@ defmodule Helyx.Session.Queues do
   @spec counts(t()) :: %{steers: non_neg_integer(), follow_ups: non_neg_integer()}
   def counts(%__MODULE__{steers: steers, follow_ups: follow_ups}),
     do: %{steers: length(steers), follow_ups: length(follow_ups)}
-
-  @spec clear(t()) :: t()
-  def clear(%__MODULE__{}), do: %__MODULE__{}
 end

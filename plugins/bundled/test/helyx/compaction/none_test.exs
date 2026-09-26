@@ -20,6 +20,6 @@ defmodule Helyx.Compaction.NoneTest do
     assert Helyx.Core.plugins(core, Helyx.Compaction) == [Helyx.Compaction.None]
 
     context = %Helyx.Context{system: "base", messages: [Helyx.Message.user("hi")]}
-    assert Helyx.Compaction.compact(core, context, []) == context
+    assert Helyx.Compaction.None.compact(context, []) == context
   end
 end
